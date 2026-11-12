@@ -17,19 +17,29 @@ export {
   parseVerdict,
   VERDICTS,
   type NonceCheck,
+  type SkippedLine,
+  type SkipReason,
   type Verdict,
   type VerdictMatch,
+  type VerdictReason,
   type VerdictResult,
 } from './verdict.js';
 export { parseYamlList, YamlListError, type YamlRecord, type YamlScalar } from './yaml-list.js';
 
 export interface LegReply {
+  /**
+   * What ratification gates on for the nonce (plan 3.9, 4.5): the first non-empty line is the verbatim NONCE line.
+   * A nonce found anywhere else, even elsewhere on the first line, leaves this false.
+   */
+  nonceOk: boolean;
+  /** The nonce check's detail, for the record. */
   nonce: NonceCheck;
   verdict: VerdictResult;
   findings: FindingsResult;
 }
 
-/** Everything P1 parses from one leg's reply text. Ratification (4.5) decides what counts. */
+/** Everything P1 parses from one leg's reply text. Ratification (4.5) decides what counts, on `nonceOk`. */
 export function parseLegReply(text: string, nonce: string): LegReply {
-  return { nonce: checkNonce(text, nonce), verdict: parseVerdict(text), findings: parseFindings(text) };
+  const check = checkNonce(text, nonce);
+  return { nonceOk: check.verbatim, nonce: check, verdict: parseVerdict(text), findings: parseFindings(text) };
 }

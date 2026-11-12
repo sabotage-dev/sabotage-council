@@ -1,3 +1,4 @@
+import { scanFences, type Fence } from './fences.js';
 import { parseLocation } from './location.js';
 import { normalizeSeverity, type Severity, type SeverityFlag } from './severity.js';
 import { splitLines } from './verdict.js';
@@ -27,35 +28,9 @@ class BlockError extends Error {}
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/;
 const EMPTY_BLOCK = /^(?:none|\(none\)|n\/a|-|no findings\.?|\[\])$/i;
 
-interface Fence {
-  info: string;
-  body: string[];
-  closed: boolean;
-}
-
-/** Every fenced block in the reply, with its info string (CommonMark backtick and tilde fences). */
+/** Every fenced block in the reply, with its info string (the scan the verdict parser uses too). */
 function fences(text: string): Fence[] {
-  const out: Fence[] = [];
-  let open: { char: string; len: number; fence: Fence } | null = null;
-  for (const line of splitLines(text)) {
-    if (open === null) {
-      const m = /^ {0,3}(`{3,}|~{3,})\s*(.*)$/.exec(line);
-      if (m?.[1] !== undefined) {
-        const fence: Fence = { info: (m[2] ?? '').trim(), body: [], closed: false };
-        out.push(fence);
-        open = { char: m[1][0] as string, len: m[1].length, fence };
-      }
-      continue;
-    }
-    const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
-    if (close?.[1] !== undefined && close[1][0] === open.char && close[1].length >= open.len) {
-      open.fence.closed = true;
-      open = null;
-      continue;
-    }
-    open.fence.body.push(line);
-  }
-  return out;
+  return scanFences(splitLines(text)).fences;
 }
 
 /**
