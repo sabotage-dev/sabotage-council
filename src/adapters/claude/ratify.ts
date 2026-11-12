@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import type { FailureClass } from '../../config/vocab.js';
 import { pathInsideRoot, rootAliases } from '../paths.js';
-import { verdictOf, type Ratification, type RatificationCheck } from '../types.js';
+import { nonceOnFirstLine, verdictOf, type Ratification, type RatificationCheck } from '../types.js';
 import { isObject, num, str } from '../codex/records.js';
 import { CLAUDE_READ_TOOLS, modelMatches } from './known.js';
 import { findTranscript, readClaudeStream, readTranscript, toolPaths, transcriptFacts, type ClaudeStream } from './records.js';
@@ -200,8 +200,10 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
   check(checks, 'result', result !== null && result['is_error'] === false && subtype === 'success', result === null ? 'no result line' : `is_error ${String(result['is_error'])}, subtype ${String(subtype)}`);
 
   check(checks, 'answer', answer !== null, answer === null ? 'no answer' : 'answer in the result');
-  const nonceSeen = answer !== null && answer.includes(input.nonce);
-  check(checks, 'nonce', nonceSeen, nonceSeen ? 'nonce in the answer' : 'nonce missing from the answer');
+  // Plan 4.5 item 8: the first non-empty line of the original answer is exactly `NONCE: <nonce>`.
+  const nonce = nonceOnFirstLine(answer, input.nonce);
+  const nonceSeen = nonce.ok;
+  check(checks, 'nonce', nonceSeen, nonce.detail);
   const residue = input.rootUnchanged?.();
   check(checks, 'root-unchanged', residue?.unchanged === true, residue === undefined ? 'no residue sweep was given (fails closed)' : residue.unchanged ? 'tree hash unchanged' : `root changed: ${residue.changes.slice(0, 10).join(', ')}`);
 

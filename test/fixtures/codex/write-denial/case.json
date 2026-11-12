@@ -10,8 +10,9 @@
     "failureClass": "contaminated",
     "failed": [
       "commands",
+      "nonce",
       "write-denial"
     ]
   },
-  "note": "Recorded canary leg (probe): the write was denied inside a batched exec script (N15). Since round 1 the commands themselves fail too: a redirect to a file, echo and curl are not reads."
+  "note": "Recorded canary leg (probe): the write was denied inside a batched exec script (N15). Since round 1 the commands themselves fail too: a redirect to a file, echo and curl are not reads. Its answer quotes the NONCE line at the end, which no longer counts."
 }

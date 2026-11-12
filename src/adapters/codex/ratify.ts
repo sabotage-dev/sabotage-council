@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import type { FailureClass } from '../../config/vocab.js';
 import { pathInsideRoot, realpathOrNull, rootAliases } from '../paths.js';
-import { fromNonceLine, verdictOf, type Ratification, type RatificationCheck } from '../types.js';
+import { fromNonceLine, nonceOnFirstLine, verdictOf, type Ratification, type RatificationCheck } from '../types.js';
 import { classifyCodexText } from './classify.js';
 import { checkCommandPaths, WRITE_DENIAL, type PathProblem } from './cmd-paths.js';
 import { scanExecInput } from './exec-input.js';
@@ -585,8 +585,10 @@ export function ratifyCodexLeg(input: CodexRatifyInput): Ratification {
 
   const answer = codexAnswer(events, input.lastFile, legRollout);
   check(checks, 'answer', answer.text !== null && answer.text.trim() !== '', answer.text === null ? 'no answer' : `answer from ${answer.source}`);
-  const nonceSeen = answer.text !== null && answer.text.includes(input.nonce);
-  check(checks, 'nonce', nonceSeen, nonceSeen ? 'nonce in the answer' : 'nonce missing from the answer');
+  // Plan 4.5 item 8: the first non-empty line of the original answer is exactly `NONCE: <nonce>`.
+  const nonce = nonceOnFirstLine(answer.text, input.nonce);
+  const nonceSeen = nonce.ok;
+  check(checks, 'nonce', nonceSeen, nonce.detail);
   const residue = input.rootUnchanged?.();
   check(checks, 'root-unchanged', residue?.unchanged === true, residue === undefined ? 'no residue sweep was given (fails closed)' : residue.unchanged ? 'tree hash unchanged' : `root changed: ${residue.changes.slice(0, 10).join(', ')}`);
 

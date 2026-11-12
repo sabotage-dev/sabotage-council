@@ -1,4 +1,5 @@
 import type { ModelInfo } from '../config/registry.js';
+import { checkNonce, type NonceCheck } from '../parse/index.js';
 import type { BackendId, FailureClass } from '../config/vocab.js';
 import type { HeadlessExit, HeadlessProcess } from '../transport/headless.js';
 
@@ -159,12 +160,33 @@ export interface SeatAdapter {
   cancel(h: LegHandle): Promise<void>;
 }
 
-/** Takes the answer from its NONCE line on (plan 4.1 `collect`). */
+/**
+ * The nonce contract (plan 3.9, 4.5 item 8), on the original answer before any trimming: its first non-empty line is
+ * exactly `NONCE: <nonce>`. A nonce anywhere else (mid-sentence, on a later line, quoted from the brief) does not
+ * count. A nonce that is not 12 hex characters never matches.
+ */
+export function nonceOnFirstLine(text: string | null, nonce: string): { ok: boolean; detail: string } {
+  if (text === null) return { ok: false, detail: 'no answer to check' };
+  let check: NonceCheck;
+  try {
+    check = checkNonce(text, nonce);
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+  if (check.verbatim) return { ok: true, detail: 'the first non-empty line is the NONCE line' };
+  if (!check.present) return { ok: false, detail: 'nonce missing from the answer' };
+  return { ok: false, detail: `the nonce is on line ${String(check.line)} but the first non-empty line is not the NONCE line` };
+}
+
+/**
+ * Takes the answer from its NONCE line on (plan 4.1 `collect`). Only a verbatim first NONCE line counts, so the text
+ * is returned whole (with `fromNonce` false) when the nonce sits anywhere else; nothing before it is dropped.
+ */
 export function fromNonceLine(text: string | null, nonce: string, source: string): LegText {
   if (text === null || text.trim() === '') return { text: null, fromNonce: false, source };
+  if (!nonceOnFirstLine(text, nonce).ok) return { text, fromNonce: false, source };
   const lines = text.split(/\r?\n/);
-  const at = lines.findIndex((line) => line.includes(nonce));
-  if (at < 0) return { text, fromNonce: false, source };
+  const at = lines.findIndex((line) => line.trim() !== '');
   return { text: lines.slice(at).join('\n'), fromNonce: true, source };
 }
 

@@ -173,6 +173,22 @@ describe('claude ratification details', () => {
     expect(r.status).toBe('PASS');
   });
 
+  // Round 1 (2/3), plan 4.5 item 8: only a verbatim first NONCE line counts.
+  it.each([
+    ['the nonce mid-sentence', 'My review for 3617dff745c0 follows.\n\nVERDICT: SHIP'],
+    ['the nonce on line 2', 'Review below.\nNONCE: 3617dff745c0\n\nVERDICT: SHIP'],
+    ['the nonce quoted from the brief', 'The brief said:\n> NONCE: 3617dff745c0\n\nVERDICT: SHIP'],
+  ])('fails an answer with %s (round 1)', (_what, text) => {
+    const r = ratifyClaudeLeg(
+      inputFor('success', (dir) => {
+        edit(join(dir, 'stream.jsonl'), (row) => row['type'] === 'result', (row) => (row['result'] = text));
+        // Keep the transcript covering the final request (its id), so only the nonce differs.
+      }).input,
+    );
+    expect(failedNames(r)).toEqual(['nonce']);
+    expect(r.nonceSeen).toBe(false);
+  });
+
   it('fails the init gate check when the gate stopped the leg', () => {
     const { input } = inputFor('success');
     const r = ratifyClaudeLeg({ ...input, initGate: 'system/init offered Bash' });

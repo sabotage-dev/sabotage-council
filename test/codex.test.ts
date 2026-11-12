@@ -19,7 +19,7 @@ import {
 } from '../src/adapters/codex/index.js';
 import { CODEX_ENV_ALLOW, CODEX_READ_PREFACE } from '../src/adapters/codex/launch.js';
 import { rootAliases } from '../src/adapters/paths.js';
-import type { Occupant, RoundCtx } from '../src/adapters/types.js';
+import { fromNonceLine, type Occupant, type RoundCtx } from '../src/adapters/types.js';
 import { runCommand } from '../src/transport/headless.js';
 import { cleanScratchAfterAll, fixtureDir, listFiles, materialize, readJsonl, scratch, writeJsonl } from './helpers/fixtures.js';
 
@@ -342,6 +342,28 @@ describe('codex ratification details', () => {
     const { input } = inputFor('success');
     const r = ratifyCodexLeg({ ...input, rootUnchanged: undefined });
     expect(failedNames(r)).toEqual(['root-unchanged']);
+  });
+
+  // Round 1 (2/3), plan 4.5 item 8: only a verbatim first NONCE line counts.
+  it.each([
+    ['the nonce mid-sentence', 'My review for b5c6831e146e follows.\n\nVERDICT: SHIP'],
+    ['the nonce on line 2', 'Review below.\nNONCE: b5c6831e146e\n\nVERDICT: SHIP'],
+    ['the nonce quoted from the brief', 'The brief said:\n> NONCE: b5c6831e146e\n\nVERDICT: SHIP'],
+  ])('fails an answer with %s', (_what, text) => {
+    const r = ratifyCodexLeg(inputFor('success', (dir) => writeFileSync(join(dir, 'last.txt'), text)).input);
+    expect(failedNames(r)).toEqual(['nonce']);
+    expect(r.nonceSeen).toBe(false);
+  });
+
+  it('accepts blank lines and wrappers before a verbatim NONCE line', () => {
+    const r = ratifyCodexLeg(inputFor('success', (dir) => writeFileSync(join(dir, 'last.txt'), '\n\n**NONCE: b5c6831e146e**\n\nVERDICT: SHIP')).input);
+    expect(r.status).toBe('PASS');
+  });
+
+  it('collects from the NONCE line only when it is the first non-empty line, never dropping text before a later one', () => {
+    expect(fromNonceLine('\n\nNONCE: b5c6831e146e\nbody', 'b5c6831e146e', 'x')).toEqual({ text: 'NONCE: b5c6831e146e\nbody', fromNonce: true, source: 'x' });
+    expect(fromNonceLine('lead-in\nNONCE: b5c6831e146e\nbody', 'b5c6831e146e', 'x')).toEqual({ text: 'lead-in\nNONCE: b5c6831e146e\nbody', fromNonce: false, source: 'x' });
+    expect(fromNonceLine('NONCE: b5c6831e146e', 'not-a-nonce', 'x').fromNonce).toBe(false);
   });
 
   it('classifies a timed-out leg as timeout', () => {
