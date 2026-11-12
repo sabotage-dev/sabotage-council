@@ -2,7 +2,7 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, stat
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { extractTree, listTree } from './archive.js';
-import { ITEM_ID, renderPreviousReviews, renderPrMd, type EarlierItem, type PrData } from './data-files.js';
+import { dataLines, ITEM_ID, renderPreviousReviews, renderPrMd, type EarlierItem, type PrData } from './data-files.js';
 import { detectFold, type FoldPlan } from './fold.js';
 import { commitExists, DIFF_ARGS, FULL_SHA, openShadow, resolveCommit, runGit, type ShadowRepo } from './git.js';
 import { FileNameError } from './names.js';
@@ -128,7 +128,8 @@ export function layoutOf(built: BuiltRoot): RootLayout {
 /**
  * Builds a review root (plan 5.3) in `rootDir`, which must not exist or be empty:
  * 1. `<repo>/` at the head and `_base/` at the merge-base, archived through a temp file;
- * 2. `PR.diff`, `COMMITS.log`, `FOLD.diff` (delta rounds), `PR.md` and `PREVIOUS-REVIEWS.md` (both `DATA:`);
+ * 2. `PR.diff` and `FOLD.diff` (delta rounds); `COMMITS.log`, `PR.md` and `PREVIOUS-REVIEWS.md` with every line
+ *    prefixed `DATA:`;
  * 3. `context/` entries from local paths or `repo@ref`;
  * 4. symlink neutralization over `<repo>/`, `_base/` and `context/`, right after extraction;
  * 5. the sanitizer over the same trees.
@@ -219,12 +220,13 @@ function build(root: string, work: string, inputs: RootInputs, items: readonly E
     }
     extract(shadow, mergeBase, ROOT_NAMES.base, `${inputs.name}@${short(mergeBase)}`);
     gitToFile(shadow, [...DIFF_ARGS, mergeBase, inputs.head], ROOT_NAMES.prDiff, `(no changes between ${short(mergeBase)} and ${short(inputs.head)})\n`);
-    gitToFile(
-      shadow,
+    // Commit messages are PR text (plan 6.3): every line is prefixed DATA: before the file is written and sized.
+    const log = runGit(
       ['log', '--no-color', '--no-decorate', '--no-mailmap', '--date=iso-strict', '--pretty=medium', `${mergeBase}..${inputs.head}`],
-      ROOT_NAMES.commitsLog,
-      `(no commits between ${short(mergeBase)} and ${short(inputs.head)})\n`,
-    );
+      { gitDir: shadow.gitDir },
+    ).stdout.toString('utf8');
+    const commits = log === '' ? `(no commits between ${short(mergeBase)} and ${short(inputs.head)})` : log;
+    engineFile(ROOT_NAMES.commitsLog, `${dataLines(commits).join('\n')}\n`);
   }
 
   let fold: FoldPlan | null = null;
