@@ -32,13 +32,17 @@ function plumb(args: readonly string[], input: Buffer): string {
     .trim();
 }
 
-/** A commit whose tree holds exactly these entries, built with `git mktree` (no file is written to disk). */
+/**
+ * A commit whose tree holds exactly these entries, in this order (no file is written to disk). The tree object is
+ * written raw with `git hash-object -t tree --literally`: `git mktree` and a checked `hash-object` refuse some of
+ * these trees (a duplicate name) on some git versions, and the test must reach the engine's own check.
+ */
 function commitWith(entries: readonly { mode: string; content: string; name: Buffer }[]): string {
-  const lines = entries.map((e) => {
+  const records = entries.map((e) => {
     const blob = plumb(['hash-object', '-w', '--stdin'], Buffer.from(e.content));
-    return Buffer.concat([Buffer.from(`${e.mode} blob ${blob}\t`), e.name, Buffer.from([0])]);
+    return Buffer.concat([Buffer.from(`${e.mode} `), e.name, Buffer.from([0]), Buffer.from(blob, 'hex')]);
   });
-  const tree = plumb(['mktree', '-z'], Buffer.concat(lines));
+  const tree = plumb(['hash-object', '-t', 'tree', '--literally', '--stdin', '-w'], Buffer.concat(records));
   return plumb(['-c', 'user.name=Fixture Author', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-m', 'crafted'], Buffer.alloc(0));
 }
 
@@ -106,6 +110,7 @@ describe('the root build refuses names it cannot represent exactly', () => {
       { mode: '120000', content: '/etc', name: Buffer.from('a') },
       { mode: '100644', content: 'innocent\n', name: Buffer.from('a') },
     ]);
+    expect(plumb(['ls-tree', '-r', '--name-only', dup], Buffer.alloc(0)).split('\n')).toEqual(['a', 'a']); // the setup holds
     expect(() => buildRoot(rootPath(), { repo, name: 'r', head: dup })).toThrow(/^the root cannot be built: commit [0-9a-f]{7}: the tree lists "a" twice$/);
   });
 
