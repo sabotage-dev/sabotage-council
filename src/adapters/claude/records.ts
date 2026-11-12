@@ -21,9 +21,13 @@ export interface ClaudeStream {
   toolUses: ToolUse[];
   /** Assistant text blocks, in order. */
   texts: string[];
+  /** `message.id` of each assistant line, in order: one id per API request. */
+  messageIds: string[];
   /** More than one init or result line (a resumed or second session in one stream). */
   extraInit: number;
   malformed: number;
+  /** The last line is cut off. */
+  tornTail: boolean;
 }
 
 function toolUsesOf(message: unknown, source: ToolUse['source']): ToolUse[] {
@@ -38,10 +42,11 @@ function toolUsesOf(message: unknown, source: ToolUse['source']): ToolUse[] {
 }
 
 export function readClaudeStream(path: string): ClaudeStream {
-  const out: ClaudeStream = { init: null, result: null, toolUses: [], texts: [], extraInit: 0, malformed: 0 };
+  const out: ClaudeStream = { init: null, result: null, toolUses: [], texts: [], messageIds: [], extraInit: 0, malformed: 0, tornTail: false };
   if (!existsSync(path)) return out;
-  const { rows, malformed } = readJsonl(path);
+  const { rows, malformed, tornTail } = readJsonl(path);
   out.malformed = malformed;
+  out.tornTail = tornTail;
   for (const row of rows) {
     const type = str(row['type']);
     if (type === 'system' && str(row['subtype']) === 'init') {
@@ -53,6 +58,8 @@ export function readClaudeStream(path: string): ClaudeStream {
     } else if (type === 'assistant') {
       out.toolUses.push(...toolUsesOf(row['message'], 'stream'));
       const message = row['message'];
+      const id = isObject(message) ? str(message['id']) : null;
+      if (id !== null) out.messageIds.push(id);
       if (isObject(message) && Array.isArray(message['content'])) {
         for (const block of message['content']) {
           if (isObject(block) && str(block['type']) === 'text') out.texts.push(str(block['text']) ?? '');
@@ -113,6 +120,10 @@ export interface TranscriptFacts {
   requests: Array<{ model: string | null; effort: string | null; querySource: string | null }>;
   /** `assistant.message.model` of real (non-synthetic) turns. */
   assistantModels: string[];
+  /** `assistant.message.id` of every assistant entry, in order. */
+  assistantIds: string[];
+  /** Every assistant text block, in order. */
+  assistantTexts: string[];
   apiErrors: Array<{ status: number | null; text: string }>;
   toolUses: ToolUse[];
   sidechains: number;
@@ -126,6 +137,8 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
     cwds: [],
     requests: [],
     assistantModels: [],
+    assistantIds: [],
+    assistantTexts: [],
     apiErrors: [],
     toolUses: [],
     sidechains: 0,
@@ -146,6 +159,11 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
     } else if (type === 'assistant') {
       const message = isObject(e['message']) ? e['message'] : {};
       const model = str(message['model']);
+      const id = str(message['id']);
+      if (id !== null) facts.assistantIds.push(id);
+      if (Array.isArray(message['content'])) {
+        for (const block of message['content']) if (isObject(block) && str(block['type']) === 'text') facts.assistantTexts.push(str(block['text']) ?? '');
+      }
       if (e['isApiErrorMessage'] === true) {
         facts.apiErrors.push({ status: num(e['apiErrorStatus']), text: JSON.stringify(e['error'] ?? null) });
       } else if (model !== null && model !== '<synthetic>') {

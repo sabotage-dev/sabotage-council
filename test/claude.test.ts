@@ -140,6 +140,39 @@ describe('claude ratification details', () => {
     expect(failedNames(r)).toContain(check);
   });
 
+  // Round 1 (2/3): torn or partial records used to pass.
+  it.each([
+    ['a torn last stream line', (dir: string) => writeFileSync(join(dir, 'stream.jsonl'), `${readFileSync(join(dir, 'stream.jsonl'), 'utf8')}{"type":"assist`), 'stream'],
+    ['a torn last transcript line', (dir: string) => writeFileSync(transcriptOf(dir), `${readFileSync(transcriptOf(dir), 'utf8')}{"type":"assist`), 'transcript'],
+  ])('fails on %s (round 1)', (_what, change, check) => {
+    const r = ratifyClaudeLeg(inputFor('success', change).input);
+    expect(failedNames(r)).toEqual([check]);
+    expect(r.checks.find((c) => c.name === check)?.detail).toContain('torn');
+  });
+
+  it('fails a transcript cut after its first request, which still holds the model and effort evidence (round 1)', () => {
+    const r = ratifyClaudeLeg(
+      inputFor('success', (dir) => {
+        const rows = readJsonl(transcriptOf(dir));
+        const second = rows.findIndex((row, i) => row['type'] === 'api-request' && rows.slice(0, i).some((x) => x['type'] === 'api-request'));
+        writeJsonl(transcriptOf(dir), rows.slice(0, second));
+      }).input,
+    );
+    expect(failedNames(r)).toEqual(['transcript']);
+    expect(r.checks.find((c) => c.name === 'transcript')?.detail).toContain('ends before the final answer');
+  });
+
+  it('accepts a transcript that reaches the final request even when its text block was not written', () => {
+    const r = ratifyClaudeLeg(
+      inputFor('success', (dir) => {
+        const rows = readJsonl(transcriptOf(dir));
+        const lastText = rows.map((row) => JSON.stringify(row)).findLastIndex((t) => t.includes('"type":"text"'));
+        writeJsonl(transcriptOf(dir), rows.filter((_row, i) => i !== lastText));
+      }).input,
+    );
+    expect(r.status).toBe('PASS');
+  });
+
   it('fails the init gate check when the gate stopped the leg', () => {
     const { input } = inputFor('success');
     const r = ratifyClaudeLeg({ ...input, initGate: 'system/init offered Bash' });

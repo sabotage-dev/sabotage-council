@@ -48,6 +48,8 @@ export interface CodexEvents {
   commandOutputs: string[];
   usage: { input: number | null; output: number | null } | null;
   malformed: number;
+  /** The last line is cut off (a killed CLI, or a stream still being written). */
+  tornTail: boolean;
 }
 
 export function readEvents(path: string): CodexEvents {
@@ -61,10 +63,12 @@ export function readEvents(path: string): CodexEvents {
     commandOutputs: [],
     usage: null,
     malformed: 0,
+    tornTail: false,
   };
   if (!existsSync(path)) return out;
-  const { rows, malformed } = readJsonl(path);
+  const { rows, malformed, tornTail } = readJsonl(path);
   out.malformed = malformed;
+  out.tornTail = tornTail;
   for (const row of rows) {
     const type = str(row['type']);
     if (type === 'thread.started') out.threadId ??= str(row['thread_id']);

@@ -122,7 +122,12 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
   const init = stream.init;
   const result = stream.result;
 
-  check(checks, 'stream', init !== null && stream.malformed === 0 && stream.extraInit === 0, init === null ? 'no system/init in the stream' : `init + ${result ? 'result' : 'no result'}; ${stream.malformed} malformed`);
+  check(
+    checks,
+    'stream',
+    init !== null && stream.malformed === 0 && stream.extraInit === 0 && !stream.tornTail,
+    init === null ? 'no system/init in the stream' : `init + ${result ? 'result' : 'no result'}; ${stream.malformed} malformed${stream.tornTail ? '; the last line is torn' : ''}`,
+  );
   if (input.initGate) check(checks, 'init-gate', false, input.initGate);
   const initSession = init ? str(init['session_id']) : null;
   const resultSession = result ? str(result['session_id']) : null;
@@ -137,11 +142,22 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
   const transcriptPath = findTranscript(input.projectsDir, input.sessionId);
   const transcript = transcriptPath ? readTranscript(transcriptPath) : null;
   const facts = transcript ? transcriptFacts(transcript) : null;
+  // The transcript must reach the end of the leg: the final answer's text, or the stream's final request (its
+  // message id). A transcript cut after an early request would leave the later requests unaudited.
+  const answer = claudeAnswer(stream);
+  const finalRequest = stream.messageIds[stream.messageIds.length - 1] ?? null;
+  const covered =
+    facts !== null &&
+    ((answer !== null && facts.assistantTexts.includes(answer)) ||
+      (finalRequest !== null && facts.assistantIds.includes(finalRequest)) ||
+      (answer === null && finalRequest === null));
   check(
     checks,
     'transcript',
-    transcript !== null && facts !== null && transcript.malformed === 0 && facts.sessionIds.every((s) => s === input.sessionId),
-    transcript === null ? `no transcript for session ${input.sessionId} under ${input.projectsDir}` : `transcript ${transcript.path}; ${transcript.malformed} malformed`,
+    transcript !== null && facts !== null && transcript.malformed === 0 && !transcript.tornTail && covered && facts.sessionIds.every((s) => s === input.sessionId),
+    transcript === null
+      ? `no transcript for session ${input.sessionId} under ${input.projectsDir}`
+      : `transcript ${transcript.path}; ${transcript.malformed} malformed${transcript.tornTail ? '; the last line is torn' : ''}${covered ? '' : `; it ends before the final answer (request ${String(finalRequest)})`}`,
   );
 
   const initCwd = init ? str(init['cwd']) : null;
@@ -183,7 +199,6 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
   const subtype = result ? str(result['subtype']) : null;
   check(checks, 'result', result !== null && result['is_error'] === false && subtype === 'success', result === null ? 'no result line' : `is_error ${String(result['is_error'])}, subtype ${String(subtype)}`);
 
-  const answer = claudeAnswer(stream);
   check(checks, 'answer', answer !== null, answer === null ? 'no answer' : 'answer in the result');
   const nonceSeen = answer !== null && answer.includes(input.nonce);
   check(checks, 'nonce', nonceSeen, nonceSeen ? 'nonce in the answer' : 'nonce missing from the answer');

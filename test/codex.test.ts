@@ -275,6 +275,19 @@ describe('codex ratification details', () => {
     expect(r.checks.find((c) => c.name === 'commands')?.detail).toContain('not the root');
   });
 
+  it('fails an event stream whose last line is torn (round 1)', () => {
+    const r = ratifyCodexLeg(
+      inputFor('success', (dir) => writeFileSync(join(dir, 'events.jsonl'), `${readFileSync(join(dir, 'events.jsonl'), 'utf8')}{"type":"item.comp`)).input,
+    );
+    expect(failedNames(r)).toEqual(['events']);
+    expect(r.checks.find((c) => c.name === 'events')?.detail).toContain('torn');
+  });
+
+  it('fails a rollout whose last line is torn', () => {
+    const r = ratifyCodexLeg(inputFor('success', (dir) => writeFileSync(rolloutsOf(dir)[0] as string, `${readFileSync(rolloutsOf(dir)[0] as string, 'utf8')}{"type":"event_m`)).input);
+    expect(failedNames(r)).toEqual(['completion']);
+  });
+
   it('fails a rollout with a malformed line before its end', () => {
     const r = ratifyCodexLeg(
       inputFor('success', (dir) => {

@@ -507,7 +507,14 @@ export function ratifyCodexLeg(input: CodexRatifyInput): Ratification {
   const checks: RatificationCheck[] = [];
   const signature = codexSignature(events, input.stderrFile);
 
-  check(checks, 'events', events.threadId !== null && events.malformed === 0, events.threadId === null ? 'no thread.started in the stream' : `thread ${events.threadId}`);
+  check(
+    checks,
+    'events',
+    events.threadId !== null && events.malformed === 0 && !events.tornTail,
+    events.threadId === null
+      ? 'no thread.started in the stream'
+      : `thread ${events.threadId}; ${events.malformed} malformed${events.tornTail ? '; the last line is torn' : ''}`,
+  );
   const reroutes = events.errorItems.filter((m) => /model rerouted/i.test(m));
   check(checks, 'stream-reroute', reroutes.length === 0, reroutes.length === 0 ? 'no reroute item in the stream' : reroutes.join('; '));
   check(checks, 'stream-completion', events.turnCompleted && events.turnFailed.length === 0, events.turnCompleted ? 'turn.completed' : `no turn.completed${events.turnFailed.length > 0 ? `; turn.failed: ${events.turnFailed.join('; ')}` : ''}`);
