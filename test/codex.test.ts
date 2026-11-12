@@ -319,6 +319,39 @@ describe('codex ratification details', () => {
     expect(r.status).toBe('PASS');
   });
 
+  const waitArgs = (args: Record<string, unknown>) => (dir: string) => {
+    const leg = rolloutsOf(dir)[0] as string;
+    let first = true;
+    writeJsonl(
+      leg,
+      readJsonl(leg).map((row) => {
+        const p = row['payload'] as Record<string, unknown>;
+        if (first && p['type'] === 'function_call' && p['name'] === 'wait_agent') {
+          p['arguments'] = JSON.stringify(args);
+          first = false;
+        }
+        return row;
+      }),
+    );
+  };
+
+  it.each([
+    ['thread_id', { thread_id: '11111111-2222-7333-8444-555555555555', timeout_ms: 10000 }],
+    ['target', { target: '/root/someone_else' }],
+    ['agent_id', { agent_id: '11111111-2222-7333-8444-555555555555' }],
+    ['id', { id: 42 }],
+  ])('fails a wait_agent whose string %s names an agent outside the tree (round 1)', (field, args) => {
+    const r = ratifyCodexLeg(inputFor('delegating', waitArgs(args)).input);
+    expect(failedNames(r)).toEqual(['targets']);
+    expect(r.checks.find((c) => c.name === 'targets')?.detail).toContain(`wait_agent -> ${field}`);
+  });
+
+  it("accepts a wait_agent whose thread_id is the leg's own child", () => {
+    const { input } = inputFor('delegating');
+    const child = (ratifyCodexLeg(input).detail['threads'] as Array<{ thread: string; role: string }>).find((t) => t.role === 'child')?.thread as string;
+    expect(ratifyCodexLeg(inputFor('delegating', waitArgs({ thread_id: child })).input).status).toBe('PASS');
+  });
+
   it("fails a SubAgentActivity that acts on an agent outside the leg's tree, even with a resolvable call target", () => {
     const r = ratifyCodexLeg(
       inputFor('delegating', (dir) => {

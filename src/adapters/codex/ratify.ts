@@ -414,6 +414,12 @@ function ratifyThread(t: ThreadInput, input: CodexRatifyInput, decl: CodexVersio
       if (!Array.isArray(list)) continue;
       for (const v of list) if (typeof v !== 'string' || !targetInTree(v, report.agentPath, tree)) badTargets.push(`${wait.name} -> ${String(v)}`);
     }
+    // A single named target (`thread_id`, `target`, `agent_id`, `id`, ...) is checked the same way (round 1).
+    for (const field of TARGET_FIELDS) {
+      const v = wait.args[field];
+      if (v === undefined || v === null) continue;
+      if (typeof v !== 'string' || !targetInTree(v, report.agentPath, tree)) badTargets.push(`${wait.name} -> ${field} ${String(v)}`);
+    }
   }
   for (const line of own) {
     if (line.type !== 'event_msg' || str(line.payload['type']) !== 'item_completed') continue;
