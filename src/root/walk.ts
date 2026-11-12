@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync, type Stats } from 'node:fs';
 import { join } from 'node:path';
+import { decodeName } from './names.js';
 
 export type EntryKind = 'file' | 'dir' | 'symlink' | 'other';
 
@@ -22,11 +23,15 @@ export function kindOf(stats: Stats): EntryKind {
  * Pre-order walk by lstat: symlinks are reported, never followed, so a link to a directory is not entered.
  * Names are sorted so every walk of the same tree visits entries in the same order.
  * `descend` may stop the walk from entering a directory (it is still reported).
+ * Names are read as bytes; one that is not valid UTF-8 throws FileNameError, never decodes with replacements.
  */
 export function walk(base: string, start = '', descend: (entry: WalkEntry) => boolean = () => true): WalkEntry[] {
   const out: WalkEntry[] = [];
   const visit = (rel: string): void => {
-    const names = readdirSync(rel === '' ? base : join(base, rel)).sort();
+    const dir = rel === '' ? base : join(base, rel);
+    const names = readdirSync(dir, { encoding: 'buffer' })
+      .map((raw) => decodeName(raw, dir))
+      .sort();
     for (const name of names) {
       const childRel = rel === '' ? name : `${rel}/${name}`;
       const abs = join(base, childRel);

@@ -37,6 +37,7 @@ export {
 } from './git.js';
 export { diffManifests, hashManifest, manifestOf, treeHash, type ManifestChange, type ManifestEntry } from './hash.js';
 export { assertIntegrity, checkIntegrity, IntegrityError } from './integrity.js';
+export { decodeName, FileNameError } from './names.js';
 export {
   AGENT_CONFIG_DIRS,
   AGENT_CONFIG_FILES,

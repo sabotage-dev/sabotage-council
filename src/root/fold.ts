@@ -1,4 +1,5 @@
 import { commitExists, isAncestor, runGit, type ShadowRepo } from './git.js';
+import { decodeName, splitNul } from './names.js';
 
 /** The list text when the baseline cannot be read (plan 3.6). */
 export const CHANGED_FILES_UNKNOWN = 'changed files unknown (baseline unavailable)';
@@ -21,12 +22,11 @@ function short(sha: string): string {
   return sha.slice(0, 7);
 }
 
+/** Read as bytes: a name that is not valid UTF-8 throws FileNameError rather than decoding with replacements. */
 function changedFiles(shadow: ShadowRepo, baseline: string, head: string): string[] {
   const out = runGit(['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', baseline, head], { gitDir: shadow.gitDir });
-  return out.stdout
-    .toString('utf8')
-    .split('\0')
-    .filter((p) => p !== '');
+  const where = `the diff from ${short(baseline)} to ${short(head)}`;
+  return splitNul(out.stdout).map((raw) => decodeName(raw, where));
 }
 
 /**

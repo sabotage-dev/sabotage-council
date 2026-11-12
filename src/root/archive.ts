@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { GitError, runGit, type ShadowRepo } from './git.js';
+import { decodeName, FileNameError, splitNul } from './names.js';
 
 export interface TreeEntry {
   /** Git mode: 100644, 100755, 120000 (symlink), 160000 (submodule). */
@@ -11,16 +12,27 @@ export interface TreeEntry {
   path: string;
 }
 
-/** Every blob and submodule entry of a commit's tree (`git ls-tree -r -l -z`). */
+/**
+ * Every blob and submodule entry of a commit's tree (`git ls-tree -r -l -z`). Paths are read as bytes: a path that
+ * is not valid UTF-8, or that the tree lists twice, throws FileNameError. Either would let two entries share one
+ * decoded path, so a check could read one of them while the archive writes the other.
+ */
 export function listTree(shadow: ShadowRepo, sha: string): TreeEntry[] {
-  const out = runGit(['ls-tree', '-r', '-l', '-z', '--full-tree', sha], { gitDir: shadow.gitDir }).stdout.toString('utf8');
+  const out = runGit(['ls-tree', '-r', '-l', '-z', '--full-tree', sha], { gitDir: shadow.gitDir }).stdout;
+  const where = `commit ${sha.slice(0, 7)}`;
   const entries: TreeEntry[] = [];
-  for (const record of out.split('\0')) {
-    if (record === '') continue;
-    const tab = record.indexOf('\t');
-    const [mode, , , size] = record.slice(0, tab).split(/ +/);
-    if (mode === undefined || size === undefined) throw new GitError(`unexpected ls-tree record: ${record}`, [], null, '');
-    entries.push({ mode, size: size === '-' ? null : Number.parseInt(size, 10), path: record.slice(tab + 1) });
+  const seen = new Set<string>();
+  for (const record of splitNul(out)) {
+    const tab = record.indexOf(0x09);
+    const head = tab < 0 ? '' : record.subarray(0, tab).toString('latin1');
+    const [mode, , , size] = head.split(/ +/);
+    if (mode === undefined || size === undefined || tab < 0) {
+      throw new GitError(`unexpected ls-tree record: ${record.toString('utf8')}`, [], null, '');
+    }
+    const path = decodeName(record.subarray(tab + 1), where);
+    if (seen.has(path)) throw new FileNameError(`${where}: the tree lists ${JSON.stringify(path)} twice`, path);
+    seen.add(path);
+    entries.push({ mode, size: size === '-' ? null : Number.parseInt(size, 10), path });
   }
   return entries;
 }

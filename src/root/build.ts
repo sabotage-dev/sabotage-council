@@ -5,6 +5,7 @@ import { extractTree, listTree } from './archive.js';
 import { ITEM_ID, renderPreviousReviews, renderPrMd, type EarlierItem, type PrData } from './data-files.js';
 import { detectFold, type FoldPlan } from './fold.js';
 import { commitExists, DIFF_ARGS, FULL_SHA, openShadow, resolveCommit, runGit, type ShadowRepo } from './git.js';
+import { FileNameError } from './names.js';
 import { sanitizedPathMap, sanitizeTrees, type SanitizedEntry } from './sanitize.js';
 import { neutralizeSymlinks, symlinkText, type NeutralizedLink } from './symlinks.js';
 import { lstatOrNull, walk } from './walk.js';
@@ -160,6 +161,10 @@ export function buildRoot(rootDir: string, inputs: RootInputs): BuiltRoot {
   const work = mkdtempSync(join(tmpdir(), 'sabotage-council-build-'));
   try {
     return build(root, work, inputs, items);
+  } catch (err) {
+    // A name that is not valid UTF-8, or two entries with one decoded path: the build fails closed (FileNameError).
+    if (err instanceof FileNameError) throw new RootError(`the root cannot be built: ${err.message}`);
+    throw err;
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -174,8 +179,10 @@ function build(root: string, work: string, inputs: RootInputs, items: readonly E
   let tarCount = 0;
   const shadowFor = (repo: string): ShadowRepo => openShadow(repo, join(work, `shadow-${tarCount++}.git`));
   const extract = (shadow: ShadowRepo, sha: string, dest: string, origin: string): void => {
+    // Listed (and every name checked) before anything is written, so a name the root refuses never reaches the disk.
+    const entries = listTree(shadow, sha);
     extractTree(shadow, sha, join(root, dest), join(work, `tree-${tarCount++}.tar`));
-    for (const entry of listTree(shadow, sha)) {
+    for (const entry of entries) {
       if (entry.size === null) continue; // a submodule: git archive writes no content for it
       const kind = entry.mode === '120000' ? 'symlink' : 'file';
       expected.set(`${dest}/${entry.path}`, { kind, size: entry.size, origin });
