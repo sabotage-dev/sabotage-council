@@ -14,7 +14,7 @@ import {
   scanExecInput,
   type CodexRatifyInput,
 } from '../src/adapters/codex/index.js';
-import { CODEX_ENV_ALLOW } from '../src/adapters/codex/launch.js';
+import { CODEX_ENV_ALLOW, CODEX_READ_PREFACE } from '../src/adapters/codex/launch.js';
 import { rootAliases } from '../src/adapters/paths.js';
 import type { Occupant, RoundCtx } from '../src/adapters/types.js';
 import { runCommand } from '../src/transport/headless.js';
@@ -621,7 +621,10 @@ describe('codex launch', () => {
     expect(adapter.classify(handle)).toBeNull();
     // The CLI saw the brief on stdin, cwd = root, and a scrubbed environment.
     const argv = JSON.parse(readFileSync(join(home, 'exec-argv.json'), 'utf8')) as { args: string[]; cwd: string; env: string[] };
-    expect(readFileSync(join(home, 'exec-stdin.txt'), 'utf8')).toContain('NONCE: b5c6831e146e');
+    const stdin = readFileSync(join(home, 'exec-stdin.txt'), 'utf8');
+    expect(stdin.startsWith(CODEX_READ_PREFACE)).toBe(true);
+    expect(stdin.slice(CODEX_READ_PREFACE.length)).toBe(readFileSync(ctx.briefFile, 'utf8'));
+    expect(stdin).toContain('NONCE: b5c6831e146e');
     expect(argv.cwd).toBe(root);
     expect(argv.args.at(-1)).toBe('-');
     for (const name of argv.env) expect([...CODEX_ENV_ALLOW, 'NO_COLOR', '__CF_USER_TEXT_ENCODING']).toContain(name);

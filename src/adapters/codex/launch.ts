@@ -7,6 +7,21 @@ import { join } from 'node:path';
  * `--ignore-user-config` (together they fail config load, measured), and never copies `auth.json`.
  */
 
+/**
+ * Codex reads files only through its `exec` command channel, so the brief's "run no commands" rule alone leaves a codex
+ * leg no way to read the tree (measured in the P2 live smoke: the leg introspected its tools instead of reviewing and was
+ * contaminated). This preface goes in front of the brief on the codex leg's stdin and says which commands are reads.
+ */
+export const CODEX_READ_PREFACE = [
+  'How to read files in this review (codex seat):',
+  '- Read the tree only through exec_command, using read-only commands: rg, sed -n, nl, cat, head, tail, wc, ls, find.',
+  '- Every path you read must be inside the current directory.',
+  '- The brief says "run no commands": for you that means no builds, installs, tests, scripts, network calls, writes,',
+  '  or any command other than the reads above. Do not call other tools.',
+  '',
+  '',
+].join('\n');
+
 /** Model slugs and effort words become `-m` and a TOML value; anything else is refused before launch. */
 export const MODEL_SLUG = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 export const EFFORT_WORD = /^[a-z]{1,16}$/;

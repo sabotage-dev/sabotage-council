@@ -1,10 +1,11 @@
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelInfo } from '../../config/registry.js';
 import type { FailureClass } from '../../config/vocab.js';
 import { runCommand, scrubEnv, startHeadless, type CommandRunner } from '../../transport/headless.js';
 import type { LegHandle, LegState, LegText, Occupant, Preflight, Ratification, RoundCtx, SeatAdapter } from '../types.js';
-import { CODEX_ENV_ALLOW, CODEX_ENV_SET, codexExecArgs, codexHomeOf } from './launch.js';
+import { CODEX_ENV_ALLOW, CODEX_ENV_SET, CODEX_READ_PREFACE, codexExecArgs, codexHomeOf } from './launch.js';
 import { CODEX_TESTED_VERSIONS, codexDecl } from './native.js';
 import { codexPreflight } from './preflight.js';
 import { codexCollect, codexSignature, ratifyCodexLeg } from './ratify.js';
@@ -13,7 +14,7 @@ import { eventsDone, readEvents } from './records.js';
 export { classifyCodexText, CODEX_FAILURE_PATTERNS } from './classify.js';
 export { checkCommandPaths, tokenizeShell, WRITE_DENIAL, type PathProblem } from './cmd-paths.js';
 export { scanExecInput, type ExecCall, type ExecScan } from './exec-input.js';
-export { CODEX_ENV_ALLOW, codexConfigFlags, codexExecArgs, codexHomeOf } from './launch.js';
+export { CODEX_ENV_ALLOW, CODEX_READ_PREFACE, codexConfigFlags, codexExecArgs, codexHomeOf } from './launch.js';
 export { callRule, CODEX_DECLARED, codexDecl, type CallClass, type CodexVersionDecl } from './native.js';
 export { codexPreflight, judgePromptInput, parseCodexVersion, promptInputTools } from './preflight.js';
 export { codexFailureClass, ratifyCodexLeg, type CodexRatifyInput } from './ratify.js';
@@ -68,7 +69,10 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): SeatAdapt
         stderr: join(ctx.legDir, 'stderr.log'),
         last: join(ctx.legDir, 'last.txt'),
         process: join(ctx.legDir, 'process.json'),
+        prompt: join(ctx.legDir, 'prompt.md'),
       };
+      // The codex seat's stdin: the read preface, then the brief unchanged.
+      writeFileSync(files.prompt, CODEX_READ_PREFACE + readFileSync(ctx.briefFile, 'utf8'));
       const sourceEnv = ctx.env ?? process.env;
       const env = scrubEnv(sourceEnv, CODEX_ENV_ALLOW, CODEX_ENV_SET);
       const proc = startHeadless({
@@ -76,7 +80,7 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): SeatAdapt
         args: codexExecArgs({ root: ctx.root, model: o.model, effort, mcpNames, lastFile: files.last }),
         cwd: ctx.root,
         env,
-        stdinFile: ctx.briefFile,
+        stdinFile: files.prompt,
         stdoutFile: files.events,
         stderrFile: files.stderr,
         timeoutMs: ctx.timeoutMs,
