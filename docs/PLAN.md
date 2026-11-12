@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Revision | 1.4 (2026-11-12): council rounds 1-4 folded |
+| Revision | 1.5 (2026-11-12): council rounds 1-5 folded; D17 |
 | Owner | Sabotage Development LLC, public repo `sabotage-dev/sabotage-council`, MIT |
 | Status | Plan under council review. Nothing is built yet. |
 | Decisions | D1-D16 in section 12, ruled by the owner on 2026-11-12 |
@@ -264,8 +264,7 @@ Rules that hold in every round:
     the round keeps its number and Q14's rule.
   - An empty fold means the content equals what was reviewed. The round still runs, as a full review.
 
-  Which owed rule a fallback round uses is Q14. The default keeps the round's own rule, so a rebase does not
-  restart convergence.
+  A fallback round keeps its own owed rule (D17), so a rebase does not restart convergence.
 
 ### 3.7 What gets posted (PR and auto modes)
 
@@ -496,7 +495,7 @@ Per-backend hazards the adapters handle (each one was found in the research or m
       same checks. A council round on 2026-11-12 measured one: same root, same model and effort, the read-only
       sandbox and approvals `never`, 17 reads. So inheritance holds on 0.167.0, and the ratifier reads every child
       rollout;
-    - any custom tool other than `exec` that is not a read.
+    - any custom tool outside the adapter's declared native list (4.5) that is not a read.
 
     The untrusted-PR policy (5.2) applies.
 - **grok**
@@ -651,29 +650,32 @@ A leg ratifies only if all of these hold, read from the CLI's own records:
    - codex: `world_state.state.top_level_tools`
 
    **Sandboxed-exec exception (items 5 and 6).** For a backend labelled sandboxed-exec (codex), the offer check
-   fails the leg only when an **MCP, web or write-class tool** is offered.
+   is an **allowlist**: the leg fails if any offered name is outside the adapter's declared native list for that
+   CLI version, or is an MCP, web or write-class tool. A version with no declared list is refused at preflight, so
+   no adapter guesses.
 
-   Its native tools are allowed on offer and judged at use time. The probe and every council-round rollout
-   measured 0.167.0's `world_state.state.top_level_tools` as:
-   - `clock`, `clock.sleep`;
-   - `collaboration.*`, including `spawn_agent`, `send_message`, `followup_task` and `wait_agent`;
-   - `functions.exec`;
-   - `functions.request_user_input` and `functions.request_user_input_async`;
-   - `functions.wait`.
-
-   They are always offered and cannot be removed. The adapter declares that list per tested version; anything
-   else offered fails item 6.
+   For codex 0.167.0 the declared list is the 14 names in `world_state.state.top_level_tools`, copied verbatim
+   from the recorded probe fixture. The same list appears in every council-round rollout of 2026-11-12:
+   `clock`, `clock.sleep`, `collaboration`, `collaboration.followup_task`, `collaboration.interrupt_agent`,
+   `collaboration.list_agents`, `collaboration.send_message`, `collaboration.spawn_agent`, `collaboration.wait_agent`,
+   `functions`, `functions.exec`, `functions.request_user_input`, `functions.request_user_input_async`,
+   `functions.wait`. They are always offered and cannot be removed.
 
    At use time:
-   - `exec` commands are parsed (below);
+   - `exec` is the command channel and is parsed (4.2);
    - `spawn_agent` is governed by recursive child ratification (4.2);
+   - the orchestration and wait calls `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`,
+     `list_agents`, `clock.sleep` and `functions.wait` are allowed, because they act only on the leg's own
+     children or on time;
+   - `request_user_input` and `request_user_input_async` are allowed but have nothing to answer them headless,
+     and the call is recorded;
    - any other custom tool must be a read.
 
-   A P2 replay of exactly this measured offer list must ratify a leg whose only calls are `exec`. Every command and every child rollout is recorded and parsed (exec and `custom_tool_call` inputs). The
-   leg also fails on any of:
+   Every command and every child rollout is recorded and parsed (exec and `custom_tool_call` inputs, and their
+   outputs). The leg also fails on any of:
    - a write denial;
    - a path token in a command string that resolves outside the root;
-   - a custom tool other than the `exec` command channel that is not a read;
+   - a custom tool outside the declared list that is not a read;
    - a subagent whose own rollout does not ratify (4.2).
 7. Root tree hash unchanged.
 8. The nonce appears in the answer.
@@ -1205,7 +1207,7 @@ existing private council until the two agree for 10 rounds in a row (Q9).
 |---|---|---|---|
 | **P0** Scaffold | Repo, MIT, CI (ubuntu + macos, Node 22/24), lint/typecheck/vitest, config schema + loader, store schema + migrations, `doctor` skeleton | `npm test` green on both OSes; schema migration round-trip test; config rejects 2 or 4 seats, unknown backend, duplicate ids | S |
 | **P1** Root, brief, parsers | Root builder (archive via temp file, `_base`, diffs, `PR.md` as DATA, symlink neutralization, integrity, tree hash after the brief, residue sweep), recursive sanitizer with the per-backend agent-config list (case-insensitive), brief templates for every mode and round rule (incl. the change-request section), verdict + findings-block parser, severity normalizer | Golden tests over a fixture repo with planted agent-config files at the top level and nested (all moved), and symlinks to `~/.ssh`, `../..`, an absolute path and a chain (all neutralized); parser table tests including two-verdict `none`, missing block, CRITICAL->HIGH, and two formats seen from real seats: a verdict split across two lines (`VERDICT:` then the word on the next line), and a findings block written as a JSON array instead of the line grammar; mutation check: removing any sanitizer entry or the symlink pass fails a test | M |
-| **P2** Headless transport + codex + claude | Supervisor (process group, caps, kill), record-based done signal, codex and claude adapters with ratifiers and failure classifiers, recorded fixtures from live probes | Replay tests per adapter: success, usage_limit, auth, wrong model, empty, contaminated (tool used), root mutated; codex exec-input ratification (outside-root path, denied write, subagent spawn); claude: a measured answer to whether a settings-source set without `user` drops plugin tools while the login works, plus the refusal path for a subscription user with plugins; the claude promotion canary (outside-root read by path and through a symlink, write, command, fetch, with a planted user allow rule; every one refused or denied before execution, `--restricted` confining Glob and Grep, read paths ratified from the transcript). Pass = claude moves from `pending` to `strong`, fail = it stays `pending`; one opt-in live smoke per adapter on the planted-defect fixture (`SC_LIVE=codex,claude`) | M |
+| **P2** Headless transport + codex + claude | Supervisor (process group, caps, kill), record-based done signal, codex and claude adapters with ratifiers and failure classifiers, recorded fixtures from live probes | Replay tests per adapter: success, usage_limit, auth, wrong model, empty, contaminated (tool used), root mutated; codex exec-input ratification (outside-root path, denied write, a subagent whose own rollout fails); two replays against the recorded fixtures that must ratify, the exec-only review leg (with the full measured 14-name offer list) and a delegating leg that calls `spawn_agent`, `send_message` and `wait_agent`; claude: a measured answer to whether a settings-source set without `user` drops plugin tools while the login works, plus the refusal path for a subscription user with plugins; the claude promotion canary (outside-root read by path and through a symlink, write, command, fetch, with a planted user allow rule; every one refused or denied before execution, `--restricted` confining Glob and Grep, read paths ratified from the transcript). Pass = claude moves from `pending` to `strong`, fail = it stays `pending`; one opt-in live smoke per adapter on the planted-defect fixture (`SC_LIVE=codex,claude`) | M |
 | **P3** ACP transport + antigravity + kiro | ACP client (initialize, session/new with `mcpServers: []`, most restrictive mode via `session/set_config_option`, prompt, realpath-checked reject-all-but-read permissions, update log), agy and kiro adapters | ACP conformance tests against a fake agent, incl. one that executes a tool without asking (must ratify `contaminated`); live canary per backend: a leg asked to read a file outside the root (by path and through a symlink), write, run a command and fetch has every one denied and the root hash unchanged, run twice: clean, and with a user-side allow rule planted (must be refused at preflight or denied by the client before it executes; a run where it executed and was only caught at ratification fails the canary, and the backend stays `pending`). Only then may that backend's label move from `pending` to `strong`. For kiro, P3 also records the engine it pins (the `acp` flags on V2, or `session/set_config_option` on V3) and the record fields that must ratify. opencode's equivalent canary is part of P4's acceptance | M |
 | **P4** grok, opencode, cursor, muse | Four adapters; grok `HOME` isolation + offered-tools ratification; opencode per-leg XDG + DB; cursor versioned-binary path + hooks; muse contributor-off + export ratification | Replay tests per adapter; `doctor --deep` canary root fails any backend that loads a planted hook. Per backend where the user has auth, the same promotion canary as P3: outside-root read by path and through a symlink, write, command, fetch, with a planted user allow rule. Only a refusal or a denial before execution passes. Pass = opencode or grok moves from `pending` (grok: from `weak`) to `strong`; cursor and muse stay below `strong` in v1 whatever the result. A backend with no canary run stays non-`strong`, and the README says so: with the default `fallback` policy an untrusted-PR round then needs `strong` fallbacks or fails below quorum, visibly | L |
 | **P5** Round runner + plan/diff + plugin | Parallel launch, poll, fallback in-round, relaunch-once, quorum, `round start/wait`, `adjudicate` validator + store, Claude Code plugin (skill, commands, ADJUDICATE.md) | End-to-end with fake CLIs (stubs replaying fixtures): fallback on usage_limit, quorum 2 of 3, solo labelled, contaminated leg excluded; a real `plan` round on this plan file | L |
@@ -1266,6 +1268,7 @@ their evidence.
 | D14 | Planning probes and this plan's council run on the owner's personal accounts only. |
 | D15 | The engine shells out to the user's unmodified `claude` binary and never handles Claude credentials (Anthropic terms; 6.5). |
 | D16 | Research notes that describe the owner's private setup stay out of this public repo; this plan carries the public facts with sources. |
+| D17 | Q14 resolved (owner, 2026-11-12): a delta round that falls back to a full review keeps its own round number and owed rule, with the changed-file list in the brief; a rebase never restarts convergence. |
 
 ## 13. Open questions (the build takes the default unless overruled)
 
@@ -1284,7 +1287,7 @@ their evidence.
 | Q11 | Team review requests? `node:sqlite` vs `better-sqlite3`? | Include team requests (configurable). `node:sqlite` if it is stable enough on Node 22.13+, verified in P0; else `better-sqlite3`. |
 | Q12 | Container mode for opt-in tests? | Optional when Docker is present; host mode otherwise, with the collaborator/fork gate. |
 | Q13 | Keep identity approval (3.10) on by default? | Yes, as the private council does; `auto.identity_approval = false` turns it off. |
-| Q14 | When a delta round falls back to a full review (rebase, missing baseline, empty fold), which owed rule applies? Round 1's rule finds defects the rebase brought in but restarts convergence on every rebase. The round's own rule keeps convergence but may wave through a MEDIUM the rebase introduced. | The round's own rule (no convergence reset), with the changed-file list in the brief. |
+| Q14 (resolved: D17) | When a delta round falls back to a full review (rebase, missing baseline, empty fold), which owed rule applies? Round 1's rule finds defects the rebase brought in but restarts convergence on every rebase. The round's own rule keeps convergence but may wave through a MEDIUM the rebase introduced. | The round's own rule (no convergence reset), with the changed-file list in the brief. |
 
 ## 14. Risks and what is not yet verified
 
@@ -1323,7 +1326,7 @@ Still not verified (P2-P4 live smokes settle each):
 - That `claude --restricted` confines Glob and Grep as well as Read.
 - Whether `--setting-sources` or `--bare` drops installed-plugin tools while keeping the user's own login.
 
-## 15. Parked follow-ups (council rounds 3-4; not folded, owner decides)
+## 15. Parked follow-ups (council rounds 3-5; not folded unless marked, owner decides)
 
 These are consistency items the round 3 seats marked non-blocking. They are parked, not folded. Each is a sentence
 a builder should reconcile when building the named phase.
@@ -1351,3 +1354,5 @@ a builder should reconcile when building the named phase.
 | N19 | When a credit and a counted marker share a review id, keep the marker's `round <N>`. | 3.6 | P6 |
 | N20 | 3.6 says both "newest counted head" and "head with an event" for the baseline; use one term. | 3.6 | P6 |
 | N21 | 4.1's planted-allow-rule canary sentence should say that a run caught only at ratification fails, as P3 now does. | 4.1 | P3 |
+| N22-N25 | Folded in rev 1.5 (council round 5's follow-ups): the codex native list is declared verbatim and enforced as an allowlist, orchestration calls are allowed at use, and P2 replays the exec-only and delegating fixtures. | 4.5, 10 | P2 |
+| N26 | 3.2's verdict-line wording vs the P1 split-line test; the P1 findings fixture should also cover YAML; this section's header and intro say "round 3" for items from later rounds. | 3.2, 10, 15 | P1 |
