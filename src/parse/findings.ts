@@ -38,16 +38,27 @@ function fences(text: string): Fence[] {
  * the line grammar `F1 | HIGH | path:line | title`, a JSON array of objects, and a YAML list of the same objects
  * (id, severity, path or file, line, title). A missing or broken block never throws: it returns
  * `{findings: [], extracted_by: 'adjudicator-needed'}` with the reason, so the adjudicator extracts the findings.
- * When a reply holds several `findings` blocks, the last one is used.
+ * Several `findings` blocks are accepted only when they all parse to the same findings: a block the leg quoted
+ * (from the PR, a test, an earlier review) must never stand in for its own, so blocks that differ go to the
+ * adjudicator, never "take the last".
  */
 export function parseFindings(text: string): FindingsResult {
-  const block = fences(text)
-    .filter((f) => (f.info.split(/\s+/)[0] ?? '').toLowerCase() === 'findings')
-    .at(-1);
-  if (block === undefined) return needed('no fenced findings block');
-  if (!block.closed) return needed('the findings block is not closed');
+  const blocks = fences(text).filter((f) => (f.info.split(/\s+/)[0] ?? '').toLowerCase() === 'findings');
+  if (blocks.length === 0) return needed('no fenced findings block');
+  if (blocks.some((b) => !b.closed)) return needed('the findings block is not closed');
+  const results = blocks.map((b) => parseOne(b.body.join('\n')));
+  const first = results[0] as FindingsResult;
+  const same = (r: FindingsResult): boolean =>
+    r.extracted_by === first.extracted_by && JSON.stringify(r.findings) === JSON.stringify(first.findings);
+  if (!results.every(same)) {
+    return needed(`${blocks.length} findings blocks with different contents; the adjudicator decides which is the leg's own`);
+  }
+  return first;
+}
+
+function parseOne(body: string): FindingsResult {
   try {
-    return parseBlock(block.body.join('\n'));
+    return parseBlock(body);
   } catch (err) {
     if (err instanceof BlockError || err instanceof YamlListError) return needed(err.message);
     throw err;

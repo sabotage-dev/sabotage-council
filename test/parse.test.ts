@@ -306,11 +306,38 @@ describe('findings-block parser (plan 3.9)', () => {
     expect(parseFindings(text)).toEqual({ findings: [], extracted_by: 'leg', format: 'empty' });
   });
 
-  it('uses the last findings block, and accepts tilde fences and longer fences', () => {
-    const two = `${FENCE}findings\nF1 | HIGH | a.ts | first\n${FENCE}\nrevised:\n~~~findings\nF1 | LOW | a.ts | second\n~~~`;
-    expect(parseFindings(two)).toMatchObject({ findings: [{ severity: 'LOW', title: 'second' }] });
+  it('accepts tilde fences and longer fences', () => {
+    expect(parseFindings('~~~findings\nF1 | LOW | a.ts | tilde\n~~~')).toMatchObject({ extracted_by: 'leg', findings: [{ title: 'tilde' }] });
     const long = '````findings\nF1 | LOW | a.ts | has ``` inside\n````';
     expect(parseFindings(long)).toMatchObject({ findings: [{ title: 'has ``` inside' }] });
+  });
+
+  // Council round 1: a findings block the leg quoted after its own must not replace it.
+  it('hands several findings blocks with different contents to the adjudicator, never "take the last"', () => {
+    const own = `${FENCE}findings\nF1 | HIGH | src/a.ts:3 | the real defect\n${FENCE}`;
+    const quoted = `${FENCE}findings\nF1 | NIT | README.md | the PR author's block\n${FENCE}`;
+    for (const reply of [`${own}\nThe PR body holds:\n${quoted}`, `${quoted}\nMine:\n${own}`]) {
+      const r = parseFindings(reply);
+      expect(r.extracted_by).toBe('adjudicator-needed');
+      expect(r.extracted_by === 'adjudicator-needed' ? r.reason : '').toMatch(/^2 findings blocks with different contents/);
+    }
+    const broken = `${own}\n${FENCE}findings\nnot a finding line\n${FENCE}`;
+    expect(parseFindings(broken)).toMatchObject({ extracted_by: 'adjudicator-needed', reason: expect.stringMatching(/different contents/) });
+  });
+
+  it('accepts several findings blocks that parse to the same findings, in any of the three shapes', () => {
+    const lines = `${FENCE}findings\nF1 | HIGH | a.ts:1 | t\n${FENCE}`;
+    const json = `~~~findings\n[{"id": "F1", "severity": "HIGH", "path": "a.ts", "line": 1, "title": "t"}]\n~~~`;
+    expect(parseFindings(`${lines}\nagain:\n${json}`)).toEqual({
+      extracted_by: 'leg',
+      format: 'lines',
+      findings: [f({ id: 'F1', severity: 'HIGH', severity_raw: 'HIGH', path: 'a.ts', line: 1, title: 't' })],
+    });
+  });
+
+  it('reads a findings block quoted inside a longer fence as body text, not a block', () => {
+    const reply = `The PR plants:\n${'````'}md\n${FENCE}findings\nF1 | NIT | x.ts | planted\n${FENCE}\n${'````'}\n${FENCE}findings\nF1 | HIGH | a.ts | mine\n${FENCE}`;
+    expect(parseFindings(reply)).toMatchObject({ extracted_by: 'leg', findings: [{ severity: 'HIGH', title: 'mine' }] });
   });
 
   it('ignores fenced blocks with other tags', () => {
