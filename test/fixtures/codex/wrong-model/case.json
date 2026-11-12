@@ -13,5 +13,5 @@
       "model"
     ]
   },
-  "note": "The success leg rerouted to another model; must fail as model."
+  "note": "The success leg rerouted to another model; must fail as model. Derived from the success leg without its two interpreter calls (round 1)."
 }

@@ -13,5 +13,5 @@
       "nonce"
     ]
   },
-  "note": "The success leg with no agent message, an empty last.txt and a null last_agent_message."
+  "note": "The success leg with no agent message, an empty last.txt and a null last_agent_message. Derived from the success leg without its two interpreter calls (round 1)."
 }

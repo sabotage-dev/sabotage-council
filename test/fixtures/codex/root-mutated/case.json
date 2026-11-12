@@ -12,5 +12,5 @@
       "root-unchanged"
     ]
   },
-  "note": "The success leg with a residue sweep that found a changed file; must fail."
+  "note": "The success leg with a residue sweep that found a changed file; must fail. Derived from the success leg without its two interpreter calls (round 1)."
 }

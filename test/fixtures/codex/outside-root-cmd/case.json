@@ -12,5 +12,5 @@
       "commands"
     ]
   },
-  "note": "The success leg with an absolute path outside the root in one cmd; must fail."
+  "note": "The success leg with an absolute path outside the root in one cmd; must fail. Derived from the success leg without its two interpreter calls (round 1)."
 }

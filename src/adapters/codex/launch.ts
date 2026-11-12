@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { READ_COMMAND_NAMES, READ_COMMANDS } from './cmd-paths.js';
 
 /*
  * The codex leg's command line (plan 4.2, brief P2 item 3). The prompt goes on stdin with `-` (a prompt argument
@@ -7,15 +8,27 @@ import { join } from 'node:path';
  * `--ignore-user-config` (together they fail config load, measured), and never copies `auth.json`.
  */
 
+/** The refused options of each read command, as the preface states them. */
+const REFUSALS = Object.entries(READ_COMMANDS)
+  .filter(([, rule]) => rule.refused.length > 0 || rule.also !== undefined)
+  .map(([name, rule]) => `${name} ${[...rule.refused, ...(rule.also === undefined ? [] : [rule.also])].join(', ')}`)
+  .join('; ');
+
 /**
  * Codex reads files only through its `exec` command channel, so the brief's "run no commands" rule alone leaves a codex
  * leg no way to read the tree (measured in the P2 live smoke: the leg introspected its tools instead of reviewing and was
  * contaminated). This preface goes in front of the brief on the codex leg's stdin and says which commands are reads.
+ * It is built from READ_COMMANDS, the same list the ratifier enforces (cmd-paths.ts), so the two cannot drift.
  */
 export const CODEX_READ_PREFACE = [
   'How to read files in this review (codex seat):',
-  '- Read the tree only through exec_command, using read-only commands: rg, sed -n, nl, cat, head, tail, wc, ls, find.',
+  `- Read the tree only through exec_command, with these read-only commands: ${READ_COMMAND_NAMES.join(', ')}.`,
+  '  Join them with |, &&, || or ; if you like; 2>/dev/null is fine.',
+  `- Refused, and the review then fails: ${REFUSALS}.`,
+  '- Any other command fails the review too: no interpreters, git, cd, env, xargs, awk, if or for, no VAR=value prefix,',
+  '  no ~ or $ anywhere in a command, no heredoc or < input, no command substitution, no redirect except to /dev/null.',
   '- Every path you read must be inside the current directory.',
+  '- In the exec script, call tools.exec_command directly with a literal cmd string. Do not build commands at run time.',
   '- The brief says "run no commands": for you that means no builds, installs, tests, scripts, network calls, writes,',
   '  or any command other than the reads above. Do not call other tools.',
   '',

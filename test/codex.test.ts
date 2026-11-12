@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -11,7 +11,10 @@ import {
   createCodexAdapter,
   judgePromptInput,
   ratifyCodexLeg,
+  READ_COMMAND_NAMES,
+  READ_COMMANDS,
   scanExecInput,
+  sedScriptProblem,
   type CodexRatifyInput,
 } from '../src/adapters/codex/index.js';
 import { CODEX_ENV_ALLOW, CODEX_READ_PREFACE } from '../src/adapters/codex/launch.js';
@@ -82,6 +85,7 @@ describe('codex replay: every recorded and synthetic case', () => {
         'delegating',
         'empty',
         'exec-only-offer14',
+        'interpreter-cmd',
         'nested-introspection',
         'outside-root-cmd',
         'root-mutated',
@@ -253,6 +257,22 @@ describe('codex ratification details', () => {
   ])('fails on %s', (_what, check, change) => {
     const r = ratifyCodexLeg(inputFor('success', change).input);
     expect(failedNames(r)).toEqual([check]);
+  });
+
+  const commandCwd = (cwd: (root: string) => string | null) =>
+    legEdit((row) => {
+      const item = ((row['payload'] as Record<string, unknown>)['item'] ?? {}) as Record<string, unknown>;
+      if (item['type'] === 'CommandExecution') item['cwd'] = cwd(String(item['cwd']).replace(/^file:\/\//, ''));
+    });
+
+  it.each([
+    ['outside the root', (root: string) => `file://${root}/../elsewhere`],
+    ['in a directory below the root', (root: string) => `file://${root}/calc`],
+    ['with no cwd', () => null],
+  ])('fails a CommandExecution that ran %s (round 1)', (_what, cwd) => {
+    const r = ratifyCodexLeg(inputFor('success', commandCwd(cwd)).input);
+    expect(failedNames(r)).toEqual(['commands']);
+    expect(r.checks.find((c) => c.name === 'commands')?.detail).toContain('not the root');
   });
 
   it('fails a rollout with a malformed line before its end', () => {
@@ -478,6 +498,8 @@ describe('codex nested exec tools (N18)', () => {
     ['an undeclared nested tool', 'await tools.web_fetch({url: "https://example.com"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'undeclared nested tool web_fetch'],
     ['view_image outside the root', 'await tools.view_image({path: "/etc/x.png"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'view_image path /etc/x.png'],
     ['view_image hidden in a template expression', 'text(`${await tools.view_image({path: "/etc/hosts"})}`); text(await tools.exec_command({cmd: "__CMD__"}));', 'template literal with ${'],
+    ['an interpreter that builds an outside path', 'text(await tools.exec_command({cmd: "python3 -B -c \'print(open(\\"/\\"+\\"etc/hosts\\").read())\'"})); text(await tools.exec_command({cmd: "__CMD__"}));', 'python3 is not one of the read commands'],
+    ['a read with a refused option', 'text(await tools.exec_command({cmd: "__CMD__; rg --pre cat x calc"}));', 'rg --pre is refused'],
     ['view_image through a spread copy of tools', 'const t = {...tools}; await t.view_image({path: "/etc/hosts"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'reached as a property'],
     ['an escalation request', 'text(await tools.exec_command({cmd: "__CMD__", sandbox_permissions: "require_escalated", justification: "x"}));', 'require_escalated'],
     ['a prefix rule', 'text(await tools.exec_command({cmd: "__CMD__", prefix_rule: ["ls"]}));', 'prefix_rule'],
@@ -497,7 +519,7 @@ describe('codex nested exec tools (N18)', () => {
   });
 });
 
-describe('codex cmd paths (N17)', () => {
+describe('codex cmd paths (N17) and the read allowlist (round 1)', () => {
   const root = '/private/tmp/sc-root';
   const aliases = rootAliases(root);
   const kinds = (cmd: string): string[] => checkCommandPaths(cmd, root, aliases).map((p) => p.kind);
@@ -505,18 +527,29 @@ describe('codex cmd paths (N17)', () => {
   it.each([
     ['pwd; rg --files -g AGENTS.md -g \'calc/**\' -g \'!**/node_modules/**\''],
     ['nl -ba calc/rangesum.py; wc -l notes/b.txt 2>/dev/null'],
-    ['PYTHONDONTWRITEBYTECODE=1 python3 -B -c \'print(1)\''],
     ['cat /private/tmp/sc-root/calc/x.py /tmp/sc-root/calc/y.py'],
-    ['/usr/bin/env python3 -V'],
-    ['awk \'{print $1}\' calc/a.txt'],
-    ['cd calc && nl -ba rangesum.py'],
-    ['git log a..b'],
     ['ls calc/*.py'],
+    ['ls -a; find . -name AGENTS.md; cat PR.diff'],
+    ["nl -ba docs/PLAN.md | sed -n '241,490p'"],
+    ["rg -n -- '--restricted|symlink|^#{1,3} ' docs && head -n 5 a.md || tail -n 2 b.md"],
+    ["rg -n 'round 3|^\\| [1-5]' PREVIOUS.md; wc -l a.md b.md"],
+    ['find . -type f -name "*.py" -newer calc/x.py'],
+    ["sed -n '1,20p;30p' a.md"],
+    ["sed -E -e 's/a+/b/g' -e '/x/d' a.md"],
+    ["sed -n '/^## Plan/,+5p' a.md"],
+    ['diff -u a.md b.md >/dev/null 2>&1'],
+    ['sort a.txt | uniq -c | sort -rn -k 1 | head'],
+    ['cut -d, -f1 a.csv | tr a-z A-Z'],
+    ['stat calc && file calc/x.py'],
+    ['grep -rn x calc 2>/dev/null'],
+    ['rg -nA3 -g "*.ts" x src'],
+    ['pwd\nls -la\n\nnl -ba a.md'],
   ])('allows %s', (cmd) => {
-    expect(kinds(cmd)).toEqual([]);
+    expect(checkCommandPaths(cmd, root, aliases)).toEqual([]);
   });
 
   it.each([
+    // Paths and expansions (N17).
     ['cat /etc/hosts', 'outside-root'],
     ['cat ../secret.txt', 'outside-root'],
     ['nl -ba calc/../../x', 'outside-root'],
@@ -528,18 +561,140 @@ describe('codex cmd paths (N17)', () => {
     ['ls /etc/*', 'outside-root'],
     ['ls ../*', 'outside-root'],
     ['cat {../x,y}', 'expansion'],
-    ['cd .. && cat x', 'outside-root'],
-    ['cd calc && cat ../../x', 'cd'],
-    ['cd', 'cd'],
-    ['cd ~', 'home'],
-    ['popd', 'cd'],
-    ['python3 -c \'open("/Users/someone/.netrc")\'', 'outside-root'],
     ['rg --files --hidden --glob=/etc/**', 'outside-root'],
     ["cat 'unbalanced", 'untokenizable'],
-    ["echo $'\\x41'", 'untokenizable'],
+    ["cat $'\\x41'", 'untokenizable'],
+    ['cat x\r', 'untokenizable'],
     ['cat =ls', 'expansion'],
-  ])('fails %s (%s)', (cmd, kind) => {
+    // Round 1 (2/3): reads a command line does not show.
+    ['python3 -B -c \'print(open("/"+"etc/hosts").read())\'', 'command'],
+    ["node -e \"require('fs').readFileSync('/'+'etc/hosts')\"", 'command'],
+    ["bash -c 'cat ~/.ssh/id_rsa'", 'command'],
+    ["bash -c 'cat ~/.ssh/id_rsa'", 'home'],
+    ['cat "\\$HOME/.ssh/id_rsa"', 'expansion'],
+    ["cat '~/.ssh/id_rsa'", 'home'],
+    ['cat a~b', 'home'],
+    ['python3 -c \'open("/Users/someone/.netrc")\'', 'outside-root'],
+    // Everything that is not a read command.
+    ['PYTHONDONTWRITEBYTECODE=1 python -m pytest -q calc', 'command'],
+    ['PAGER=cat cat x', 'command'],
+    ['/usr/bin/env python3 -V', 'command'],
+    ['env cat x', 'command'],
+    ['awk \'{print}\' calc/a.txt', 'command'],
+    ['git log a..b', 'command'],
+    ['xargs cat', 'command'],
+    ['perl -e 1', 'command'],
+    ['cd calc && nl -ba rangesum.py', 'command'],
+    ['cd ..', 'command'],
+    ['cd ~', 'home'],
+    ['if [ -f BRIEF.md ]; then cat BRIEF.md; fi', 'command'],
+    ['echo canary', 'command'],
+    ['/bin/cat x', 'command'],
+    ['constructor x', 'command'],
+    // Redirects and shell syntax.
+    ['cat x > out.txt', 'redirect'],
+    ['cat x 2>err.log', 'redirect'],
+    ['cat x >> /dev/null2', 'redirect'],
+    ['cat < /etc/hosts', 'redirect'],
+    ['cat <<EOF\nx\nEOF', 'redirect'],
+    ['cat <<< x', 'redirect'],
+    ['> /dev/null', 'syntax'],
+    ['(cat x)', 'syntax'],
+    ['cat x &', 'syntax'],
+    ['diff <(cat a) b', 'syntax'],
+    ['ls *(e:cat:)', 'syntax'],
+    // Refused options.
+    ['sed -i s/a/b/ x', 'option'],
+    ['sed -ni s/a/b/ x', 'option'],
+    ['sed --in-place=.bak s/a/b/ x', 'option'],
+    ['sed -f script.sed x', 'option'],
+    ["sed -n '1w out.txt' x", 'option'],
+    ["sed 's/a/b/w out.txt' x", 'option'],
+    ["sed 's/a/b/e' x", 'option'],
+    ["sed '1e id' x", 'option'],
+    ["sed 'r /etc/hosts' x", 'option'],
+    ['sed R x', 'option'],
+    ['sed W x', 'option'],
+    ["sed -n 's/[/]/x/w out' x", 'option'],
+    ["sed -e p -e 'w out' x", 'option'],
+    ['sed', 'option'],
+    ["sed -n '/x/p' /etc/hosts", 'outside-root'],
+    ["sed -e '$p' x", 'expansion'],
+    ['rg --pre cat x', 'option'],
+    ['rg --pre=cat x', 'option'],
+    ["rg --pre-glob '*' x", 'option'],
+    ['rg -z x', 'option'],
+    ['rg -nz x', 'option'],
+    ['rg --search-zip x', 'option'],
+    ['rg --hostname-bin=cat x', 'option'],
+    ['find . -exec cat {} +', 'option'],
+    ['find . -execdir cat {} +', 'option'],
+    ['find . -ok cat {} ;', 'option'],
+    ['find . -okdir cat {} ;', 'option'],
+    ['find . -delete', 'option'],
+    ['find . -fprint out', 'option'],
+    ['find . -fls out', 'option'],
+    ['sort -o out a', 'option'],
+    ['sort --compress-program=cat a', 'option'],
+    ['sort --files0-from=list', 'option'],
+    ['wc --files0-from=list', 'option'],
+    ['uniq a out', 'option'],
+    ['file -f list', 'option'],
+  ])('fails %j (%s)', (cmd, kind) => {
     expect(kinds(cmd)).toContain(kind);
+  });
+
+  it('refuses every refused option the preface names, and passes every read command alone (no drift)', () => {
+    for (const [name, rule] of Object.entries(READ_COMMANDS)) {
+      const alone = name === 'sed' ? 'sed -n 1p calc' : `${name} calc`;
+      expect(checkCommandPaths(alone, root, aliases), alone).toEqual([]);
+      for (const option of rule.refused) {
+        const cmd = name === 'find' ? `find . ${option} x` : `${name} ${option} x calc`;
+        expect(kinds(cmd), cmd).toContain('option');
+        expect(CODEX_READ_PREFACE).toContain(option);
+      }
+      expect(CODEX_READ_PREFACE).toContain(name);
+      if (rule.also !== undefined) expect(CODEX_READ_PREFACE).toContain(rule.also);
+    }
+    expect(READ_COMMAND_NAMES).toEqual(['rg', 'grep', 'sed', 'nl', 'cat', 'head', 'tail', 'wc', 'ls', 'pwd', 'find', 'diff', 'sort', 'uniq', 'cut', 'tr', 'stat', 'file']);
+  });
+
+  it.each([
+    ['1,200p', null],
+    ['$p', null],
+    ['/a/,/b/{p;n}', null],
+    ['s/x/y/gp;y/ab/ba/', null],
+    ['10q;l 5;=', null],
+    ['1w out', 'the w command'],
+    ['s/a/b/w out', 's///w flag'],
+    ['s/a/b/e', 's///e flag'],
+    ['e date', 'the e command'],
+    ['a text', 'the a command'],
+    ['b end', 'the b command'],
+    ['\\|a|p', 'custom delimiter'],
+    ['/[w]/p', 'bracket expression'],
+    ['{p', 'unclosed {'],
+    ['1,', 'a range with no end'],
+    ['p x', 'text after the p command'],
+  ])('reads the sed script %j as %j', (script, problem) => {
+    const got = sedScriptProblem(script);
+    if (problem === null) expect(got).toBeNull();
+    else expect(got).toContain(problem);
+  });
+
+  it('realpaths every existing token: a link in the root that points out fails, a file in the root passes', () => {
+    const real = scratch('sc-cmd-root-');
+    const outside = scratch('sc-cmd-outside-');
+    writeFileSync(join(outside, 'secret.txt'), 'x');
+    mkdirSync(join(real, 'calc'));
+    writeFileSync(join(real, 'calc', 'x.py'), 'x');
+    symlinkSync(join(outside, 'secret.txt'), join(real, 'link.txt'));
+    symlinkSync(outside, join(real, 'out-dir'));
+    const realAliases = rootAliases(real);
+    expect(checkCommandPaths('cat calc/x.py; ls calc', real, realAliases)).toEqual([]);
+    expect(checkCommandPaths('cat link.txt', real, realAliases).map((p) => p.kind)).toEqual(['outside-root']);
+    expect(checkCommandPaths('rg -n x out-dir', real, realAliases).map((p) => p.kind)).toEqual(['outside-root']);
+    expect(checkCommandPaths(`cat ${join(real, 'link.txt')}`, real, realAliases).map((p) => p.kind)).toEqual(['outside-root']);
   });
 });
 

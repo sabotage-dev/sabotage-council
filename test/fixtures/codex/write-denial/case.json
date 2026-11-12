@@ -9,8 +9,9 @@
     "status": "CONTAMINATED",
     "failureClass": "contaminated",
     "failed": [
+      "commands",
       "write-denial"
     ]
   },
-  "note": "Recorded canary leg (probe): the write was denied inside a batched exec script (N15)."
+  "note": "Recorded canary leg (probe): the write was denied inside a batched exec script (N15). Since round 1 the commands themselves fail too: a redirect to a file, echo and curl are not reads."
 }

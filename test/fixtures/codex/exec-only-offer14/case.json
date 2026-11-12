@@ -10,5 +10,5 @@
     "failureClass": null,
     "failed": []
   },
-  "note": "The success leg with all 14 declared names offered in the object form; must ratify."
+  "note": "The success leg with all 14 declared names offered in the object form; must ratify. Derived from the success leg without its two interpreter calls (round 1)."
 }

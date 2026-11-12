@@ -12,5 +12,5 @@
       "offered"
     ]
   },
-  "note": "The success leg with an MCP tool in the offer; must fail."
+  "note": "The success leg with an MCP tool in the offer; must fail. Derived from the success leg without its two interpreter calls (round 1)."
 }

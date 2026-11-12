@@ -345,7 +345,11 @@ function ratifyThread(t: ThreadInput, input: CodexRatifyInput, decl: CodexVersio
     .map((l) => (isObject(l.payload['item']) ? l.payload['item'] : {}))
     .filter((item) => str(item['type']) === 'CommandExecution');
   const unparsed: string[] = [];
+  const badCmdCwd: string[] = [];
   for (const item of executions) {
+    // Every command runs in the root itself (strip file://); a workdir elsewhere in the root fails too.
+    const itemCwd = str(item['cwd']);
+    if (itemCwd === null || !sameDir(itemCwd, aliases)) badCmdCwd.push(String(itemCwd));
     const argv = Array.isArray(item['command']) ? item['command'].filter((a): a is string => typeof a === 'string') : [];
     // The wrapper is `[shell, -lc, inner]`; only the inner command is a command string (N16).
     const inner = argv.length === 3 && /^-l?c$/.test(argv[1] ?? '') ? (argv[2] ?? '') : null;
@@ -359,10 +363,15 @@ function ratifyThread(t: ThreadInput, input: CodexRatifyInput, decl: CodexVersio
   check(
     checks,
     'commands',
-    scanProblems.length === 0 && unparsed.length === 0 && pathProblems.length === 0,
-    scanProblems.length + unparsed.length + pathProblems.length === 0
-      ? `${parsedCmds.size} command(s) parsed, no path outside the root; nested tools used: ${[...new Set(nestedUsed)].sort().join(', ') || 'none'}`
-      : [...scanProblems.map((s) => `exec script: ${s}`), ...unparsed.map((u) => `ran but not in any exec script: ${u}`), ...pathProblems].join('; '),
+    scanProblems.length === 0 && unparsed.length === 0 && pathProblems.length === 0 && badCmdCwd.length === 0,
+    scanProblems.length + unparsed.length + pathProblems.length + badCmdCwd.length === 0
+      ? `${parsedCmds.size} command(s) parsed, every one a read inside the root; nested tools used: ${[...new Set(nestedUsed)].sort().join(', ') || 'none'}`
+      : [
+          ...scanProblems.map((s) => `exec script: ${s}`),
+          ...unparsed.map((u) => `ran but not in any exec script: ${u}`),
+          ...pathProblems,
+          ...badCmdCwd.map((c) => `a command ran in ${c}, not the root`),
+        ].join('; '),
   );
 
   // Write denials appear only in the exec outputs (N15), and in command items when they show at all.
