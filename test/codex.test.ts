@@ -339,6 +339,14 @@ describe('codex ratification details', () => {
       const r = run(item);
       expect(failedNames(r)).toContain('records');
       expect(r.checks.find((c) => c.name === 'records')?.detail).toContain(detail);
+      // Round 2: a records failure contaminates the leg; it is never a setup failure.
+      expect({ status: r.status, failureClass: r.failureClass }).toEqual({ status: 'CONTAMINATED', failureClass: 'contaminated' });
+    });
+
+    it('classes an outside image read alone as CONTAMINATED, not a setup failure (round 2)', () => {
+      const r = run(() => ({ type: 'ImageView', id: 'exec-img-4', path: 'file:///etc/hosts' }));
+      expect(failedNames(r)).toEqual(['records']);
+      expect(r).toMatchObject({ status: 'CONTAMINATED', failureClass: 'contaminated', ok: false });
     });
 
     it('passes the runtime\'s own MCP resource list', () => {

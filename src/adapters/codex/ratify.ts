@@ -514,6 +514,8 @@ const CLASS_OF_CHECK: Readonly<Record<string, FailureClass>> = {
   offered: 'contaminated',
   calls: 'contaminated',
   commands: 'contaminated',
+  // An undeclared nested call, an image read outside the root or a foreign MCP call: never relaunched in this root.
+  records: 'contaminated',
   'write-denial': 'contaminated',
   targets: 'contaminated',
   children: 'contaminated',
