@@ -310,6 +310,24 @@ describe('store: schema', () => {
     expect(() => insert(store, 'rounds', { ...ROWS[2]![1], target_id: 99 })).toThrow(/FOREIGN KEY constraint failed/);
   });
 
+  it('rejects attribution rows that point at a finding id from another round', () => {
+    const store = openTemp();
+    for (const [table, row] of ROWS.slice(0, 4)) insert(store, table, row);
+    insert(store, 'rounds', { ...ROWS[2]![1], id: 2, round_no: 3 });
+    insert(store, 'findings', { round_id: 2, id: 'C9', title: 'only in round 2', outcome: 'owed' });
+    const legFinding = { leg_id: 1, severity: 'HIGH', title: 't', extracted_by: 'leg' };
+    expect(() =>
+      insert(store, 'leg_findings', { ...legFinding, id: 90, local_id: 'F90', mapped_round_id: 1, mapped_finding_id: 'C9' }),
+    ).toThrow(/FOREIGN KEY constraint failed/);
+    expect(() =>
+      insert(store, 'leg_findings', { ...legFinding, id: 91, local_id: 'F91', mapped_round_id: 2, mapped_finding_id: 'C9' }),
+    ).not.toThrow();
+    expect(() => insert(store, 'finding_sources', { round_id: 1, finding_id: 'C9', leg_finding_id: 91 })).toThrow(
+      /FOREIGN KEY constraint failed/,
+    );
+    expect(() => insert(store, 'finding_sources', { round_id: 2, finding_id: 'C9', leg_finding_id: 91 })).not.toThrow();
+  });
+
   it('enforces the closed vocabularies and JSON columns', () => {
     const store = openTemp();
     for (const [table, row] of ROWS.slice(0, 3)) insert(store, table, row);

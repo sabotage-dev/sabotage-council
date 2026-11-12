@@ -59,11 +59,14 @@ interface OccupantKey {
 }
 
 /**
- * Two configs name the same occupant when backend, model and effort match. Transport is a property of the
- * backend's adapter (plan 4.1), so it follows from the backend. An unset effort is not the same as a set one.
+ * Two configs name the same occupant when backend and model match and their efforts can be the same. Transport is
+ * a property of the backend's adapter (plan 4.1), so it follows from the backend. An unset effort means the
+ * adapter's default, which may equal the other side's effort, so it matches any effort: a fallback that differs
+ * only by leaving effort unset could run the very occupant that just failed.
  */
 export function sameOccupant(a: OccupantKey, b: OccupantKey): boolean {
-  return a.backend === b.backend && a.model === b.model && (a.effort ?? null) === (b.effort ?? null);
+  if (a.backend !== b.backend || a.model !== b.model) return false;
+  return a.effort === undefined || b.effort === undefined || a.effort === b.effort;
 }
 
 /** A fallback must be a different occupant from its seat's primary. */

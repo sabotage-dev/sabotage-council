@@ -174,10 +174,15 @@ describe('config: fallbacks', () => {
       '{ backend = "kiro", model = "gpt-6.1-sol", effort = "high", on = ["auth"] }',
       '{ backend = "codex", model = "gpt-5.6-sol", effort = "high", on = ["auth"] }',
       '{ backend = "codex", model = "gpt-6.1-sol", effort = "medium", on = ["auth"] }',
-      '{ backend = "codex", model = "gpt-6.1-sol", on = ["auth"] }',
     ]) {
       okOf(await parseConfigText(toml(seat({ ...A, fallback }), seat(B), seat(C))));
     }
+  });
+
+  it('rejects a fallback that differs from its primary only by leaving effort unset', async () => {
+    const fallback = '{ backend = "codex", model = "gpt-6.1-sol", on = ["auth"] }';
+    const errors = errorsOf(await parseConfigText(toml(seat({ ...A, fallback }), seat(B), seat(C))));
+    expect(errors.map((e) => e.path)).toEqual(['seats[0].fallback']);
   });
 
   it('rejects an unknown failure class and an empty on list', async () => {
