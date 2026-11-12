@@ -828,6 +828,8 @@ describe('codex cmd paths (N17) and the read allowlist (round 1)', () => {
     ['rg --file=/etc/hosts README.md', 'outside-root'],
     ['rg --file /etc/hosts README.md', 'outside-root'],
     ['rg -f../x README.md', 'outside-root'],
+    ['rg --file=../x README.md', 'outside-root'],
+    ['grep --file ../x README.md', 'outside-root'],
     ['grep -f/etc/hosts README.md', 'outside-root'],
     ['grep -vf/etc/hosts README.md', 'outside-root'],
     ['grep --file=/etc/hosts README.md', 'outside-root'],
