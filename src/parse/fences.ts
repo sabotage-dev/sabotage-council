@@ -12,8 +12,10 @@ export interface FenceScan {
   inFence: boolean[];
 }
 
-const OPEN = /^ {0,3}(`{3,}|~{3,})\s*(.*)$/;
-const CLOSE = /^ {0,3}(`{3,}|~{3,})\s*$/;
+// After the marker CommonMark allows only spaces and tabs, not `\s`: U+00A0 and the other Unicode spaces are text,
+// so a line of three backticks and U+00A0 is body text, never a closing fence.
+const OPEN = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
+const CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 /**
  * Finds the fenced blocks of a reply (CommonMark backtick and tilde fences). The findings parser and the verdict
