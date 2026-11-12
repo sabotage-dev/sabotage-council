@@ -36,13 +36,49 @@ interface Line {
   text: string;
 }
 
-const KEY = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:(?:\s+(.*))?$/;
+const isKeyStart = (c: string): boolean => (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c === '_';
+const isKeyChar = (c: string): boolean => isKeyStart(c) || (c >= '0' && c <= '9') || c === '-';
+const LINE_SEPARATOR = /[\n\r\u2028\u2029]/;
+
+/**
+ * Splits `key: value` in one linear pass: a key of `[A-Za-z_][A-Za-z0-9_-]*`, optional spaces, `:`, then nothing
+ * or spaces and the value. The regex it replaces, `/^(key)\s*:(?:\s+(.*))?$/`, backtracked quadratically on a long
+ * space run followed by text and a line separator (council round 2). A value holding a line separator is still
+ * refused, as that regex refused it.
+ */
+function splitKey(rest: string): { key: string; value: string } | null {
+  if (!isKeyStart(rest[0] ?? '')) return null;
+  let i = 1;
+  while (i < rest.length && isKeyChar(rest[i] as string)) i++;
+  const key = rest.slice(0, i);
+  while (i < rest.length && isSpace(rest[i] as string)) i++;
+  if (rest[i] !== ':') return null;
+  i++;
+  if (i < rest.length && !isSpace(rest[i] as string)) return null;
+  while (i < rest.length && isSpace(rest[i] as string)) i++;
+  const value = rest.slice(i);
+  return LINE_SEPARATOR.test(value) ? null : { key, value };
+}
+
+/**
+ * For each line index, the index of the first line at or after it that holds text other than a comment (-1 if
+ * none). Computed once, backwards, so an empty value's lookahead never copies the remaining lines (council round 2).
+ */
+function nextSignificant(lines: readonly Line[]): number[] {
+  const out = new Array<number>(lines.length + 1).fill(-1);
+  for (let j = lines.length - 1; j >= 0; j--) {
+    const text = (lines[j] as Line).text;
+    out[j] = text !== '' && !text.startsWith('#') ? j : (out[j + 1] as number);
+  }
+  return out;
+}
 
 export function parseYamlList(source: string): YamlRecord[] {
   const lines: Line[] = source.split(/\r\n|\n|\r/).map((raw, i) => {
     const indent = /^ */.exec(raw)?.[0].length ?? 0;
     return { no: i + 1, indent, text: raw.slice(indent).trimEnd() };
   });
+  const significant = nextSignificant(lines);
   const items: YamlRecord[] = [];
   let current: YamlRecord | null = null;
   let keyIndent = -1;
@@ -68,11 +104,10 @@ export function parseYamlList(source: string): YamlRecord[] {
       if (line.indent !== keyIndent) throw new YamlListError('unexpected indentation (nested values are not supported)', line.no);
       rest = line.text;
     }
-    const kv = KEY.exec(rest);
-    if (!kv?.[1]) throw new YamlListError(`expected "key: value", got "${rest}"`, line.no);
-    const key = kv[1];
+    const kv = splitKey(rest);
+    if (kv === null) throw new YamlListError(`expected "key: value", got "${rest.slice(0, 200)}"`, line.no);
+    const { key, value } = kv;
     if (Object.hasOwn(current, key)) throw new YamlListError(`duplicate key "${key}"`, line.no);
-    const value = kv[2] ?? '';
     if (/^[|>][+-]?$/.test(value)) {
       const block: string[] = [];
       let blockIndent = -1;
@@ -89,7 +124,8 @@ export function parseYamlList(source: string): YamlRecord[] {
     }
     if (value === '') {
       // An empty value followed by deeper lines would be a nested structure.
-      const next = lines.slice(i).find((l) => l.text !== '' && !l.text.startsWith('#'));
+      const at = significant[i] ?? -1;
+      const next = at < 0 ? undefined : lines[at];
       if (next !== undefined && next.indent > keyIndent && !next.text.startsWith('- ')) {
         throw new YamlListError(`nested values are not supported (key "${key}")`, next.no);
       }
@@ -145,8 +181,8 @@ function scalar(value: string, no: number): YamlScalar {
 
 /**
  * A plain scalar without its trailing ` # comment`: cut at the first `#` that follows whitespace. The same cut as
- * `/\s+#.*$/` (a value never holds a line separator: KEY refuses one), in one linear pass instead of a regex that
- * backtracks quadratically on a long run of spaces (council round 1).
+ * `/\s+#.*$/` (a value never holds a line separator: splitKey refuses one), in one linear pass instead of a regex
+ * that backtracks quadratically on a long run of spaces (council round 1).
  */
 function withoutComment(value: string): string {
   for (let j = 1; j < value.length; j++) {

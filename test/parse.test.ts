@@ -8,6 +8,7 @@ import {
   parseLocation,
   parseVerdict,
   parseYamlList,
+  YamlListError,
   type LegFinding,
 } from '../src/parse/index.js';
 
@@ -487,6 +488,36 @@ describe('hostile input stays linear', () => {
     ['a findings line whose location ends in a run of ")"', () => parseFindings(`${FENCE}findings\nF1 | HIGH | a.ts${')'.repeat(RUN)}x | t\n${FENCE}`)],
   ])(`parses %s of ${RUN} characters in under ${LIMIT_MS} ms`, (_name, fn) => {
     expect(timed(fn).ms).toBeLessThan(LIMIT_MS);
+  });
+
+  // Council round 2. The old key regex took about 2.5 s on this line; the old empty-value lookahead copied the
+  // remaining lines per key (about 1 s for 50,000 keys here; 20,000 took 156 ms, too close to the bound to show).
+  it(`refuses "key:" + 50,000 spaces + text + U+2028 in under ${LIMIT_MS} ms`, () => {
+    for (const sep of ['\u2028', '\u2029']) {
+      const { value, ms } = timed(() => {
+        try {
+          return parseYamlList(`- id:${' '.repeat(50_000)}a${sep}b`);
+        } catch (err) {
+          return err;
+        }
+      });
+      expect(value).toBeInstanceOf(YamlListError);
+      expect(ms).toBeLessThan(LIMIT_MS);
+    }
+  });
+
+  it(`parses 50,000 "- k:" items with empty values in under ${LIMIT_MS} ms`, () => {
+    const { value, ms } = timed(() => parseYamlList(Array.from({ length: 50_000 }, () => '- k:').join('\n')));
+    expect(value).toHaveLength(50_000);
+    expect(value[49_999]).toEqual({ k: null });
+    expect(ms).toBeLessThan(LIMIT_MS);
+  });
+
+  it('keeps the old key grammar', () => {
+    expect(parseYamlList('- a_b-1 : x\n  k:\n  t:\u00a0  y # c')).toEqual([{ 'a_b-1': 'x', k: null, t: 'y' }]);
+    for (const bad of ['- k:x', '- 1k: x', '- k x', '- k: a\u2028b', '- : x']) expect(() => parseYamlList(bad)).toThrow(/expected "key: value"/);
+    expect(() => parseYamlList('- k:\n    deeper: x')).toThrow(/nested values/);
+    expect(() => parseYamlList('- k:\n  # note\n    - x')).toThrow(/nested lists/);
   });
 
   it('keeps the same results as the old patterns', () => {
