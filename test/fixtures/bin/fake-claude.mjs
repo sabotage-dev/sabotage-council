@@ -34,6 +34,7 @@ if (args[0] === '--version') {
   }
   mkdirSync(join(projects, '-sc-root'), { recursive: true });
   writeFileSync(join(projects, '-sc-root', `${session}.jsonl`), subst(readFileSync(join(config.fixture, 'projects', '-sc-root', `${FIXTURE_SESSION}.jsonl`), 'utf8')));
+  if (config.trapTerm) process.on('SIGTERM', () => writeFileSync(join(home, 'got-sigterm'), 'SIGTERM'));
   if (config.hangAfterInit) {
     process.stdout.write(`${lines[0]}\n`);
     setInterval(() => {}, 1000);

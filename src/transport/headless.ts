@@ -64,8 +64,11 @@ export interface HeadlessProcess {
   readonly exited: Promise<HeadlessExit>;
   running(): boolean;
   recordDone(): boolean;
-  /** Kills the process group (SIGTERM, then SIGKILL) and resolves with the exit record. */
-  cancel(): Promise<HeadlessExit>;
+  /**
+   * Kills the process group (SIGTERM, then SIGKILL after the grace) and resolves with the exit record. With
+   * `hard`, SIGKILL goes to the group at once, with no SIGTERM and no grace.
+   */
+  cancel(options?: { hard?: boolean }): Promise<HeadlessExit>;
 }
 
 /** Signals every process in the group. Returns false when the group no longer exists. */
@@ -102,6 +105,14 @@ export async function terminateGroup(pgid: number, graceMs: number): Promise<boo
     if (!groupAlive(pgid)) return false;
   }
   signalGroup(pgid, 'SIGKILL');
+  const hard = Date.now() + 2000;
+  while (Date.now() < hard && groupAlive(pgid)) await sleep(25);
+  return true;
+}
+
+/** SIGKILL to the group at once, no SIGTERM. Resolves once the group is gone (bounded). Returns whether it was alive. */
+export async function killGroupNow(pgid: number): Promise<boolean> {
+  if (!signalGroup(pgid, 'SIGKILL')) return false;
   const hard = Date.now() + 2000;
   while (Date.now() < hard && groupAlive(pgid)) await sleep(25);
   return true;
@@ -187,8 +198,16 @@ export function startHeadless(spec: HeadlessSpec): HeadlessProcess {
   };
   writeRecord(null);
 
-  const kill = (): Promise<void> => {
+  const kill = (hard = false): Promise<void> => {
     if (pid === null) return Promise.resolve();
+    if (hard) {
+      // No SIGTERM and no grace, even over a soft kill already under way.
+      const now = killGroupNow(pid).then((alive) => {
+        if (alive) sigkilled = true;
+      });
+      killing = killing ? Promise.all([killing, now]).then(() => undefined) : now;
+      return killing;
+    }
     if (!killing) {
       killing = terminateGroup(pid, killGraceMs).then((hard) => {
         if (hard) sigkilled = true;
@@ -294,10 +313,10 @@ export function startHeadless(spec: HeadlessSpec): HeadlessProcess {
     exited,
     running: () => alive,
     recordDone: () => recordDoneFlag,
-    cancel: async () => {
+    cancel: async (options = {}) => {
       if (alive) {
         cancelled = true;
-        await kill();
+        await kill(options.hard === true);
       }
       return exited;
     },

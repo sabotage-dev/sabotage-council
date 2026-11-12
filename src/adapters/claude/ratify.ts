@@ -113,6 +113,18 @@ export function claudeAnswer(stream: ClaudeStream): string | null {
 
 const READ_SET: readonly string[] = CLAUDE_READ_TOOLS;
 
+/**
+ * The offer in `system/init.tools`. A missing or non-array `tools`, or a non-string entry, is a problem, never an
+ * empty offer: the record then proves nothing about what the leg was offered.
+ */
+export function offeredTools(init: Record<string, unknown>): { ok: true; tools: string[] } | { ok: false; problem: string } {
+  const tools = init['tools'];
+  if (!Array.isArray(tools)) return { ok: false, problem: tools === undefined ? 'has no tools list' : 'tools is not a list' };
+  const strings = tools.filter((t): t is string => typeof t === 'string');
+  if (strings.length !== tools.length) return { ok: false, problem: 'tools holds a non-string entry' };
+  return { ok: true, tools: strings };
+}
+
 export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
   const checks: RatificationCheck[] = [];
   const aliases = rootAliases(input.root);
@@ -133,9 +145,15 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
   const resultSession = result ? str(result['session_id']) : null;
   check(checks, 'session', initSession === input.sessionId && (result === null || resultSession === input.sessionId), `init ${String(initSession)}, result ${String(resultSession)}, launched ${input.sessionId}`);
 
-  const offered = init && Array.isArray(init['tools']) ? init['tools'].filter((t): t is string => typeof t === 'string') : [];
+  const offer = init ? offeredTools(init) : null;
+  const offered = offer?.ok ? offer.tools : [];
   const extra = offered.filter((t) => !READ_SET.includes(t));
-  check(checks, 'offered', init !== null && extra.length === 0, init === null ? 'no init' : extra.length === 0 ? `offered ${offered.join(', ') || 'nothing'}` : `offered beyond Read/Glob/Grep: ${extra.join(', ')}`);
+  check(
+    checks,
+    'offered',
+    offer !== null && offer.ok && extra.length === 0,
+    offer === null ? 'no init' : !offer.ok ? `system/init ${offer.problem}` : extra.length === 0 ? `offered ${offered.join(', ') || 'nothing'}` : `offered beyond Read/Glob/Grep: ${extra.join(', ')}`,
+  );
   const mode = init ? str(init['permissionMode']) : null;
   check(checks, 'permission-mode', mode === 'dontAsk', `permissionMode ${String(mode)}`);
 

@@ -189,6 +189,14 @@ describe('claude ratification details', () => {
     expect(r.nonceSeen).toBe(false);
   });
 
+  it.each([
+    ['no tools list', (row: Record<string, unknown>) => delete row['tools']],
+    ['tools: [1]', (row: Record<string, unknown>) => (row['tools'] = [1])],
+  ])('fails the offer check on an init with %s (round 1)', (_what, change) => {
+    const r = ratifyClaudeLeg(inputFor('success', (dir) => edit(join(dir, 'stream.jsonl'), (row) => row['subtype'] === 'init', change)).input);
+    expect(failedNames(r)).toEqual(['offered']);
+  });
+
   it('fails the init gate check when the gate stopped the leg', () => {
     const { input } = inputFor('success');
     const r = ratifyClaudeLeg({ ...input, initGate: 'system/init offered Bash' });
@@ -239,6 +247,15 @@ describe('claude helpers', () => {
     expect(initGateProblem({ tools: ['Read', 'Bash'], permissionMode: 'dontAsk' })).toBe('system/init offered Bash');
     expect(initGateProblem({ tools: ['Read', 'mcp__plugin__x'], permissionMode: 'dontAsk' })).toContain(API_KEY_ROUTE);
     expect(initGateProblem({ tools: ['Read'], permissionMode: 'auto' })).toContain('not dontAsk');
+  });
+
+  it.each([
+    ['a missing tools list', { permissionMode: 'dontAsk' }, 'has no tools list'],
+    ['a tools value that is not a list', { tools: 'Read', permissionMode: 'dontAsk' }, 'tools is not a list'],
+    ['a non-string entry', { tools: [1], permissionMode: 'dontAsk' }, 'non-string entry'],
+    ['a non-string entry beside the reads', { tools: ['Read', { name: 'Bash' }], permissionMode: 'dontAsk' }, 'non-string entry'],
+  ])('stops a leg at init on %s, never reading it as an empty offer (round 1)', (_what, init, problem) => {
+    expect(initGateProblem(init)).toContain(problem);
   });
 });
 
@@ -393,6 +410,18 @@ describe('claude end to end, through a fake CLI', () => {
     const r = await adapter.ratify(handle, ctx);
     expect(r.status).not.toBe('PASS');
     expect(r.checks.find((c) => c.name === 'init-gate')?.detail).toContain(API_KEY_ROUTE);
+  });
+
+  it('kills a leg with a bad init by SIGKILL at once: no SIGTERM reaches it and no grace runs (round 1)', async () => {
+    const { home, env } = fakeHome({ initTools: ['Glob', 'Grep', 'Read', 'Bash'], hangAfterInit: true, trapTerm: true });
+    const ctx = legCtx(env, caseOf('success').nonce);
+    const adapter = createClaudeAdapter({ bin: FAKE_CLAUDE });
+    const { handle, state } = await runToDone(adapter, ctx);
+    expect(state).toMatchObject({ status: 'done', doneBy: 'cancel' });
+    expect(handle.exit).toMatchObject({ signal: 'SIGKILL', sigkilled: true });
+    // The default grace is 5000 ms; the leg ended well inside it, and never saw SIGTERM.
+    expect(handle.exit?.durationMs).toBeLessThan(4000);
+    expect(existsSync(join(home, 'got-sigterm'))).toBe(false);
   });
 
   it('merges a canary overlay into the leg settings without dropping the read block', async () => {

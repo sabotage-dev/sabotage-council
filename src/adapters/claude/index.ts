@@ -9,13 +9,13 @@ import { CLAUDE_DECLARED, CLAUDE_FLOOR, CLAUDE_MODELS, CLAUDE_READ_TOOLS, CLAUDE
 import { CLAUDE_ENV_ALLOW, CLAUDE_ENV_SET, CLAUDE_LEG_SETTINGS, claudeArgs } from './launch.js';
 import { API_KEY_ROUTE, claudePreflight } from './preflight.js';
 import { claudeProjectsDir, readClaudeStream } from './records.js';
-import { claudeAnswer, claudeErrorTexts, classifyClaudeText, ratifyClaudeLeg } from './ratify.js';
+import { claudeAnswer, claudeErrorTexts, classifyClaudeText, offeredTools, ratifyClaudeLeg } from './ratify.js';
 
 export { CLAUDE_DECLARED, CLAUDE_MODELS, CLAUDE_READ_TOOLS, claudeDecl, modelMatches } from './known.js';
 export { CLAUDE_ENV_ALLOW, claudeArgs } from './launch.js';
 export { API_KEY_ROUTE, claudePreflight, parseAuthStatus, parseClaudeVersion } from './preflight.js';
 export { findTranscript, readClaudeStream, toolPaths, transcriptFacts } from './records.js';
-export { classifyClaudeText, CLAUDE_FAILURE_PATTERNS, claudeFailureClass, ratifyClaudeLeg, type ClaudeRatifyInput } from './ratify.js';
+export { classifyClaudeText, CLAUDE_FAILURE_PATTERNS, claudeFailureClass, offeredTools, ratifyClaudeLeg, type ClaudeRatifyInput } from './ratify.js';
 
 export interface ClaudeAdapterOptions {
   bin?: string | undefined;
@@ -47,8 +47,9 @@ function legData(h: LegHandle): ClaudeLegData {
  * settings-source isolation did not hold, so the message names the API-key route.
  */
 export function initGateProblem(init: Record<string, unknown>): string | null {
-  const tools = Array.isArray(init['tools']) ? init['tools'].filter((t): t is string => typeof t === 'string') : [];
-  const extra = tools.filter((t) => !(CLAUDE_READ_TOOLS as readonly string[]).includes(t));
+  const offer = offeredTools(init);
+  if (!offer.ok) return `system/init ${offer.problem}`;
+  const extra = offer.tools.filter((t) => !(CLAUDE_READ_TOOLS as readonly string[]).includes(t));
   if (extra.length > 0) {
     const plugin = extra.some((t) => t.startsWith('mcp__'));
     return `system/init offered ${extra.join(', ')}${plugin ? `; plugin tools reached the leg: ${API_KEY_ROUTE}` : ''}`;
@@ -136,7 +137,8 @@ export function createClaudeAdapter(options: ClaudeAdapterOptions = {}): SeatAda
             const problem = initGateProblem(stream.init);
             if (problem) {
               data.initGate = problem;
-              void proc?.cancel();
+              // SIGKILL at once: a SIGTERM grace would give the first turn time to run a tool.
+              void proc?.cancel({ hard: true });
             }
           }
           return stream.result !== null;

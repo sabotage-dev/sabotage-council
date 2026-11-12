@@ -137,6 +137,29 @@ describe('headless supervisor', () => {
     expect(p.running()).toBe(false);
   });
 
+  it('cancels with SIGKILL at once, no SIGTERM and no grace, when asked to (round 1)', async () => {
+    const dir = scratch('sc-hl-');
+    const marker = join(dir, 'got-sigterm');
+    const trap = `process.on('SIGTERM', () => require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')); setInterval(() => {}, 1000);`;
+    const soft = startHeadless(spec(dir, trap, { killGraceMs: 2000 }));
+    await until(() => soft.running());
+    await new Promise((r) => setTimeout(r, 200)); // the trap is installed
+    const softExit = await soft.cancel();
+    expect(existsSync(marker)).toBe(true);
+    expect(softExit.durationMs).toBeGreaterThanOrEqual(2000);
+
+    const dir2 = scratch('sc-hl-');
+    const marker2 = join(dir2, 'got-sigterm');
+    const hard = startHeadless(spec(dir2, trap.replace(JSON.stringify(marker), JSON.stringify(marker2)), { killGraceMs: 2000 }));
+    await until(() => hard.running());
+    await new Promise((r) => setTimeout(r, 200));
+    const started = Date.now();
+    const exit = await hard.cancel({ hard: true });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(exit).toMatchObject({ doneBy: 'cancel', cancelled: true, sigkilled: true, signal: 'SIGKILL' });
+    expect(existsSync(marker2)).toBe(false);
+  });
+
   it('reports a binary that cannot start as a spawn error, without throwing', async () => {
     const dir = scratch('sc-hl-');
     const exit = await startHeadless({ ...spec(dir, ''), command: join(dir, 'no-such-binary') }).exited;
