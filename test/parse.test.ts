@@ -101,6 +101,9 @@ describe('verdict parser (plan 3.2)', () => {
   it('takes the split form only when both lines are eligible', () => {
     expect(parseVerdict(`VERDICT:\n${FENCE}\nSHIP\n${FENCE}`)).toMatchObject({ verdict: 'none', reason: 'missing' });
     expect(parseVerdict(`${FENCE}\nVERDICT:\n${FENCE}\nNEEDS-WORK`)).toMatchObject({ verdict: 'none', reason: 'missing' });
+    // The word alone in an indented code block: WORD_ALONE tolerates the spaces, so only eligibility refuses it.
+    expect(parseVerdict('VERDICT:\n\n    SHIP')).toMatchObject({ verdict: 'none', reason: 'missing', skipped: [] });
+    expect(parseVerdict('VERDICT:\n\tNEEDS-WORK')).toMatchObject({ verdict: 'none', reason: 'missing' });
   });
 
   it('an unclosed fence runs to the end, as in markdown: a verdict inside it does not count', () => {
