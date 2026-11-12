@@ -293,6 +293,59 @@ describe('codex ratification details', () => {
     expect(r.checks.find((c) => c.name === 'events')?.detail).toContain('torn');
   });
 
+  describe('the records backstop: every recorded item is declared, every image read is inside the root', () => {
+    /** Adds one recorded item to the success leg, cloned from its own CommandExecution row. */
+    const run = (item: () => Record<string, unknown>): ReturnType<typeof ratifyCodexLeg> =>
+      ratifyCodexLeg(
+        inputFor('success', (dir) => {
+          const leg = rolloutsOf(dir)[0] as string;
+          const rows = readJsonl(leg);
+          const at = rows.findIndex((row) => (((row['payload'] as Record<string, unknown>)['item'] ?? {}) as Record<string, unknown>)['type'] === 'CommandExecution');
+          const clone = JSON.parse(JSON.stringify(rows[at])) as Record<string, unknown>;
+          (clone['payload'] as Record<string, unknown>)['item'] = item();
+          rows.splice(at + 1, 0, clone);
+          writeJsonl(leg, rows);
+        }).input,
+      );
+
+    it('passes an image read inside the root', () => {
+      const r = ratifyCodexLeg(
+        inputFor('success', (dir) => {
+          const leg = rolloutsOf(dir)[0] as string;
+          const rows = readJsonl(leg);
+          const at = rows.findIndex((row) => (((row['payload'] as Record<string, unknown>)['item'] ?? {}) as Record<string, unknown>)['type'] === 'CommandExecution');
+          const clone = JSON.parse(JSON.stringify(rows[at])) as Record<string, unknown>;
+          const cwd = String(((rows[at]?.['payload'] as Record<string, unknown>)['item'] as Record<string, unknown>)['cwd'] ?? '').replace(/^file:\/\//, '');
+          (clone['payload'] as Record<string, unknown>)['item'] = { type: 'ImageView', id: 'exec-img-1', path: `file://${cwd}/planted/calc/rangesum.py` };
+          rows.splice(at + 1, 0, clone);
+          writeJsonl(leg, rows);
+        }).input,
+      );
+      expect(failedNames(r)).toEqual([]);
+    });
+
+    it.each([
+      // A call the static scanner cannot read (a key built at run time) still leaves an item: measured on 0.167.0,
+      // a nested view_image call records ImageView with a file:// path.
+      ['an image read outside the root', () => ({ type: 'ImageView', id: 'exec-img-2', path: 'file:///etc/hosts' }), 'image read of file:///etc/hosts'],
+      ['an image read with no path', () => ({ type: 'ImageView', id: 'exec-img-3' }), 'no readable path'],
+      ['a patch (apply_patch)', () => ({ type: 'FileChange', id: 'exec-fc-1', changes: {}, status: 'completed' }), 'recorded FileChange item'],
+      ['a web search', () => ({ type: 'Extension', id: 'exec-ws-1', kind: 'web.search' }), 'recorded Extension item'],
+      ['an MCP read', () => ({ type: 'McpToolCall', id: 'exec-mcp-1', server: 'codex', tool: 'read_mcp_resource' }), 'MCP call codex.read_mcp_resource'],
+      ['a call on a user MCP server', () => ({ type: 'McpToolCall', id: 'exec-mcp-2', server: 'notes', tool: 'list_mcp_resources' }), 'MCP call notes.list_mcp_resources'],
+      ['an item type the version does not declare', () => ({ type: 'TerminalInteraction', id: 'exec-ti-1' }), 'recorded TerminalInteraction item'],
+    ])('fails %s', (_what, item, detail) => {
+      const r = run(item);
+      expect(failedNames(r)).toContain('records');
+      expect(r.checks.find((c) => c.name === 'records')?.detail).toContain(detail);
+    });
+
+    it('passes the runtime\'s own MCP resource list', () => {
+      const r = run(() => ({ type: 'McpToolCall', id: 'exec-mcp-3', server: 'codex', tool: 'list_mcp_resources', arguments: '{}' }));
+      expect(failedNames(r)).toEqual([]);
+    });
+  });
+
   it('fails a rollout whose last line is torn', () => {
     const r = ratifyCodexLeg(inputFor('success', (dir) => writeFileSync(rolloutsOf(dir)[0] as string, `${readFileSync(rolloutsOf(dir)[0] as string, 'utf8')}{"type":"event_m`)).input);
     expect(failedNames(r)).toEqual(['completion']);

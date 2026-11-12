@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { FailureClass } from '../../config/vocab.js';
 import { pathInsideRoot, realpathOrNull, rootAliases } from '../paths.js';
 import { fromNonceLine, nonceOnFirstLine, verdictOf, type Ratification, type RatificationCheck } from '../types.js';
@@ -363,6 +364,38 @@ function ratifyThread(t: ThreadInput, input: CodexRatifyInput, decl: CodexVersio
     if (!parsedCmds.has(inner)) unparsed.push(inner.slice(0, 120));
   }
   const pathProblems = report.commands.flatMap((c) => c.problems.map((p) => `${p.kind}: ${p.token} (${p.detail}) in "${c.cmd.slice(0, 120)}"`));
+  // The records backstop: every recorded item is a declared type, and every image read is inside the root.
+  const itemProblems: string[] = [];
+  for (const line of own) {
+    if (line.type !== 'event_msg' || str(line.payload['type']) !== 'item_completed') continue;
+    const item = isObject(line.payload['item']) ? line.payload['item'] : null;
+    const type = item ? str(item['type']) : null;
+    const rule = type === null ? undefined : decl.recordItems[type];
+    if (item === null || rule === undefined) {
+      itemProblems.push(`a recorded ${String(type)} item`);
+    } else if (rule === 'image') {
+      const raw = str(item['path']);
+      let path: string | null = null;
+      try {
+        path = raw === null ? null : raw.startsWith('file://') ? fileURLToPath(raw) : raw;
+      } catch {
+        path = null;
+      }
+      const where = path === null ? null : pathInsideRoot(path, input.root, aliases);
+      if (where === null || !where.inside) itemProblems.push(`an image read of ${String(raw)} (${where?.why ?? 'no readable path'})`);
+    } else if (rule === 'mcp-list') {
+      const tool = str(item['tool']);
+      if (str(item['server']) !== 'codex' || (tool !== 'list_mcp_resources' && tool !== 'list_mcp_resource_templates')) {
+        itemProblems.push(`an MCP call ${String(item['server'])}.${String(tool)}`);
+      }
+    }
+  }
+  check(
+    checks,
+    'records',
+    itemProblems.length === 0,
+    itemProblems.length === 0 ? 'every recorded item is a declared read or conversation item' : itemProblems.join('; '),
+  );
   check(
     checks,
     'commands',

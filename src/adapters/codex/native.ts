@@ -50,7 +50,22 @@ export interface CodexVersionDecl {
   execNested: Readonly<Record<string, NestedRule>>;
   /** The argument names `exec_command` declares. Any other key fails closed. */
   execCommandArgs: readonly string[];
+  /**
+   * The `item_completed` item types the runtime records for this version (measured), and how each is ratified.
+   * Every nested tool call leaves an item (`CommandExecution`, `ImageView` with its path, `McpToolCall`,
+   * `FileChange`), so this check catches a call the static exec scanner cannot read, such as one reached through a
+   * key built at run time. Any type not listed fails the leg.
+   */
+  recordItems: Readonly<Record<string, RecordItemRule>>;
 }
+
+/** How one recorded item type is ratified. */
+export type RecordItemRule =
+  | 'conversation' // messages, reasoning and the leg's own agent tree
+  | 'command' // checked by the commands check
+  | 'image' // its path must be inside the root
+  | 'mcp-list'; // only the runtime's own list_mcp_resources / list_mcp_resource_templates
+
 
 /** How a nested exec tool is ratified (N18). */
 export interface NestedRule {
@@ -119,6 +134,20 @@ const CODEX_0_167_0: CodexVersionDecl = {
     'workdir',
     'yield_time_ms',
   ],
+  // Measured on 0.167.0: the item types in every rollout of 2026-11 (UserMessage, AgentMessage, Reasoning,
+  // CommandExecution, SubAgentActivity, CollabAgentToolCall, McpToolCall, FileChange, Extension), plus one live
+  // nested view_image call, which recorded `ImageView` with a `file://` path. FileChange (apply_patch) and Extension
+  // (web.search) are not listed, so they fail.
+  recordItems: {
+    UserMessage: 'conversation',
+    AgentMessage: 'conversation',
+    Reasoning: 'conversation',
+    SubAgentActivity: 'conversation',
+    CollabAgentToolCall: 'conversation',
+    CommandExecution: 'command',
+    ImageView: 'image',
+    McpToolCall: 'mcp-list',
+  },
 };
 
 /** Declared per tested version. Anything else is refused at preflight. */
