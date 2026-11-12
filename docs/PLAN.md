@@ -118,9 +118,10 @@ adjudicator.
 ### 3.2 Verdicts
 
 - **Leg verdict.** The last non-empty line of a leg's reply is `VERDICT: SHIP`, `VERDICT: SHIP-WITH-FIXES` or
-  `VERDICT: NEEDS-WORK`. The parser tolerates `#`, `*` and spaces around it. The last match wins, but two
-  *different* verdict lines in one reply parse as `none`. A `none` leg counts for its findings but not in the
-  verdict tally.
+  `VERDICT: NEEDS-WORK`. The parser tolerates `#`, `*` and spaces around it. It also accepts the verdict split
+  across two lines, `VERDICT:` alone and then the word alone on the next non-empty line, a format seen from real
+  seats (N26). The last match wins, but two *different* verdict lines in one reply parse as `none`. A `none` leg
+  counts for its findings but not in the verdict tally.
 - **Round verdict meanings:**
   - `SHIP`: nothing owed.
   - `SHIP-WITH-FIXES`: owed rows exist but are small and named. A SWF with zero owed rows is read as SHIP.
