@@ -157,6 +157,7 @@ describe('codex ratification details', () => {
     ['effort', 'high', 'effort'],
     ['approval_policy', 'on-request', 'approval'],
     ['sandbox_policy', { type: 'danger-full-access' }, 'sandbox'],
+    ['permission_profile', { type: 'managed', network: 'enabled' }, 'network'],
   ])("fails when a child's own %s differs (N30)", (field, value, check) => {
     const r = ratifyCodexLeg(inputFor('delegating', childEdit(field, value)).input);
     expect(r.status).toBe('CONTAMINATED');
@@ -250,6 +251,15 @@ describe('codex ratification details', () => {
     })],
     ['a turn_context cwd outside the root', 'cwd', legEdit((row) => {
       if (row['type'] === 'turn_context') (row['payload'] as Record<string, unknown>)['cwd'] = '/elsewhere';
+    })],
+    ['a turn_context with no network policy (round 1)', 'network', legEdit((row) => {
+      if (row['type'] === 'turn_context') delete ((row['payload'] as Record<string, Record<string, unknown>>)['permission_profile'] as Record<string, unknown>)['network'];
+    })],
+    ['a turn_context with the network enabled (round 1)', 'network', legEdit((row) => {
+      if (row['type'] === 'turn_context') ((row['payload'] as Record<string, Record<string, unknown>>)['permission_profile'] as Record<string, unknown>)['network'] = 'enabled';
+    })],
+    ['a turn_context with no permission profile (round 1)', 'network', legEdit((row) => {
+      if (row['type'] === 'turn_context') delete (row['payload'] as Record<string, unknown>)['permission_profile'];
     })],
     ['a model_reroute event in the rollout', 'no-reroute', legEdit((row, rows) => {
       if (row['type'] === 'turn_context') rows.push({ timestamp: 'x', type: 'event_msg', payload: { type: 'model_reroute', from_model: 'gpt-6.1-sol', to_model: 'gpt-6-luna' } });

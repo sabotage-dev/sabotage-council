@@ -244,6 +244,9 @@ function ratifyThread(t: ThreadInput, input: CodexRatifyInput, decl: CodexVersio
   check(checks, 'effort', contexts.length > 0 && efforts.every((e) => e === input.effort), `turn_context.effort ${[...new Set(efforts)].map(String).join(', ') || 'none'}; pin ${input.effort}`);
   const sandboxes = contexts.map((c) => (isObject(c['sandbox_policy']) ? str(c['sandbox_policy']['type']) : null));
   check(checks, 'sandbox', contexts.length > 0 && sandboxes.every((s) => s === 'read-only'), `sandbox_policy.type ${[...new Set(sandboxes)].map(String).join(', ') || 'none'}`);
+  // Round 1: the network policy the recorded legs run under. Anything else, or no value, fails.
+  const networks = contexts.map((c) => (isObject(c['permission_profile']) ? str(c['permission_profile']['network']) : null));
+  check(checks, 'network', contexts.length > 0 && networks.every((n) => n === 'restricted'), `permission_profile.network ${[...new Set(networks)].map(String).join(', ') || 'none'}`);
   const approvals = contexts.map((c) => str(c['approval_policy']));
   check(checks, 'approval', contexts.length > 0 && approvals.every((a) => a === 'never'), `approval_policy ${[...new Set(approvals)].map(String).join(', ') || 'none'}`);
 
@@ -467,6 +470,7 @@ const CLASS_OF_CHECK: Readonly<Record<string, FailureClass>> = {
   effort: 'model',
   'no-reroute': 'model',
   sandbox: 'contaminated',
+  network: 'contaminated',
   approval: 'contaminated',
   offered: 'contaminated',
   calls: 'contaminated',
