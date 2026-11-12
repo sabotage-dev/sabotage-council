@@ -5,7 +5,7 @@
 | Revision | 1.5 (2026-11-12): council rounds 1-5 folded; D17 |
 | Owner | Sabotage Development LLC, public repo `sabotage-dev/sabotage-council`, MIT |
 | Status | Plan under council review. Nothing is built yet. |
-| Decisions | D1-D16 in section 12, ruled by the owner on 2026-11-12 |
+| Decisions | D1-D17 in section 12, ruled by the owner on 2026-11-12 |
 | Open questions | Q1-Q12 in section 13, each with the default the build takes if nobody overrules it |
 
 ## 1. What this is
@@ -204,7 +204,7 @@ The adjudicator sets each canonical finding's final severity, which may differ f
 |---|---|---|
 | 1 | The whole change (PR diff, branch diff, or plan). | Any verified HIGH, MEDIUM or LOW defect the change introduces. |
 | 2-3 | Only the **delta**: `FOLD.diff` from the baseline head (3.6) to this head. The rest of the tree is context. When 3.6 falls back to a full round, the round reviews the whole change but keeps its number and this row's owed rule. | (a) A defect the delta introduced or left that ships wrong behaviour on real input, breaks the build or tests, or is a security or data-loss defect. (b) An earlier owed row the delta did not close. (c) An earlier reviewer's HIGH/MEDIUM/LOW item not closed. (d) Every ask in the human's own open change request (3.9, 7.3). |
-| 4+ (D5) | Only the delta; a 3.6 fallback reviews the whole change and keeps its number (Q14 decides the owed rule). | Only `HIGH`: a new HIGH caused by the delta, an earlier HIGH not closed, or the human's own open change-request asks (Q7). Everything else, including carried MEDIUM/LOW items, becomes a follow-up listed in the approval. |
+| 4+ (D5) | Only the delta; a 3.6 fallback reviews the whole change and keeps its number and this row's owed rule (D17). | Only `HIGH`: a new HIGH caused by the delta, an earlier HIGH not closed, or the human's own open change-request asks (Q7). Everything else, including carried MEDIUM/LOW items, becomes a follow-up listed in the approval. |
 
 Rules that hold in every round:
 - **Nits never block.**
@@ -501,6 +501,25 @@ Per-backend hazards the adapters handle (each one was found in the research or m
       rollout;
     - any custom tool outside the adapter's declared native list (4.5) that is not a read.
 
+    Measured in P2 (0.167.0):
+    - **Where things are found (N12).** MCP server names come from `codex mcp list --json`, run from the root with
+      the leg's environment. Children come from `SubAgentActivity.agent_thread_id` in the leg's rollout and from
+      any rollout whose `session_meta.parent_thread_id` names a thread of the leg. A child's rollout starts with
+      history forked from its parent (including the parent's spawn call and an aborted turn); its own lines start
+      at `session_meta.subagent_history_start_ordinal`, and only those are ratified as the child's.
+    - **Where a denial shows (N15, N16).** A denied write appears only in the `custom_tool_call_output` of the
+      `exec` call. `cmd` strings come from the `exec_command({cmd})` input; a `CommandExecution` item's inner
+      command (after the `/bin/zsh -lc` wrapper) must equal a parsed `cmd`, else the leg fails.
+    - **Nested tools inside `exec`.** The exec isolate offers eight nested tools of its own, which never appear in
+      `top_level_tools`: `exec_command`, `write_stdin`, `apply_patch`, `view_image`, `list_mcp_resources`,
+      `list_mcp_resource_templates`, `read_mcp_resource` and `clock__curr_time`, plus an `ALL_TOOLS` list a live
+      leg introspected. The adapter declares them per version (4.5), preflight checks the rendered exec
+      description lists exactly those, and any dynamic access (`ALL_TOOLS`, `globalThis`, `eval`, a computed
+      `cmd`) makes the script untokenizable, which fails the leg (N17).
+    - **`exec_command` arguments.** `workdir` acts as a `cd` and must stay inside the root; `sandbox_permissions`
+      other than `use_default` (an unsandboxed-execution request), a `prefix_rule`, a non-POSIX `shell` and any
+      undeclared argument fail the leg.
+
     The untrusted-PR policy (5.2) applies.
 - **grok**
   - Tool names differ between its internal backends. A disallow list of the wrong names is silently a no-op: the
@@ -579,14 +598,17 @@ Per-backend hazards the adapters handle (each one was found in the research or m
       drops them, along with user hooks and `CLAUDE.md` discovery. But `--bare` accepts only `ANTHROPIC_API_KEY`
       or an `apiKeyHelper` and never reads an OAuth login (`claude --help`, 2.1.322).
     - So, with an API key, the adapter runs `--bare`.
-    - With a subscription login, the user's hooks and global `CLAUDE.md` load (user-owned, listed by `doctor`).
-      If any installed plugin adds a tool, the launch stops (4.3, 6.4; no exception) until P2 finds a
-      settings-source set that drops plugin tools while keeping the login. Until then, such a user:
-      - needs `ANTHROPIC_API_KEY` for Claude seats and for the headless adjudicator;
-      - keeps interactive `plan` and `diff` adjudication, which runs in the host session;
-      - gets a clear refusal from `pr` on an untrusted PR, naming the API-key route (6.3).
-
-      P2 and P7 each test this route.
+    - **Measured in P2 (2.1.322):** any settings-source set without `user`, including the empty set the leg
+      passes (`--setting-sources ""`), drops every installed plugin, its tools and the user's hooks, while the
+      subscription login still authenticates; `--restricted` alone drops them too. The live smoke on that set
+      loaded no `CLAUDE.md` and ran no user hook. So a subscription user with plugins installed runs Claude seats
+      on the same flags. Only managed (policy) settings stay user-owned.
+    - The refusal path stays for what the measurement does not cover: on an untested version, a subscription
+      user with an enabled plugin is refused at preflight with a message that names the API-key route, and a leg
+      whose `system/init` still offers a plugin tool is stopped at init (6.4) with the same message. P7 tests the
+      adjudicator's side of this route.
+    - The prompt goes on stdin: a prompt argument after the variadic `--disallowedTools` list is read as one more
+      tool name (measured).
 
 ### 4.3 Preflight and `doctor`
 
@@ -611,7 +633,7 @@ listed by `doctor`) from **repository-controlled** context (never allowed).
 | codex | Run from the root, `codex debug prompt-input` with the leg's `-c`/`--disable` flags shows no MCP tool definitions and no repository instructions. This command accepts only `-c`, `--enable` and `--disable`. The user's global `~/.codex/AGENTS.md` is listed as user-owned; it loads even with `--ignore-user-config` (probe). `--ignore-user-config` and per-server `-c mcp_servers.<name>.enabled=false` must not be combined: together they fail config load with "invalid transport" (measured). The leg uses the per-server flags, so this preflight renders exactly the leg's config; the binding proof is the rollout's `top_level_tools` (4.2). |
 | grok | `grok inspect --json` under the leg env shows no project instructions, hooks or permission sources. Servers from `$GROK_HOME/config.toml` still list and start; they are user-owned and unreachable under the tool allowlist. The binding proof is `tool_definitions.json` after launch. |
 | antigravity | No preflight proof exists over ACP: the `/permissions` and `/hooks` commands belong to `agy -p`, which D7 rules out. Proof is per leg: the sanitized root, plus ratification of observed tool calls and denials. The label stays `pending` until P3. |
-| claude | `system/init.tools` (stream-json, `--verbose`) ⊆ the leg's tool set, with no exception; `permissionMode` is `dontAsk`. P2 measures whether a settings-source set without `user` drops plugin tools, user hooks and user allow rules while the login (Keychain) still works. If it does, every Claude leg and the adjudicator launch that way. If it does not, a subscription user with plugins installed must use an API key for Claude seats and the adjudicator, and `doctor` says so. |
+| claude | `system/init.tools` (stream-json, `--verbose`) ⊆ the leg's tool set, with no exception; `permissionMode` is `dontAsk`. P2 measured on 2.1.322 that `--setting-sources ""` (any set without `user`) drops plugin tools, user hooks and user allow rules while the login (Keychain) still works, so every Claude leg launches that way. On an untested version, a subscription user with an enabled plugin is refused at preflight and must use an API key; `doctor` says so. |
 | kiro | Agent profile hash plus an empty `KIRO_HOME` steering and hooks. |
 | opencode | Effective config dump shows the council agent only, with `skill` denied. |
 
@@ -658,6 +680,11 @@ A leg ratifies only if all of these hold, read from the CLI's own records:
    CLI version, or is an MCP, web or write-class tool. A version with no declared list is refused at preflight, so
    no adapter guesses.
 
+   For a declared version the offer check is exact membership in the list (N29); the MCP, web and write-class
+   rejection applies to names outside it. Offers use namespaced names (`functions.exec`, `clock.sleep`) and calls
+   use short names (`exec`, `sleep`, `spawn_agent` with namespace `collaboration`); the adapter declares the
+   offer-to-call map beside the list and keys every use-time rule on call names (N28).
+
    For codex 0.167.0 the declared list is the 14 names in `world_state.state.top_level_tools`, copied verbatim
    from the recorded probe fixture. The same list appears in every council-round rollout of 2026-11-12:
    `clock`, `clock.sleep`, `collaboration`, `collaboration.followup_task`, `collaboration.interrupt_agent`,
@@ -673,7 +700,15 @@ A leg ratifies only if all of these hold, read from the CLI's own records:
      children or on time;
    - `request_user_input` and `request_user_input_async` are allowed but have nothing to answer them headless,
      and the call is recorded;
-   - any other custom tool must be a read.
+   - any other custom tool must be a read. For 0.167.0 no other custom tool exists (every offered name is
+     classified above). Inside `exec`, the reads are `clock__curr_time`, `list_mcp_resources` and
+     `list_mcp_resource_templates` (empty: every MCP server is disabled by name) and `view_image` on a path inside
+     the root; `apply_patch`, `write_stdin` and `read_mcp_resource` fail the leg (N18, 4.2);
+   - calls on other agents (`send_message`, `followup_task`, `interrupt_agent`, and `wait_agent` with explicit
+     targets) must name an agent of the leg's own tree, and every child, whether a `spawn_agent` or a
+     `followup_task` started it, is ratified with the same checks, including its own sandbox, approval, model and
+     effort (N30);
+   - a `request_user_input` that stalls the leg is bounded by the wall clock and classified `timeout` (N31).
 
    Every command and every child rollout is recorded and parsed (exec and `custom_tool_call` inputs, and their
    outputs). The leg also fails on any of:
@@ -810,9 +845,9 @@ It warns (and `doctor` repeats the warning) when:
 
 | Label | Meaning | Backends now |
 |---|---|---|
-| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | none yet. claude with `--tools` reaches it when P2 proves `--restricted` confines Glob and Grep and its read paths are ratified from the transcript; grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
+| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | claude 2.1.322 with the P2 leg flags (`--tools`, `--restricted`, `--setting-sources ""`): its P2 canary, with a planted user allow rule, had every outside read (by path, through a symlink, Glob and Grep) denied before execution, and write, command and fetch tools not offered. grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
 | `sandboxed-exec` | Commands run inside a write- and network-denied sandbox, but reads are not confined to the root. | codex |
-| `pending` | The mechanism exists but its denial has not been measured (14). | claude (with `--tools`) until P2; antigravity and kiro until their P3 canaries; opencode until its P4 canary. Each backend leaves `pending` only through its own canary, including a planted user allow rule |
+| `pending` | The mechanism exists but its denial has not been measured (14). | claude on an untested version; antigravity and kiro until their P3 canaries; opencode until its P4 canary. Each backend leaves `pending` only through its own canary, including a planted user allow rule |
 | `weak` | Enforcement depends on config the agent may not honour, or is unmeasured. | cursor; muse until probed; grok with `--sandbox off` or with a user MCP server started |
 
 **PRs from authors without write access** (`auto` and `pr`): any seat whose label is not `strong` follows
@@ -1327,8 +1362,9 @@ Still not verified (P2-P4 live smokes settle each):
 - Cursor: whether the installed CLI has a native ACP mode, and the strength of its read-only stack.
 - Muse Code: its `--json` event names and the model and effort fields in a logged-in run.
 - opencode: a full review run with a paid provider.
-- That `claude --restricted` confines Glob and Grep as well as Read.
-- Whether `--setting-sources` or `--bare` drops installed-plugin tools while keeping the user's own login.
+
+Settled by P2: `claude --restricted` confines Glob and Grep as well as Read (the canary, 5.2), and
+`--setting-sources ""` drops installed-plugin tools while keeping the user's own login (4.2).
 
 ## 15. Parked follow-ups (council rounds 3-5; not folded unless marked, owner decides)
 
@@ -1359,4 +1395,5 @@ a builder should reconcile when building the named phase.
 | N20 | 3.6 says both "newest counted head" and "head with an event" for the baseline; use one term. | 3.6 | P6 |
 | N21 | 4.1's planted-allow-rule canary sentence should say that a run caught only at ratification fails, as P3 now does. | 4.1 | P3 |
 | N22-N25 | Folded in rev 1.5 (council round 5's follow-ups): the codex native list is declared verbatim and enforced as an allowlist, orchestration calls are allowed at use, and P2 replays the exec-only and delegating fixtures. | 4.5, 10 | P2 |
+| N8, N12, N15-N18, N27-N32 | Folded in P2: the P2 row's child case reads "a subagent whose own rollout fails" (N8); 4.2 says how MCP names and child rollouts are found (N12), where a denial shows and what is parsed (N15, N16); 4.5 lists the fail-closed path rules, the reads, the offer-to-call map, exact membership, calls on children and the input stall (N17, N18, N28-N31); N27's delegating leg was recorded fresh with one cheap live run; N32's two references now say D17. | 4.2, 4.5, 3.5 | P2 |
 | N26 | 3.2's verdict-line wording vs the P1 split-line test; the P1 findings fixture should also cover YAML; this section's header and intro say "round 3" for items from later rounds. | 3.2, 10, 15 | P1 |
