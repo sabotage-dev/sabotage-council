@@ -26,7 +26,8 @@ export const AGENT_CONFIG_DIRS: readonly string[] = [
 
 /**
  * Agent-config files (plan 6.2): instruction files and MCP or editor configs. Each is renamed with the
- * `.council-data` suffix. `*` matches any run of characters. Matched case-insensitively, at every depth.
+ * `.council-data` suffix. `*` matches any run of characters, line breaks included. Matched case-insensitively, at
+ * every depth.
  */
 export const AGENT_CONFIG_FILES: readonly string[] = [
   'AGENTS*.md',
@@ -40,11 +41,12 @@ export const AGENT_CONFIG_FILES: readonly string[] = [
   '.cursorignore',
 ];
 
+/** `*` becomes `[\s\S]*`, not `.*`: `.` stops at `\n`, `\r`, U+2028 and U+2029, all legal in a file name. */
 function globRegex(glob: string): RegExp {
   const body = glob
     .split('*')
     .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-    .join('.*');
+    .join('[\\s\\S]*');
   return new RegExp(`^${body}$`, 'i');
 }
 

@@ -180,7 +180,7 @@ describe('root builder: sanitizer (plan 6.2)', () => {
 
   it('leaves no agent-config name anywhere outside _repo-agent-config/', () => {
     const dirs = new Set(AGENT_CONFIG_DIRS.map((d) => d.toLowerCase()));
-    const files = AGENT_CONFIG_FILES.map((g) => new RegExp(`^${g.replace(/\./g, '\\.').replace(/\*/g, '.*')}$`, 'i'));
+    const files = AGENT_CONFIG_FILES.map((g) => new RegExp(`^${g.replace(/\./g, '\\.').replace(/\*/g, '[\\s\\S]*')}$`, 'i'));
     const offenders = walk(built.root)
       .filter((e) => !e.rel.startsWith('_repo-agent-config/'))
       .map((e) => e.rel.slice(e.rel.lastIndexOf('/') + 1))

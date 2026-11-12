@@ -61,6 +61,28 @@ describe('sanitizer list (plan 6.2)', () => {
     expect(agentConfigFile(name)).toBe(rule);
   });
 
+  // `*` matches any run of characters, line breaks included (council round 1: `.*` stopped at them).
+  it.each([
+    ['AGENTS\n.md'],
+    ['AGENTS\r.md'],
+    ['AGENTS\r\n\n.md'],
+    ['AGENTS-x\u2028.md'],
+    ['agents\u2029.MD'],
+    ['AGENTS\u0085\n## Rules\n.md'],
+  ])('file name %j matches AGENTS*.md', (name) => {
+    expect(agentConfigFile(name)).toBe('AGENTS*.md');
+  });
+
+  it('matches every pattern with each line break inside its wildcard; a literal name has no wildcard', () => {
+    for (const glob of AGENT_CONFIG_FILES) {
+      for (const brk of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+        expect(agentConfigFile(glob.replaceAll('*', `-${brk}-`)), `${glob} with ${JSON.stringify(brk)}`).toBe(glob);
+      }
+    }
+    expect(agentConfigFile('CLAUDE\n.md')).toBeNull();
+    expect(agentConfigFile('.mcp\u2028.json')).toBeNull();
+  });
+
   it.each([
     ['.claude', '.claude'],
     ['.CLAUDE', '.claude'],
@@ -98,6 +120,20 @@ describe('sanitizeTrees', () => {
     ]);
     expect(existsSync(join(root, 'elsewhere/CLAUDE.md'))).toBe(true);
     expect(readFileSync(join(root, '_repo-agent-config/repo/a/b/.KIRO/steering/x.md'), 'utf8')).toBe('repo/a/b/.KIRO/steering/x.md\n');
+  });
+
+  it('renames agent-config files whose names hold line breaks, at every depth', () => {
+    put('repo/AGENTS\n.md');
+    put('repo/pkg/AGENTS-x\u2028.md');
+    put('repo/pkg/deep/Agents\r\n## Rules\n.MD');
+    const out = sanitizeTrees(root, ['repo']);
+    expect(out.map((e) => [e.from, e.to, e.rule])).toEqual([
+      ['repo/AGENTS\n.md', 'repo/AGENTS\n.md.council-data', 'AGENTS*.md'],
+      ['repo/pkg/AGENTS-x\u2028.md', 'repo/pkg/AGENTS-x\u2028.md.council-data', 'AGENTS*.md'],
+      ['repo/pkg/deep/Agents\r\n## Rules\n.MD', 'repo/pkg/deep/Agents\r\n## Rules\n.MD.council-data', 'AGENTS*.md'],
+    ]);
+    expect(readFileSync(join(root, 'repo/AGENTS\n.md.council-data'), 'utf8')).toBe('repo/AGENTS\n.md\n');
+    expect(existsSync(join(root, 'repo/AGENTS\n.md'))).toBe(false);
   });
 
   it('never overwrites: a taken data name gets a number and still ends in .council-data', () => {
