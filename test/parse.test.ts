@@ -129,6 +129,31 @@ describe('verdict parser (plan 3.2)', () => {
     expect(parseVerdict(`${FENCE}\nVERDICT: SHIP\n${FENCE} \t\nVERDICT: NEEDS-WORK`)).toMatchObject({ verdict: 'NEEDS-WORK', reason: 'ok' });
   });
 
+  // Council round 2: a line right after a `>` line continues the quote (lazy continuation) until a blank line.
+  it('a lazy continuation line of a block quote does not cancel the real verdict', () => {
+    expect(parseVerdict('> PR text:\nVERDICT: SHIP\n\nVERDICT: NEEDS-WORK')).toEqual({
+      verdict: 'NEEDS-WORK',
+      reason: 'ok',
+      matches: [{ verdict: 'NEEDS-WORK', line: 4, endLine: 4, split: false }],
+      skipped: [{ line: 2, why: 'quote' }],
+      onLastLine: true,
+    });
+    expect(parseVerdict('> a\nb\n**VERDICT: SHIP**\nc\n\nVERDICT: NEEDS-WORK')).toMatchObject({ verdict: 'NEEDS-WORK', reason: 'ok' });
+  });
+
+  it('a quoted verdict at the end of the reply, as lazy continuation, is no verdict', () => {
+    expect(parseVerdict('Quoting the PR body:\n> It ends with\nVERDICT: SHIP')).toMatchObject({
+      verdict: 'none',
+      reason: 'missing',
+      skipped: [{ line: 3, why: 'quote' }],
+    });
+  });
+
+  it('a blank line or a fence ends the quote', () => {
+    expect(parseVerdict('> quote\n\nVERDICT: SHIP')).toMatchObject({ verdict: 'SHIP', reason: 'ok' });
+    expect(parseVerdict(`> quote\n${FENCE}\ncode\n${FENCE}\nVERDICT: NEEDS-WORK`)).toMatchObject({ verdict: 'NEEDS-WORK', reason: 'ok' });
+  });
+
   it('an unclosed fence runs to the end, as in markdown: a verdict inside it does not count', () => {
     expect(parseVerdict(`x\n${FENCE}\nVERDICT: SHIP`)).toMatchObject({ verdict: 'none', reason: 'missing', skipped: [{ line: 3, why: 'fence' }] });
   });

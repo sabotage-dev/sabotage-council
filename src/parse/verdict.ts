@@ -60,12 +60,32 @@ export function splitLines(text: string): string[] {
   return text.split(/\r\n|[\n\r\u2028\u2029]/);
 }
 
-/** Why a line cannot carry the leg's own verdict, or null when it can. */
-function ineligible(line: string, fenced: boolean): SkipReason | null {
-  if (fenced) return 'fence';
-  if (QUOTE.test(line)) return 'quote';
-  if (INDENTED.test(line)) return 'indent';
-  return null;
+/**
+ * Why each line cannot carry the leg's own verdict, or null when it can. A `>` line opens a block quote, and every
+ * non-blank line right after it stays in the quote as lazy continuation text (CommonMark), with or without its own
+ * `>`, until a blank line or a fence line ends it.
+ */
+function eligibility(lines: readonly string[], inFence: readonly boolean[]): (SkipReason | null)[] {
+  const out: (SkipReason | null)[] = [];
+  let quoted = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (inFence[i] === true) {
+      quoted = false; // a fence interrupts the quote's paragraph, so it is never lazy continuation
+      out.push('fence');
+    } else if (line.trim() === '') {
+      quoted = false;
+      out.push(null);
+    } else if (QUOTE.test(line)) {
+      quoted = true;
+      out.push('quote');
+    } else if (quoted) {
+      out.push('quote');
+    } else {
+      out.push(INDENTED.test(line) ? 'indent' : null);
+    }
+  }
+  return out;
 }
 
 /** A line that would read as a verdict line once its quote marks and indentation are gone (for `skipped`). */
@@ -78,8 +98,9 @@ function verdictShaped(line: string): boolean {
 
 /**
  * Parses a leg's verdict (plan 3.2). The output contract puts it on the reply's last non-empty line.
- * - Eligible lines only: a line inside a code fence (the scan the findings parser uses), a `>` block quote or an
- *   indented code block never counts, so a quoted contract, test or PR text cannot forge or cancel a verdict.
+ * - Eligible lines only: a line inside a code fence (the scan the findings parser uses), a `>` block quote (with its
+ *   lazy continuation lines) or an indented code block never counts, so a quoted contract, test or PR text cannot
+ *   forge or cancel a verdict.
  * - The regex tolerates `#`, `*`, `_`, backticks and spaces around the line, any letter case, and the verdict split
  *   across two lines: a bare `VERDICT:`, then the word alone on the next non-empty line (seen live; N26).
  * - Two different eligible verdicts parse as `none` (`conflict`).
@@ -88,7 +109,7 @@ function verdictShaped(line: string): boolean {
 export function parseVerdict(text: string): VerdictResult {
   const lines = splitLines(text);
   const { inFence } = scanFences(lines);
-  const why = lines.map((line, i) => ineligible(line, inFence[i] === true));
+  const why = eligibility(lines, inFence);
   const matches: VerdictMatch[] = [];
   const skipped: SkippedLine[] = [];
   let lastNonEmpty = -1;
