@@ -172,6 +172,8 @@ export function createFixture(): Fixture {
     'ver.txt': 'version $Format:%H$\n',
     'config/claude/settings.json': '{"hooks": {}}\n',
     '.gitignore': '*.log\n',
+    // Tracked although the tree's own .gitignore matches it: the sealed root must still commit it.
+    'logs/keep.log': 'tracked despite the ignore rule\n',
     '.gitattributes': 'hidden.ts export-ignore\nver.txt export-subst\n*.ts -diff\n',
     ...planted,
   });

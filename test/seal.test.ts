@@ -126,6 +126,7 @@ describe('tree hash, git commit and residue sweep (plan 3.1, 5.3)', () => {
   it('lists residue anywhere: modified, added (also in ignored paths), removed, and new empty dirs', () => {
     const { sealed } = prepareRoot(rootPath(), inputs(), brief);
     appendFileSync(join(sealed.root, 'fixture/README.md'), 'edited by a leg\n');
+    appendFileSync(join(sealed.root, 'fixture/logs/keep.log'), 'edited too\n'); // tracked, but matched by .gitignore
     writeFileSync(join(sealed.root, 'fixture/scratch.log'), 'ignored by the tree .gitignore\n');
     rmSync(join(sealed.root, 'COMMITS.log'));
     mkdirSync(join(sealed.root, 'fixture/newdir'));
@@ -135,10 +136,14 @@ describe('tree hash, git commit and residue sweep (plan 3.1, 5.3)', () => {
     expect(report.changes).toEqual([
       { path: 'COMMITS.log', change: 'removed' },
       { path: 'fixture/README.md', change: 'modified' },
+      { path: 'fixture/logs/keep.log', change: 'modified' },
       { path: 'fixture/newdir', change: 'added' },
       { path: 'fixture/scratch.log', change: 'added' },
     ]);
-    expect(report.gitStatus).toEqual(expect.arrayContaining([' D COMMITS.log', ' M fixture/README.md', '!! fixture/scratch.log']));
+    // keep.log shows as modified, not ignored: every file was committed with --force.
+    expect(report.gitStatus).toEqual(
+      expect.arrayContaining([' D COMMITS.log', ' M fixture/README.md', ' M fixture/logs/keep.log', '!! fixture/scratch.log']),
+    );
     expect(report.gitStatusError).toBeNull();
   });
 
