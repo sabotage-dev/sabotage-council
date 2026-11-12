@@ -6,6 +6,8 @@ import { checkNodeVersion, runDoctor } from '../src/cli/doctor.js';
 import { buildProgram } from '../src/cli/program.js';
 import { CONFIG_ENV, DB_ENV, resolveConfigPath, resolveDbPath } from '../src/paths.js';
 import { packageInfo } from '../src/version.js';
+import type { SeatAdapters } from '../src/adapters/index.js';
+import type { Occupant, Preflight, SeatAdapter } from '../src/adapters/types.js';
 import { fakeRegistry } from './fake-registry.js';
 
 const PLAN_EXAMPLE = readFileSync(new URL('./fixtures/config/plan-example.toml', import.meta.url), 'utf8');
@@ -38,7 +40,7 @@ describe('doctor', () => {
     expect(lines).toEqual([
       'ok    node v22.13.0 satisfies >=22.13',
       `ok    config ${configPath} loaded`,
-      'note  model ids and model families not checked: this build has no seat adapters yet',
+      'note  config-wide model and family checks wait for every backend adapter; codex and claude seats are preflighted below',
       `ok    store ${dbPath} at schema version 1, applied migration(s) 1`,
       'seats:',
       '  a  codex / gpt-6.1-sol / high  (fallback kiro / gpt-5.6-sol / high on usage_limit, auth)',
@@ -90,6 +92,57 @@ describe('doctor', () => {
     expect(code).toBe(0);
     expect(lines.some((l) => l.startsWith('note'))).toBe(false);
     expect(lines.some((l) => l.startsWith('warn  seats[1].model: seat "b" shares the adjudicator\'s model family'))).toBe(true);
+  });
+});
+
+function stubAdapter(pre: Partial<Preflight>): SeatAdapter {
+  return {
+    preflight: async (o: Occupant) => ({
+      ok: true,
+      backend: o.backend,
+      cliVersion: '1.0.0',
+      enforcement: 'pending',
+      checks: [{ name: 'auth', status: 'ok', detail: 'logged in' }],
+      userOwned: [],
+      failureClass: null,
+      reason: null,
+      data: {},
+      ...pre,
+    }),
+  } as unknown as SeatAdapter;
+}
+
+describe('doctor preflight per seat (plan 4.3)', () => {
+  it('prints each seat\'s enforcement label and checks, and names backends with no adapter', async () => {
+    const adapters: SeatAdapters = (backend) =>
+      backend === 'codex'
+        ? stubAdapter({ enforcement: 'sandboxed-exec', cliVersion: '0.167.0' })
+        : backend === 'claude'
+          ? stubAdapter({ enforcement: 'pending', cliVersion: '2.1.322' })
+          : undefined;
+    const { code, lines } = await doctor({ adapters });
+    expect(code).toBe(0);
+    const at = lines.indexOf('preflight (no model calls):');
+    expect(lines.slice(at)).toEqual([
+      'preflight (no model calls):',
+      '  a  codex / gpt-6.1-sol / high: codex 0.167.0, enforcement sandboxed-exec',
+      '        ok    auth: logged in',
+      '  a fallback  kiro / gpt-5.6-sol / high: no adapter in this build',
+      '  b  claude / claude-sonnet-5-5 / high: claude 2.1.322, enforcement pending',
+      '        ok    auth: logged in',
+      '  c  grok / grok-4.7 / high: no adapter in this build',
+    ]);
+  });
+
+  it('fails when a seat fails its preflight, and says why', async () => {
+    const adapters: SeatAdapters = (backend) =>
+      backend === 'claude'
+        ? stubAdapter({ ok: false, failureClass: 'setup', reason: 'plugins reach the leg', checks: [{ name: 'isolation', status: 'fail', detail: 'plugins' }] })
+        : undefined;
+    const { code, lines } = await doctor({ adapters });
+    expect(code).toBe(1);
+    expect(lines).toContain('        fail  isolation: plugins');
+    expect(lines).toContain('        => not usable: plugins reach the leg');
   });
 });
 

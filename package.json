@@ -24,7 +24,8 @@
     "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:live": "vitest run test/live.test.ts"
   },
   "dependencies": {
     "commander": "15.0.0",
