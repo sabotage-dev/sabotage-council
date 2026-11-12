@@ -29,7 +29,28 @@ Planned modes:
 
 ## Status
 
-Planning. Nothing is built yet. The v1 build plan is [docs/PLAN.md](docs/PLAN.md) and is under review.
+Building (P0). This phase is the scaffold: the config schema and loader, the run store and its migrations, and a
+`doctor` skeleton. There are no seat adapters and no review rounds yet. The v1 build plan is
+[docs/PLAN.md](docs/PLAN.md).
+
+## Development
+
+Requirements:
+
+- Node.js 22.13 or later (the run store uses the built-in `node:sqlite`, which needs no flag from 22.13);
+- npm;
+- macOS or Linux.
+
+```sh
+npm ci          # install the locked dependencies
+npm test        # run the tests (vitest)
+npm run lint
+npm run typecheck
+```
+
+`npm run build` compiles to `dist/`. `node dist/cli/index.js doctor` then checks Node, the config at
+`~/.config/sabotage-council/config.toml` and the run store at `~/.local/share/sabotage-council/council.db`
+(`--config` and `--db` override both).
 
 ## License
 
