@@ -1,6 +1,23 @@
 import { cpSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tempDir } from './git-fixture.js';
+import { afterAll } from 'vitest';
+import { removeDir, tempDir } from './git-fixture.js';
+
+const scratchDirs: string[] = [];
+
+/** A temp dir that is removed after the test file (see `cleanScratchAfterAll`). */
+export function scratch(prefix: string): string {
+  const dir = tempDir(prefix);
+  scratchDirs.push(dir);
+  return dir;
+}
+
+/** Registers the removal of every scratch dir once the calling test file is done. */
+export function cleanScratchAfterAll(): void {
+  afterAll(() => {
+    for (const dir of scratchDirs.splice(0)) removeDir(dir);
+  });
+}
 
 /** Placeholders the sanitized fixtures carry instead of machine paths and session ids. */
 export const ROOT_PLACEHOLDER = '__SC_ROOT__';
@@ -29,7 +46,7 @@ export interface Materialized {
 
 /** Copies a fixture to a temp dir and replaces its placeholders with a real root (and session id). */
 export function materialize(kind: 'codex' | 'claude', name: string, replacements: Record<string, string> = {}): Materialized {
-  const tmp = tempDir(`sc-${kind}-${name}-`);
+  const tmp = scratch(`sc-${kind}-${name}-`);
   const root = join(tmp, 'root');
   mkdirSync(root);
   const dir = join(tmp, 'fixture');

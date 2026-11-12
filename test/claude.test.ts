@@ -19,8 +19,9 @@ import { initGateProblem } from '../src/adapters/claude/index.js';
 import { CLAUDE_ENV_ALLOW } from '../src/adapters/claude/launch.js';
 import type { Occupant, RoundCtx } from '../src/adapters/types.js';
 import { runCommand } from '../src/transport/headless.js';
-import { tempDir } from './helpers/git-fixture.js';
-import { fixtureDir, materialize, readJsonl, writeJsonl } from './helpers/fixtures.js';
+import { cleanScratchAfterAll, fixtureDir, materialize, readJsonl, scratch, writeJsonl } from './helpers/fixtures.js';
+
+cleanScratchAfterAll();
 
 interface CaseFile {
   nonce: string;
@@ -108,7 +109,7 @@ describe('claude ratification details', () => {
 
   it('fails a read through a symlink that leaves the root (realpath)', () => {
     const { input } = inputFor('success');
-    const outside = tempDir('sc-outside-');
+    const outside = scratch('sc-outside-');
     writeFileSync(join(outside, 'x.txt'), 'x');
     symlinkSync(join(outside, 'x.txt'), join(input.root, 'link.txt'));
     const r = ratifyClaudeLeg({
@@ -246,7 +247,7 @@ const FAKE_CLAUDE = new URL('./fixtures/bin/fake-claude.mjs', import.meta.url).p
 const OCC: Occupant = { backend: 'claude', model: 'claude-haiku-5-5', effort: 'low' };
 
 function fakeHome(config: Record<string, unknown>, extraEnv: Record<string, string> = {}): { home: string; env: NodeJS.ProcessEnv } {
-  const home = tempDir('sc-fake-claude-');
+  const home = scratch('sc-fake-claude-');
   writeFileSync(join(home, 'fake-claude.json'), JSON.stringify({ fixture: fixtureDir('claude', 'success'), ...config }));
   return { home, env: { PATH: process.env['PATH'], HOME: home, SECRET_TOKEN: 'never-forwarded', ...extraEnv } };
 }
@@ -254,7 +255,7 @@ function fakeHome(config: Record<string, unknown>, extraEnv: Record<string, stri
 describe('claude preflight (4.3), through a fake CLI', () => {
   const pre = (config: Record<string, unknown>, extraEnv: Record<string, string> = {}, o: Occupant = OCC) => {
     const { env } = fakeHome(config, extraEnv);
-    return claudePreflight(o, { bin: FAKE_CLAUDE, runner: runCommand, env, root: tempDir('sc-pre-root-') });
+    return claudePreflight(o, { bin: FAKE_CLAUDE, runner: runCommand, env, root: scratch('sc-pre-root-') });
   };
 
   it('passes on the tested version with the measured isolation, and labels it strong', async () => {
@@ -307,10 +308,10 @@ async function runToDone(adapter: ReturnType<typeof createClaudeAdapter>, ctx: R
 }
 
 function legCtx(env: NodeJS.ProcessEnv, nonce: string): RoundCtx {
-  const legDir = tempDir('sc-claude-leg-');
+  const legDir = scratch('sc-claude-leg-');
   const briefFile = join(legDir, 'BRIEF.md');
   writeFileSync(briefFile, `NONCE: ${nonce}\nreview\n`);
-  return { root: tempDir('sc-claude-root-'), legDir, nonce, briefFile, timeoutMs: 30_000, env, rootUnchanged: () => ({ unchanged: true, changes: [] }) };
+  return { root: scratch('sc-claude-root-'), legDir, nonce, briefFile, timeoutMs: 30_000, env, rootUnchanged: () => ({ unchanged: true, changes: [] }) };
 }
 
 describe('claude end to end, through a fake CLI', () => {

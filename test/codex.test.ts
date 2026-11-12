@@ -18,8 +18,9 @@ import { CODEX_ENV_ALLOW } from '../src/adapters/codex/launch.js';
 import { rootAliases } from '../src/adapters/paths.js';
 import type { Occupant, RoundCtx } from '../src/adapters/types.js';
 import { runCommand } from '../src/transport/headless.js';
-import { tempDir } from './helpers/git-fixture.js';
-import { fixtureDir, listFiles, materialize, readJsonl, writeJsonl } from './helpers/fixtures.js';
+import { cleanScratchAfterAll, fixtureDir, listFiles, materialize, readJsonl, scratch, writeJsonl } from './helpers/fixtures.js';
+
+cleanScratchAfterAll();
 
 interface CaseFile {
   nonce: string;
@@ -519,7 +520,7 @@ describe('codex failure classifier (4.4)', () => {
 const FAKE_CODEX = new URL('./fixtures/bin/fake-codex.mjs', import.meta.url).pathname;
 
 function fakeHome(config: Record<string, unknown>): { home: string; env: NodeJS.ProcessEnv } {
-  const home = tempDir('sc-fake-codex-');
+  const home = scratch('sc-fake-codex-');
   writeFileSync(
     join(home, 'fake-codex.json'),
     JSON.stringify({ promptInput: join(fixtureDir('codex', 'prompt-input'), 'clean.json'), mcp: ['docs-server', 'cloud_admin'], ...config }),
@@ -533,7 +534,7 @@ const OCC: Occupant = { backend: 'codex', model: 'gpt-6.1-sol', effort: 'low' };
 describe('codex preflight (4.3), through a fake CLI', () => {
   const pre = (config: Record<string, unknown>, o: Occupant = OCC) => {
     const { home, env } = fakeHome(config);
-    const root = tempDir('sc-pre-root-');
+    const root = scratch('sc-pre-root-');
     return { home, run: codexPreflight(o, { bin: FAKE_CODEX, runner: runCommand, env, root }) };
   };
 
@@ -598,8 +599,8 @@ describe('codex launch', () => {
   it('runs a leg end to end: preflight, launch, record-based done, collect from the nonce, ratify', async () => {
     // The fake fills in the placeholders itself, with the root it is given.
     const { home, env } = fakeHome({ fixture: fixtureDir('codex', 'success') });
-    const root = tempDir('sc-e2e-root-');
-    const legDir = tempDir('sc-e2e-leg-');
+    const root = scratch('sc-e2e-root-');
+    const legDir = scratch('sc-e2e-leg-');
     const briefFile = join(legDir, 'BRIEF.md');
     writeFileSync(briefFile, 'NONCE: b5c6831e146e\nreview calc/\n');
     const adapter = createCodexAdapter({ bin: FAKE_CODEX });

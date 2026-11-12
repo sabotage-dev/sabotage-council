@@ -2,7 +2,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { groupAlive, runCommand, scrubEnv, startHeadless, type HeadlessSpec } from '../src/transport/headless.js';
-import { tempDir } from './helpers/git-fixture.js';
+import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
+
+cleanScratchAfterAll();
 
 const NODE = process.execPath;
 const ENV = { PATH: process.env['PATH'] ?? '/usr/bin:/bin' };
@@ -47,7 +49,7 @@ const GRANDCHILD = (pidFile: string): string =>
 
 describe('headless supervisor', () => {
   it('runs in cwd with exactly the given env, stdin from a file, output to files, and records the exit', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     writeFileSync(join(dir, 'in.txt'), 'from stdin');
     const p = startHeadless(
       spec(
@@ -68,14 +70,14 @@ describe('headless supervisor', () => {
   });
 
   it('reads /dev/null when no stdin file is given', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     const exit = await startHeadless(spec(dir, `process.stdout.write(String(require('fs').readFileSync(0).length));`)).exited;
     expect(exit.exitCode).toBe(0);
     expect(readFileSync(join(dir, 'out.txt'), 'utf8')).toBe('0');
   });
 
   it('kills the whole process group at the wall-clock cap, grandchildren included', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     const pidFile = join(dir, 'gc.pid');
     const p = startHeadless(spec(dir, `${GRANDCHILD(pidFile)} setInterval(() => {}, 1000);`, { timeoutMs: 600 }));
     await until(() => existsSync(pidFile));
@@ -88,14 +90,14 @@ describe('headless supervisor', () => {
   });
 
   it('sends SIGKILL when SIGTERM is ignored', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     const p = startHeadless(spec(dir, `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`, { timeoutMs: 300, killGraceMs: 200 }));
     const exit = await p.exited;
     expect(exit).toMatchObject({ doneBy: 'timeout', timedOut: true, sigkilled: true, signal: 'SIGKILL' });
   });
 
   it('takes the record as the done signal and kills a CLI that lingers after it', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     const marker = join(dir, 'done.marker');
     const p = startHeadless(
       spec(dir, `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'x'), 100); setInterval(() => {}, 1000);`, {
@@ -109,7 +111,7 @@ describe('headless supervisor', () => {
   });
 
   it('records a clean exit after the record as done by the record', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     const marker = join(dir, 'done.marker');
     const exit = await startHeadless(
       spec(dir, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x');`, { isDone: () => existsSync(marker), exitGraceMs: 5000 }),
@@ -118,7 +120,7 @@ describe('headless supervisor', () => {
   });
 
   it('kills processes that outlive the leader in its group', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     const pidFile = join(dir, 'gc.pid');
     const exit = await startHeadless(spec(dir, GRANDCHILD(pidFile))).exited;
     const grandchild = Number(readFileSync(pidFile, 'utf8'));
@@ -127,7 +129,7 @@ describe('headless supervisor', () => {
   });
 
   it('cancels a running leg', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     const p = startHeadless(spec(dir, `setInterval(() => {}, 1000);`));
     await until(() => p.running());
     const exit = await p.cancel();
@@ -136,7 +138,7 @@ describe('headless supervisor', () => {
   });
 
   it('reports a binary that cannot start as a spawn error, without throwing', async () => {
-    const dir = tempDir('sc-hl-');
+    const dir = scratch('sc-hl-');
     const exit = await startHeadless({ ...spec(dir, ''), command: join(dir, 'no-such-binary') }).exited;
     expect(exit.doneBy).toBe('spawn-error');
     expect(exit.spawnError).toMatch(/ENOENT/);
@@ -156,19 +158,19 @@ describe('scrubEnv', () => {
 
 describe('runCommand', () => {
   it('captures output and the exit code', async () => {
-    const dir = tempDir('sc-run-');
+    const dir = scratch('sc-run-');
     const r = await runCommand(NODE, ['-e', `process.stdout.write('o'); process.stderr.write('e'); process.exit(2)`], { cwd: dir, env: ENV });
     expect(r).toMatchObject({ exitCode: 2, stdout: 'o', stderr: 'e', timedOut: false, error: null });
   });
 
   it('kills a command at its cap', async () => {
-    const dir = tempDir('sc-run-');
+    const dir = scratch('sc-run-');
     const r = await runCommand(NODE, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, env: ENV, timeoutMs: 300 });
     expect(r.timedOut).toBe(true);
   });
 
   it('reports a missing binary', async () => {
-    const dir = tempDir('sc-run-');
+    const dir = scratch('sc-run-');
     const r = await runCommand(join(dir, 'missing'), [], { cwd: dir, env: ENV });
     expect(r.error).toMatch(/ENOENT/);
   });
