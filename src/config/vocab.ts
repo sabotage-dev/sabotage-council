@@ -25,6 +25,12 @@ export const FAILURE_CLASSES = [
 ] as const;
 export type FailureClass = (typeof FAILURE_CLASSES)[number];
 
+/** The only failure classes that move a seat to its fallback (plan 3.1 step 6, 4.4); the rest relaunch or end the leg. */
+export const FALLBACK_TRIGGERS = ['usage_limit', 'auth'] as const satisfies readonly FailureClass[];
+
+/** `sandbox` on a grok seat (plan 4.2): read-only where it starts, off where it refuses (the allowlist enforces). */
+export const GROK_SANDBOX_MODES = ['read-only', 'off'] as const;
+
 /** `council.untrusted_seat_policy` (plan 5.2). */
 export const UNTRUSTED_SEAT_POLICIES = ['fallback', 'skip', 'allow'] as const;
 

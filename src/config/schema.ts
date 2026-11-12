@@ -2,10 +2,11 @@ import { z } from 'zod';
 import {
   BACKENDS,
   CI_GATES,
-  FAILURE_CLASSES,
   INTERACTIVE_ADJUDICATION,
   SEAT_COUNT,
   UNTRUSTED_SEAT_POLICIES,
+  FALLBACK_TRIGGERS,
+  GROK_SANDBOX_MODES,
 } from './vocab.js';
 
 /*
@@ -46,7 +47,9 @@ export const fallbackSchema = z.strictObject({
   backend,
   model: modelId,
   effort: effort.optional(),
-  on: z.array(z.enum(FAILURE_CLASSES)).min(1, { error: 'fallback.on needs at least one failure class' }),
+  on: z
+    .array(z.enum(FALLBACK_TRIGGERS, { error: 'fallback.on takes only usage_limit or auth (plan 3.1, 4.4)' }))
+    .min(1, { error: 'fallback.on needs at least one failure class' }),
 });
 
 export const seatSchema = z.strictObject({
@@ -54,6 +57,7 @@ export const seatSchema = z.strictObject({
   backend,
   model: modelId,
   effort: effort.optional(),
+  sandbox: z.enum(GROK_SANDBOX_MODES).optional(),
   fallback: fallbackSchema.optional(),
 });
 

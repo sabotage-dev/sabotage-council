@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import type { AdapterRegistry } from './registry.js';
 import {
   checkFallbacksDiffer,
+  checkSandboxOnlyForGrok,
   checkModels,
   checkUniqueSeatIds,
   familyWarnings,
@@ -36,6 +37,7 @@ export async function validateConfig(raw: unknown, options: ValidateOptions = {}
 
   errors.push(...checkUniqueSeatIds(config.seats));
   errors.push(...checkFallbacksDiffer(config.seats));
+  errors.push(...checkSandboxOnlyForGrok(config.seats));
 
   const warnings: ConfigIssue[] = [];
   let modelsChecked = false;

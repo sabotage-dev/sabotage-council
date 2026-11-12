@@ -69,6 +69,17 @@ export function sameOccupant(a: OccupantKey, b: OccupantKey): boolean {
   return a.effort === undefined || b.effort === undefined || a.effort === b.effort;
 }
 
+/** `sandbox` is a grok setting (plan 4.2); on any other backend it is an error, not a silent no-op. */
+export function checkSandboxOnlyForGrok(seats: readonly SeatConfig[]): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  seats.forEach((seat, i) => {
+    if (seat.sandbox !== undefined && seat.backend !== 'grok') {
+      issues.push({ path: `seats[${i}].sandbox`, message: `sandbox applies only to grok seats (seat "${seat.id}" is ${seat.backend})` });
+    }
+  });
+  return issues;
+}
+
 /** A fallback must be a different occupant from its seat's primary. */
 export function checkFallbacksDiffer(seats: readonly SeatConfig[]): ConfigIssue[] {
   const issues: ConfigIssue[] = [];

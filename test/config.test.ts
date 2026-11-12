@@ -12,12 +12,14 @@ interface SeatSpec {
   backend: string;
   model: string;
   effort?: string;
+  sandbox?: string;
   fallback?: string;
 }
 
 function seat(spec: SeatSpec): string {
   const lines = ['[[seats]]', `id = "${spec.id}"`, `backend = "${spec.backend}"`, `model = "${spec.model}"`];
   if (spec.effort) lines.push(`effort = "${spec.effort}"`);
+  if (spec.sandbox) lines.push(`sandbox = "${spec.sandbox}"`);
   if (spec.fallback) lines.push(`fallback = ${spec.fallback}`);
   return `${lines.join('\n')}\n`;
 }
@@ -183,6 +185,25 @@ describe('config: fallbacks', () => {
     const fallback = '{ backend = "codex", model = "gpt-6.1-sol", on = ["auth"] }';
     const errors = errorsOf(await parseConfigText(toml(seat({ ...A, fallback }), seat(B), seat(C))));
     expect(errors.map((e) => e.path)).toEqual(['seats[0].fallback']);
+  });
+
+  it('rejects a fallback trigger outside usage_limit and auth', async () => {
+    for (const cls of ['contaminated', 'model', 'setup', 'timeout']) {
+      const fallback = `{ backend = "kiro", model = "gpt-5.6-sol", on = ["${cls}"] }`;
+      expect(errorsOf(await parseConfigText(toml(seat({ ...A, fallback }), seat(B), seat(C)))).map((e) => e.path)).toEqual([
+        'seats[0].fallback.on[0]',
+      ]);
+    }
+  });
+
+  it('accepts sandbox on a grok seat and rejects it elsewhere', async () => {
+    const grokSeat = (sandbox: string) => seat({ ...C, backend: 'grok', model: 'grok-4.7', sandbox });
+    okOf(await parseConfigText(toml(seat(A), seat(B), grokSeat('off'))));
+    okOf(await parseConfigText(toml(seat(A), seat(B), grokSeat('read-only'))));
+    expect(errorsOf(await parseConfigText(toml(seat(A), seat(B), grokSeat('strict')))).map((e) => e.path)).toEqual(['seats[2].sandbox']);
+    expect(errorsOf(await parseConfigText(toml(seat({ ...A, sandbox: 'off' }), seat(B), seat(C)))).map((e) => e.path)).toEqual([
+      'seats[0].sandbox',
+    ]);
   });
 
   it('rejects an unknown failure class and an empty on list', async () => {
