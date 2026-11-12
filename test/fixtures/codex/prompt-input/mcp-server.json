@@ -1,0 +1,131 @@
+[
+ {
+  "type": "additional_tools",
+  "role": "developer",
+  "tools": [
+   {
+    "type": "namespace",
+    "name": "functions",
+    "tools": [
+     {
+      "type": "custom",
+      "name": "exec",
+      "description": "Run JavaScript code to orchestrate/compose tool calls (description reduced to its nested tool headings).\n\n### `apply_patch`\n\n### `exec_command`\n\n### `list_mcp_resource_templates`\n\n### `list_mcp_resources`\n\n### `read_mcp_resource`\n\n### `view_image`\n\n### `write_stdin`\n\n### `clock__curr_time`"
+     },
+     {
+      "type": "function",
+      "name": "wait"
+     },
+     {
+      "type": "function",
+      "name": "request_user_input"
+     },
+     {
+      "type": "function",
+      "name": "request_user_input_async"
+     }
+    ]
+   },
+   {
+    "type": "namespace",
+    "name": "clock",
+    "tools": [
+     {
+      "type": "function",
+      "name": "sleep"
+     }
+    ]
+   },
+   {
+    "type": "namespace",
+    "name": "collaboration",
+    "tools": [
+     {
+      "type": "function",
+      "name": "followup_task"
+     },
+     {
+      "type": "function",
+      "name": "interrupt_agent"
+     },
+     {
+      "type": "function",
+      "name": "list_agents"
+     },
+     {
+      "type": "function",
+      "name": "send_message"
+     },
+     {
+      "type": "function",
+      "name": "spawn_agent"
+     },
+     {
+      "type": "function",
+      "name": "wait_agent"
+     }
+    ]
+   },
+   {
+    "type": "namespace",
+    "name": "mcp__example",
+    "tools": [
+     {
+      "type": "function",
+      "name": "run_query"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "role": "developer",
+  "content": [
+   {
+    "type": "input_text",
+    "text": "Deferred tool namespaces:\n- mcp__example: an example server"
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "role": "developer",
+  "content": [
+   {
+    "type": "input_text",
+    "text": "<permissions instructions>sandbox_mode is read-only</permissions instructions>"
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "role": "user",
+  "content": [
+   {
+    "type": "input_text",
+    "text": "# AGENTS.md instructions\n\n<INSTRUCTIONS>\n(the user's own global instructions, omitted)\n</INSTRUCTIONS>"
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "role": "user",
+  "content": [
+   {
+    "type": "input_text",
+    "text": "<environment_context>\n  <cwd>__SC_ROOT__</cwd>\n</environment_context>"
+   }
+  ]
+ },
+ {
+  "type": "message",
+  "role": "user",
+  "content": [
+   {
+    "type": "input_text",
+    "text": "x"
+   }
+  ]
+ }
+]

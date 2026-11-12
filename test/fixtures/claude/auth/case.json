@@ -1,0 +1,18 @@
+{
+  "nonce": "3617dff745c0",
+  "model": "claude-haiku-5-5",
+  "effort": "low",
+  "sessionId": "00000000-0000-4000-8000-0000000000c1",
+  "rootMutated": false,
+  "expect": {
+    "status": "FAIL",
+    "failureClass": "auth",
+    "failed": [
+      "answer",
+      "model-usage",
+      "nonce",
+      "result"
+    ]
+  },
+  "note": "The API answered 401 on the first request; synthetic from the success leg."
+}

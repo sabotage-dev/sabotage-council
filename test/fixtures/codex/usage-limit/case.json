@@ -1,0 +1,20 @@
+{
+  "nonce": "b5c6831e146e",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T15:14:53.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "FAIL",
+    "failureClass": "usage_limit",
+    "failed": [
+      "stream-completion",
+      "completion",
+      "tokens",
+      "answer",
+      "nonce"
+    ]
+  },
+  "note": "The leg hit the ChatGPT plan usage limit before answering (curly apostrophe, as observed)."
+}

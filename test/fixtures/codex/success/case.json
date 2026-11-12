@@ -1,0 +1,14 @@
+{
+  "nonce": "b5c6831e146e",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T15:14:53.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "PASS",
+    "failureClass": null,
+    "failed": []
+  },
+  "note": "Recorded exec-only review leg (probe), sanitized; the 14-name offer as a list. Its two interpreter calls (pytest, python3 -c) are dropped since round 1 (interpreter-cmd keeps them)."
+}

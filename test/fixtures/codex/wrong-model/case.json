@@ -1,0 +1,17 @@
+{
+  "nonce": "b5c6831e146e",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T15:14:53.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "FAIL",
+    "failureClass": "model",
+    "failed": [
+      "stream-reroute",
+      "model"
+    ]
+  },
+  "note": "The success leg rerouted to another model; must fail as model. Derived from the success leg without its two interpreter calls (round 1)."
+}

@@ -1,0 +1,7 @@
+NONCE: b5c6831e146e
+
+- MEDIUM - `calc/rangesum.py:11`: `range(start, end)` excludes `end`, violating the inclusive contract. Verified: single-element sum returns `0` instead of `6`; full-range sum returns `11` instead of `18`.
+
+No files modified.
+
+VERDICT: SHIP-WITH-FIXES

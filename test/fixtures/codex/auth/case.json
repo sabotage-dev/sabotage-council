@@ -1,0 +1,19 @@
+{
+  "nonce": "b5c6831e146e",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T15:14:53.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "FAIL",
+    "failureClass": "auth",
+    "failed": [
+      "events",
+      "stream-completion",
+      "answer",
+      "nonce"
+    ]
+  },
+  "note": "The refresh token expired; no thread started and no rollout exists."
+}

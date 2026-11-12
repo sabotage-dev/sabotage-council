@@ -1,0 +1,16 @@
+{
+  "nonce": "f1de120aacc2",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T19:33:17.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "CONTAMINATED",
+    "failureClass": "contaminated",
+    "failed": [
+      "children"
+    ]
+  },
+  "note": "The delegating leg with the child's own turn on a workspace-write sandbox; must fail."
+}

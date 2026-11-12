@@ -1,0 +1,16 @@
+{
+  "nonce": "3617dff745c0",
+  "model": "claude-haiku-5-5",
+  "effort": "low",
+  "sessionId": "00000000-0000-4000-8000-0000000000c1",
+  "rootMutated": false,
+  "expect": {
+    "status": "FAIL",
+    "failureClass": "model",
+    "failed": [
+      "model",
+      "model-usage"
+    ]
+  },
+  "note": "The success leg with every record naming claude-sonnet-5-5 while the pin is claude-haiku-5-5."
+}

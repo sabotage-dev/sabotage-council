@@ -1,3 +1,8 @@
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { SeatAdapters } from '../adapters/index.js';
+import type { Occupant, Preflight } from '../adapters/types.js';
 import { loadConfig, type AdapterRegistry, type ConfigIssue, type SeatConfig } from '../config/index.js';
 import { openStore } from '../store/index.js';
 import { packageInfo } from '../version.js';
@@ -11,6 +16,13 @@ export interface DoctorOptions {
   nodeVersion?: string | undefined;
   /** Defaults to package.json `engines.node`. */
   nodeRange?: string | undefined;
+  /**
+   * Seat adapters for the per-seat preflight (plan 4.3): binary, version, auth, model and the isolation proof,
+   * with no model call. Absent: no seat is preflighted.
+   */
+  adapters?: SeatAdapters | undefined;
+  /** The environment the preflight scrubs per adapter. Default: `process.env`. */
+  env?: NodeJS.ProcessEnv | undefined;
   write: (line: string) => void;
 }
 
@@ -39,7 +51,9 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
   if (config.ok) {
     line('ok', `config ${config.path} loaded`);
     seats = config.config.seats;
-    if (!config.modelsChecked) line('note', 'model ids and model families not checked: this build has no seat adapters yet');
+    if (!config.modelsChecked) {
+      line('note', 'config-wide model and family checks wait for every backend adapter; codex and claude seats are preflighted below');
+    }
   } else {
     line('fail', `config ${config.path} has ${config.errors.length} error(s)`);
     for (const issue of config.errors) options.write(`        ${formatIssue(issue)}`);
@@ -64,6 +78,55 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
   if (seats.length > 0) {
     options.write('seats:');
     for (const seat of seats) options.write(`  ${describeSeat(seat)}`);
+  }
+
+  // Per-seat preflight (plan 4.3), no model calls.
+  if (seats.length > 0 && options.adapters) {
+    options.write('preflight (no model calls):');
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'sc-doctor-root-')));
+    try {
+      for (const seat of seats) {
+        const occupants: Array<{ label: string; o: Occupant }> = [
+          { label: seat.id, o: { backend: seat.backend, model: seat.model, effort: seat.effort } },
+        ];
+        if (seat.fallback) {
+          occupants.push({
+            label: `${seat.id} fallback`,
+            o: { backend: seat.fallback.backend, model: seat.fallback.model, effort: seat.fallback.effort },
+          });
+        }
+        for (const { label, o } of occupants) {
+          const adapter = options.adapters(o.backend);
+          const name = `${label}  ${[o.backend, o.model, o.effort].filter((p) => p !== undefined).join(' / ')}`;
+          if (!adapter) {
+            options.write(`  ${name}: no adapter in this build`);
+            continue;
+          }
+          let pre: Preflight;
+          try {
+            pre = await adapter.preflight(o, {
+              root,
+              legDir: root,
+              nonce: '000000000000',
+              briefFile: '/dev/null',
+              timeoutMs: 60_000,
+              env: options.env,
+            });
+          } catch (error) {
+            line('fail', `${name}: preflight threw: ${error instanceof Error ? error.message : String(error)}`);
+            continue;
+          }
+          options.write(`  ${name}: ${pre.cliVersion !== null ? `${o.backend} ${pre.cliVersion}, ` : ''}enforcement ${pre.enforcement}`);
+          for (const c of pre.checks) {
+            if (c.status === 'fail') failed = true;
+            options.write(`        ${c.status.padEnd(4)}  ${c.name}: ${c.detail}`);
+          }
+          if (!pre.ok) options.write(`        => not usable: ${pre.reason ?? 'preflight failed'}`);
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 
   return failed ? 1 : 0;

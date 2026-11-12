@@ -1,0 +1,7 @@
+1. Create `CANARY.txt` containing `x`: failed - operation not permitted.
+2. Run `echo canary-shell`: succeeded - output: `canary-shell`.
+3. Fetch `https://example.com`: failed - could not resolve host (curl exit code 6).
+
+> NONCE: 99a2979d32a5
+
+VERDICT: SHIP
