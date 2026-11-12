@@ -1,0 +1,299 @@
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { acpAnswer, readAcpLog } from '../src/adapters/acp/log.js';
+import { judgeRead, readOnlyPolicy, toolCallPaths } from '../src/adapters/acp/policy.js';
+import { ratifyAcpCommon, type AcpPinExpect } from '../src/adapters/acp/ratify.js';
+import { verdictOf } from '../src/adapters/types.js';
+import { ACP_CLASS_OF_CHECK, acpFailureClass } from '../src/adapters/acp/ratify.js';
+import { startAcp, type AcpExit, type AcpPin } from '../src/transport/acp.js';
+import { groupAlive } from '../src/transport/headless.js';
+import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
+
+cleanScratchAfterAll();
+
+/*
+ * ACP conformance (brief P3 item 2): the real client against a scripted fake agent, then the common ratifier on
+ * the update log the client wrote. One case per behaviour the brief names.
+ */
+
+const FAKE = new URL('./fixtures/bin/fake-acp-agent.mjs', import.meta.url).pathname;
+const NONCE = 'a1b2c3d4e5f6';
+const PINS: AcpPin[] = [
+  { via: 'set_config_option', configId: 'model', value: 'fake-model' },
+  { via: 'set_config_option', configId: 'thought_level', value: 'low' },
+  { via: 'set_config_option', configId: 'mode', value: 'default' },
+];
+const EXPECT: AcpPinExpect[] = [
+  { id: 'model', value: 'fake-model', check: 'model' },
+  { id: 'thought_level', value: 'low', check: 'effort' },
+  { id: 'mode', value: 'default', check: 'mode' },
+];
+const REVIEW = [{ text: `NONCE: ${NONCE}\nVERDICT: SHIP\n` }];
+
+interface Leg {
+  dir: string;
+  root: string;
+  outside: string;
+  exit: AcpExit;
+  logFile: string;
+}
+
+async function runCase(kase: Record<string, unknown>, opts: { timeoutMs?: number; pins?: AcpPin[]; killOn?: RegExp; plant?: (root: string, outside: string) => void } = {}): Promise<Leg> {
+  const dir = scratch('sc-acp-');
+  const root = join(dir, 'root');
+  const outside = join(dir, 'outside');
+  mkdirSync(root);
+  mkdirSync(outside);
+  writeFileSync(join(root, 'inside.txt'), 'inside\n');
+  writeFileSync(join(outside, 'secret.txt'), 'secret\n');
+  opts.plant?.(root, outside);
+  const caseFile = join(dir, 'case.json');
+  writeFileSync(caseFile, JSON.stringify(kase).split('__ROOT__').join(root).split('__OUTSIDE__').join(outside));
+  const home = join(dir, 'home');
+  mkdirSync(home);
+  const logFile = join(dir, 'updates.jsonl');
+  const proc = startAcp({
+    command: process.execPath,
+    args: [FAKE],
+    cwd: root,
+    env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', HOME: home, FAKE_ACP_CASE: caseFile },
+    logFile,
+    stderrFile: join(dir, 'stderr.log'),
+    recordFile: join(dir, 'process.json'),
+    sessionCwd: root,
+    promptText: `NONCE: ${NONCE}\nreview`,
+    pins: opts.pins ?? PINS,
+    onPermission: readOnlyPolicy(root, ['read', 'search']),
+    timeoutMs: opts.timeoutMs ?? 15_000,
+    killGraceMs: 300,
+    cancelGraceMs: 300,
+    exitGraceMs: 500,
+    killOn: opts.killOn,
+  });
+  const exit = await proc.exited;
+  return { dir, root, outside, exit, logFile };
+}
+
+function ratify(leg: Leg, unchanged = true) {
+  const r = ratifyAcpCommon({
+    logFile: leg.logFile,
+    root: leg.root,
+    nonce: NONCE,
+    pins: EXPECT,
+    readKinds: ['read', 'search'],
+    timedOut: leg.exit.timedOut,
+    rootUnchanged: () => ({ unchanged, changes: [] }),
+  });
+  const failed = r.checks.filter((c) => !c.ok).map((c) => c.name).sort();
+  const cls = acpFailureClass(failed, ACP_CLASS_OF_CHECK, null, leg.exit.timedOut);
+  return { ...r, failed, cls, status: verdictOf(r.checks, cls).status };
+}
+
+const read = (id: string, path: string, ask = true) => ({ tool: { toolCallId: id, title: `Read ${path}`, kind: 'read', rawInput: { path }, locations: [{ path }] }, ask });
+
+describe('ACP conformance against the fake agent', () => {
+  it('a clean read-only review: in-root read allowed, answer ratifies', async () => {
+    const leg = await runCase({ steps: [read('t1', '__ROOT__/inside.txt'), ...REVIEW] });
+    const r = ratify(leg);
+    expect(r.failed).toEqual([]);
+    expect(r.status).toBe('PASS');
+    expect(leg.exit.doneBy).toBe('record');
+    expect(r.log.permissions.map((p) => p.decision)).toEqual(['allow']);
+    expect(r.log.permissions[0]?.option).toBe('allow_once');
+    // The session was opened with the root and no MCP servers, and the client declared no capabilities.
+    const init = r.log.initialize?.params as { clientCapabilities: { fs: Record<string, boolean>; terminal: boolean } };
+    expect(init.clientCapabilities).toEqual({ fs: { readTextFile: false, writeTextFile: false }, terminal: false });
+    expect(r.log.sessionNew?.params).toMatchObject({ cwd: leg.root, mcpServers: [] });
+    expect(r.answer?.startsWith(`NONCE: ${NONCE}`)).toBe(true);
+  });
+
+  it('a permission asked and refused: an outside read by path is rejected, and the leg still ratifies', async () => {
+    const leg = await runCase({ steps: [read('t1', '__OUTSIDE__/secret.txt'), ...REVIEW] });
+    const r = ratify(leg);
+    expect(r.log.permissions.map((p) => [p.decision, p.option])).toEqual([['reject', 'reject_once']]);
+    expect(r.log.permissions[0]?.why).toContain('resolves outside the root');
+    expect(r.failed).toEqual([]);
+    expect(r.log.toolCalls.get('t1')?.statuses).toEqual(['pending', 'failed']);
+  });
+
+  it('a write asked: refused, never an always option', async () => {
+    const leg = await runCase({
+      steps: [{ tool: { toolCallId: 'w1', title: 'Write CANARY.txt', kind: 'edit', rawInput: { path: '__ROOT__/CANARY.txt', content: 'x' } }, ask: true }, ...REVIEW],
+    });
+    const r = ratify(leg);
+    expect(r.log.permissions.map((p) => [p.decision, p.option])).toEqual([['reject', 'reject_once']]);
+    expect(r.log.permissions[0]?.why).toContain('kind edit is not a read');
+    expect(r.failed).toEqual([]);
+  });
+
+  it('a tool executed without asking ratifies contaminated', async () => {
+    const leg = await runCase({ steps: [{ tool: { toolCallId: 'x1', title: 'Run echo canary', kind: 'execute', rawInput: { command: 'echo canary' } }, ask: false }, ...REVIEW] });
+    const r = ratify(leg);
+    expect(r.failed).toEqual(['tools-used']);
+    expect(r.status).toBe('CONTAMINATED');
+    expect(r.cls).toBe('contaminated');
+    expect(r.unasked).toEqual([{ id: 'x1', title: 'Run echo canary', kinds: ['execute'] }]);
+  });
+
+  it('an outside read that ran with no request (a user rule) ratifies contaminated, by path', async () => {
+    const leg = await runCase({ steps: [read('t1', '__OUTSIDE__/secret.txt', false), ...REVIEW] });
+    const r = ratify(leg);
+    expect(r.failed).toEqual(['read-paths']);
+    expect(r.status).toBe('CONTAMINATED');
+  });
+
+  it('a read through a symlink that leaves the root is rejected when asked, and contaminated when it ran unasked', async () => {
+    const plant = (root: string, outside: string): void => symlinkSync(join(outside, 'secret.txt'), join(root, 'link-out.txt'));
+    const asked = await runCase({ steps: [read('t1', '__ROOT__/link-out.txt'), ...REVIEW] }, { plant });
+    const a = ratify(asked);
+    expect(a.log.permissions[0]?.decision).toBe('reject');
+    expect(a.log.permissions[0]?.why).toContain('its realpath leaves the root');
+    expect(a.failed).toEqual([]);
+    const unasked = await runCase({ steps: [read('t1', 'link-out.txt', false), ...REVIEW] }, { plant });
+    const u = ratify(unasked);
+    expect(u.failed).toEqual(['read-paths']);
+    expect(u.status).toBe('CONTAMINATED');
+  });
+
+  it('a mode the agent does not accept: the session is refused and no prompt is sent', async () => {
+    const leg = await runCase({ refuseConfig: ['mode'], steps: REVIEW });
+    const r = ratify(leg);
+    expect(leg.exit.refused).toContain('did not accept mode=default');
+    expect(r.log.prompt).toBeNull();
+    expect(r.failed).toEqual(['answer', 'nonce', 'prompt', 'refusal']);
+    expect(r.cls).toBe('setup');
+  });
+
+  it('a mode the agent reports differently: refused before the prompt, class setup', async () => {
+    const leg = await runCase({ forceConfig: { mode: 'auto' }, steps: REVIEW });
+    const r = ratify(leg);
+    expect(leg.exit.refused).toContain('reports mode = auto, not default');
+    expect(r.log.prompt).toBeNull();
+    expect(r.failed).toEqual(['answer', 'mode', 'nonce', 'prompt', 'refusal']);
+    expect(r.cls).toBe('setup');
+  });
+
+  it('a mode switched after the prompt ratifies contaminated', async () => {
+    const leg = await runCase({ steps: [{ configUpdate: { mode: 'auto' } }, ...REVIEW] });
+    expect(ratify(leg).failed).toEqual(['mode-held']);
+  });
+
+  it('a torn update stream: the agent dies mid-line', async () => {
+    const leg = await runCase({ steps: [{ text: 'NONCE' }, { raw: '{"jsonrpc":"2.0","method":"session/upd', noNewline: true }, { exit: 1 }] });
+    const r = ratify(leg);
+    expect(r.log.tornLine).toContain('session/upd');
+    expect(r.failed).toEqual(['log', 'nonce', 'prompt']);
+    expect(r.cls).toBe('transport');
+    expect(leg.exit.doneBy).toBe('exit');
+  });
+
+  it('auth failure at session/new: the error text reaches the log for the classifier', async () => {
+    const leg = await runCase({ sessionNewError: { code: -32000, message: 'Authentication required' } });
+    const r = ratify(leg);
+    expect(r.log.errorTexts).toEqual(['Authentication required']);
+    expect(r.failed).toEqual(['answer', 'nonce', 'prompt', 'session']);
+    expect(leg.exit.phase).toBe('session');
+  });
+
+  it('usage limit on the prompt: the error text reaches the log', async () => {
+    const leg = await runCase({ promptError: { code: -32603, message: 'Internal error', data: 'RESOURCE_EXHAUSTED: quota exceeded' } });
+    const r = ratify(leg);
+    expect(r.log.errorTexts.join(' ')).toContain('RESOURCE_EXHAUSTED');
+    expect(r.failed).toEqual(['answer', 'nonce', 'prompt']);
+  });
+
+  it('refuses fs and terminal client methods, and records them', async () => {
+    const leg = await runCase({
+      steps: [{ clientRequest: { method: 'fs/read_text_file', params: { path: '__ROOT__/inside.txt' } } }, { clientRequest: { method: 'terminal/create', params: { command: 'echo' } } }, ...REVIEW],
+    });
+    const r = ratify(leg);
+    expect(r.log.refusedClientMethods).toEqual(['fs/read_text_file', 'terminal/create']);
+    expect(r.failed).toEqual([]);
+    const reply = JSON.parse(readFileSync(join(leg.dir, 'home', 'fake-acp-client-response.json'), 'utf8')) as { error: { code: number } };
+    expect(reply.error.code).toBe(-32601);
+  });
+
+  it('a call the client rejected that runs anyway ratifies contaminated (denials-held)', async () => {
+    const leg = await runCase({ steps: [{ ...read('t1', '__OUTSIDE__/secret.txt'), runAnyway: true }, ...REVIEW] });
+    const r = ratify(leg);
+    expect(r.failed).toEqual(['denials-held']);
+    expect(r.status).toBe('CONTAMINATED');
+  });
+
+  it('never picks an allow_always option; with no allow_once on offer, an in-root read is rejected', async () => {
+    const leg = await runCase({
+      steps: [
+        {
+          ...read('t1', '__ROOT__/inside.txt'),
+          options: [
+            { optionId: 'aa', name: 'Always', kind: 'allow_always' },
+            { optionId: 'ro', name: 'No', kind: 'reject_once' },
+          ],
+        },
+        ...REVIEW,
+      ],
+    });
+    const r = ratify(leg);
+    expect(r.log.permissions.map((p) => [p.decision, p.option])).toEqual([['reject', 'reject_once']]);
+  });
+
+  it('the wall-clock cap kills the group and sends session/cancel', async () => {
+    const leg = await runCase({ steps: [{ hang: true }] }, { timeoutMs: 1500 });
+    expect(leg.exit.timedOut).toBe(true);
+    expect(leg.exit.doneBy).toBe('timeout');
+    expect(existsSync(join(leg.dir, 'home', 'fake-acp-cancelled'))).toBe(true);
+    expect(groupAlive(leg.exit.pgid as number)).toBe(false);
+  });
+
+  it('a kill pattern on stderr ends the leg at once (a browser sign-in prompt)', async () => {
+    const started = Date.now();
+    const leg = await runCase({ steps: [{ stderr: 'Opening browser... | Press (^) + C to cancel\n' }, { hang: true }] }, { timeoutMs: 20_000, killOn: /Opening browser/ });
+    expect(leg.exit.killedOn).toContain('Opening browser');
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(leg.exit.timedOut).toBe(false);
+  });
+});
+
+describe('ACP permission policy', () => {
+  const dir = scratch('sc-acp-policy-');
+  const root = join(dir, 'root');
+  mkdirSync(root);
+  writeFileSync(join(root, 'a.txt'), 'a');
+  it('finds paths under every path-like key, and judges globs and patterns that climb', () => {
+    expect(toolCallPaths({ rawInput: { AbsolutePath: '/x', SearchPath: 'y', file_path: 'z', paths: ['p', 'q'], query: '/api/v1' }, locations: [{ path: 'l' }] }).sort()).toEqual(['/x', 'l', 'p', 'q', 'y', 'z'].sort());
+    expect(toolCallPaths({ rawInput: { glob: '/etc/*', pattern: '../**' } }).sort()).toEqual(['../**', '/etc/*']);
+    expect(toolCallPaths({ rawInput: { pattern: 'foo/bar' } })).toEqual([]);
+  });
+  it('rejects a read that names no path, a non-read kind, and a call whose kind changed', () => {
+    expect(judgeRead({ kind: 'search', rawInput: { query: 'x' } }, ['search'], root, ['read', 'search']).inside).toBe(false);
+    expect(judgeRead({ kind: 'fetch', rawInput: { url: 'https://example.com' } }, ['fetch'], root, ['read', 'search']).read).toBe(false);
+    expect(judgeRead({ kind: 'read', rawInput: { path: join(root, 'a.txt') } }, ['read', 'execute'], root, ['read', 'search']).read).toBe(false);
+  });
+  it('merges what earlier tool_call updates said when the request carries only an id', () => {
+    const policy = readOnlyPolicy(root, ['read']);
+    const known = { fields: { toolCallId: 't', kind: 'read', rawInput: { path: join(root, 'a.txt') } }, kinds: ['read'] };
+    expect(policy({ toolCall: { toolCallId: 't', title: 'Read' } }, () => known).allow).toBe(true);
+    expect(policy({ toolCall: { toolCallId: 't', title: 'Read' } }, () => undefined).allow).toBe(false);
+  });
+});
+
+describe('ACP log reader', () => {
+  it('splits the message text at tool calls, and the answer is the whole turn', () => {
+    const dir = scratch('sc-acp-log-');
+    const file = join(dir, 'u.jsonl');
+    const upd = (u: Record<string, unknown>) => JSON.stringify({ t: 0, dir: 'recv', msg: { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update: u } } });
+    writeFileSync(
+      file,
+      [
+        upd({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Let me look.' } }),
+        upd({ sessionUpdate: 'tool_call', toolCallId: 'a', kind: 'read', status: 'pending' }),
+        upd({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'NONCE: x\n' } }),
+        upd({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'VERDICT: SHIP' } }),
+      ].join('\n') + '\n',
+    );
+    const log = readAcpLog(file);
+    expect(log.messageSegments).toEqual(['Let me look.', 'NONCE: x\nVERDICT: SHIP']);
+    expect(acpAnswer(log)).toBe('Let me look.\n\nNONCE: x\nVERDICT: SHIP');
+  });
+});
