@@ -95,6 +95,15 @@ describe('store: migrations', () => {
     expect(tables(store)).not.toContain('half');
   });
 
+  it('leaves the connection outside a transaction after a failed migration', () => {
+    const store = openTemp();
+    const broken = readMigrations(migrationsWith({ '002_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' }));
+    expect(() => migrate(store.db, broken)).toThrow();
+    expect(tables(store)).not.toContain('half');
+    // BEGIN fails inside an open transaction, so this proves the failed migration was rolled back.
+    expect(() => store.db.exec('BEGIN IMMEDIATE; ROLLBACK;')).not.toThrow();
+  });
+
   it('refuses a store whose applied migration text has changed', () => {
     openTemp().close();
     open.pop();
