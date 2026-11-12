@@ -49,6 +49,10 @@ const SAME_LINE = new RegExp(`^${W}VERDICT${W}:${W}${WORD}[.!]?${W}$`, 'i');
 const BARE_LABEL = new RegExp(`^${W}VERDICT${W}:${W}$`, 'i');
 const WORD_ALONE = new RegExp(`^${W}${WORD}[.!]?${W}$`, 'i');
 const QUOTE = /^[ \t]*>/;
+// A blank line in CommonMark holds only spaces and tabs. `trim()` would also drop U+00A0, U+000B, U+000C, U+FEFF,
+// U+3000 and the other Unicode spaces, so a line of those would end a quote and count as empty (council round 3).
+const BLANK = /^[ \t]*$/;
+const isBlank = (line: string): boolean => BLANK.test(line);
 const INDENTED = /^(?: {4}| {0,3}\t)/;
 
 function canonical(word: string): Verdict {
@@ -63,7 +67,7 @@ export function splitLines(text: string): string[] {
 /**
  * Why each line cannot carry the leg's own verdict, or null when it can. A `>` line opens a block quote, and every
  * non-blank line right after it stays in the quote as lazy continuation text (CommonMark), with or without its own
- * `>`, until a blank line or a fence line ends it.
+ * `>`, until a blank line (only spaces and tabs) or a fence line ends it.
  */
 function eligibility(lines: readonly string[], inFence: readonly boolean[]): (SkipReason | null)[] {
   const out: (SkipReason | null)[] = [];
@@ -73,7 +77,7 @@ function eligibility(lines: readonly string[], inFence: readonly boolean[]): (Sk
     if (inFence[i] === true) {
       quoted = false; // a fence interrupts the quote's paragraph, so it is never lazy continuation
       out.push('fence');
-    } else if (line.trim() === '') {
+    } else if (isBlank(line)) {
       quoted = false;
       out.push(null);
     } else if (QUOTE.test(line)) {
@@ -115,7 +119,7 @@ export function parseVerdict(text: string): VerdictResult {
   let lastNonEmpty = -1;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
-    if (line.trim() !== '') lastNonEmpty = i;
+    if (!isBlank(line)) lastNonEmpty = i;
     const reason = why[i] ?? null;
     if (reason !== null) {
       if (verdictShaped(line)) skipped.push({ line: i + 1, why: reason });
@@ -128,7 +132,7 @@ export function parseVerdict(text: string): VerdictResult {
     }
     if (BARE_LABEL.test(line)) {
       let j = i + 1;
-      while (j < lines.length && (lines[j] ?? '').trim() === '') j++;
+      while (j < lines.length && isBlank(lines[j] ?? '')) j++;
       const word = (why[j] ?? null) === null ? WORD_ALONE.exec(lines[j] ?? '') : null;
       if (word?.[1] !== undefined) matches.push({ verdict: canonical(word[1]), line: i + 1, endLine: j + 1, split: true });
     }
