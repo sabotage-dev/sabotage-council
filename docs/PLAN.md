@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Revision | 1.3 (2026-11-12): council rounds 1-3 folded |
+| Revision | 1.4 (2026-11-12): council rounds 1-4 folded |
 | Owner | Sabotage Development LLC, public repo `sabotage-dev/sabotage-council`, MIT |
 | Status | Plan under council review. Nothing is built yet. |
 | Decisions | D1-D16 in section 12, ruled by the owner on 2026-11-12 |
@@ -650,10 +650,26 @@ A leg ratifies only if all of these hold, read from the CLI's own records:
    - grok: `tool_definitions.json`
    - codex: `world_state.state.top_level_tools`
 
-   **Sandboxed-exec exception (items 5 and 6).** A backend labelled sandboxed-exec (codex) may use its exec tool,
-   and only that tool. Item 6 still applies to everything else: the leg fails if any MCP, web, write-class or
-   other non-read tool is offered besides the exec tool. For codex, that means `top_level_tools` lists no MCP
-   tool. Every command and every child rollout is recorded and parsed (exec and `custom_tool_call` inputs). The
+   **Sandboxed-exec exception (items 5 and 6).** For a backend labelled sandboxed-exec (codex), the offer check
+   fails the leg only when an **MCP, web or write-class tool** is offered.
+
+   Its native tools are allowed on offer and judged at use time. The probe and every council-round rollout
+   measured 0.167.0's `world_state.state.top_level_tools` as:
+   - `clock`, `clock.sleep`;
+   - `collaboration.*`, including `spawn_agent`, `send_message`, `followup_task` and `wait_agent`;
+   - `functions.exec`;
+   - `functions.request_user_input` and `functions.request_user_input_async`;
+   - `functions.wait`.
+
+   They are always offered and cannot be removed. The adapter declares that list per tested version; anything
+   else offered fails item 6.
+
+   At use time:
+   - `exec` commands are parsed (below);
+   - `spawn_agent` is governed by recursive child ratification (4.2);
+   - any other custom tool must be a read.
+
+   A P2 replay of exactly this measured offer list must ratify a leg whose only calls are `exec`. Every command and every child rollout is recorded and parsed (exec and `custom_tool_call` inputs). The
    leg also fails on any of:
    - a write denial;
    - a path token in a command string that resolves outside the root;
@@ -1188,7 +1204,7 @@ existing private council until the two agree for 10 rounds in a row (Q9).
 | Phase | Scope | Acceptance (all measured, not read) | Size |
 |---|---|---|---|
 | **P0** Scaffold | Repo, MIT, CI (ubuntu + macos, Node 22/24), lint/typecheck/vitest, config schema + loader, store schema + migrations, `doctor` skeleton | `npm test` green on both OSes; schema migration round-trip test; config rejects 2 or 4 seats, unknown backend, duplicate ids | S |
-| **P1** Root, brief, parsers | Root builder (archive via temp file, `_base`, diffs, `PR.md` as DATA, symlink neutralization, integrity, tree hash after the brief, residue sweep), recursive sanitizer with the per-backend agent-config list (case-insensitive), brief templates for every mode and round rule (incl. the change-request section), verdict + findings-block parser, severity normalizer | Golden tests over a fixture repo with planted agent-config files at the top level and nested (all moved), and symlinks to `~/.ssh`, `../..`, an absolute path and a chain (all neutralized); parser table tests including two-verdict `none`, missing block, CRITICAL->HIGH; mutation check: removing any sanitizer entry or the symlink pass fails a test | M |
+| **P1** Root, brief, parsers | Root builder (archive via temp file, `_base`, diffs, `PR.md` as DATA, symlink neutralization, integrity, tree hash after the brief, residue sweep), recursive sanitizer with the per-backend agent-config list (case-insensitive), brief templates for every mode and round rule (incl. the change-request section), verdict + findings-block parser, severity normalizer | Golden tests over a fixture repo with planted agent-config files at the top level and nested (all moved), and symlinks to `~/.ssh`, `../..`, an absolute path and a chain (all neutralized); parser table tests including two-verdict `none`, missing block, CRITICAL->HIGH, and two formats seen from real seats: a verdict split across two lines (`VERDICT:` then the word on the next line), and a findings block written as a JSON array instead of the line grammar; mutation check: removing any sanitizer entry or the symlink pass fails a test | M |
 | **P2** Headless transport + codex + claude | Supervisor (process group, caps, kill), record-based done signal, codex and claude adapters with ratifiers and failure classifiers, recorded fixtures from live probes | Replay tests per adapter: success, usage_limit, auth, wrong model, empty, contaminated (tool used), root mutated; codex exec-input ratification (outside-root path, denied write, subagent spawn); claude: a measured answer to whether a settings-source set without `user` drops plugin tools while the login works, plus the refusal path for a subscription user with plugins; the claude promotion canary (outside-root read by path and through a symlink, write, command, fetch, with a planted user allow rule; every one refused or denied before execution, `--restricted` confining Glob and Grep, read paths ratified from the transcript). Pass = claude moves from `pending` to `strong`, fail = it stays `pending`; one opt-in live smoke per adapter on the planted-defect fixture (`SC_LIVE=codex,claude`) | M |
 | **P3** ACP transport + antigravity + kiro | ACP client (initialize, session/new with `mcpServers: []`, most restrictive mode via `session/set_config_option`, prompt, realpath-checked reject-all-but-read permissions, update log), agy and kiro adapters | ACP conformance tests against a fake agent, incl. one that executes a tool without asking (must ratify `contaminated`); live canary per backend: a leg asked to read a file outside the root (by path and through a symlink), write, run a command and fetch has every one denied and the root hash unchanged, run twice: clean, and with a user-side allow rule planted (must be refused at preflight or denied by the client before it executes; a run where it executed and was only caught at ratification fails the canary, and the backend stays `pending`). Only then may that backend's label move from `pending` to `strong`. For kiro, P3 also records the engine it pins (the `acp` flags on V2, or `session/set_config_option` on V3) and the record fields that must ratify. opencode's equivalent canary is part of P4's acceptance | M |
 | **P4** grok, opencode, cursor, muse | Four adapters; grok `HOME` isolation + offered-tools ratification; opencode per-leg XDG + DB; cursor versioned-binary path + hooks; muse contributor-off + export ratification | Replay tests per adapter; `doctor --deep` canary root fails any backend that loads a planted hook. Per backend where the user has auth, the same promotion canary as P3: outside-root read by path and through a symlink, write, command, fetch, with a planted user allow rule. Only a refusal or a denial before execution passes. Pass = opencode or grok moves from `pending` (grok: from `weak`) to `strong`; cursor and muse stay below `strong` in v1 whatever the result. A backend with no canary run stays non-`strong`, and the README says so: with the default `fallback` policy an untrusted-PR round then needs `strong` fallbacks or fails below quorum, visibly | L |
@@ -1307,7 +1323,7 @@ Still not verified (P2-P4 live smokes settle each):
 - That `claude --restricted` confines Glob and Grep as well as Read.
 - Whether `--setting-sources` or `--bare` drops installed-plugin tools while keeping the user's own login.
 
-## 15. Parked follow-ups (council round 3; not folded, owner decides)
+## 15. Parked follow-ups (council rounds 3-4; not folded, owner decides)
 
 These are consistency items the round 3 seats marked non-blocking. They are parked, not folded. Each is a sentence
 a builder should reconcile when building the named phase.
@@ -1327,3 +1343,11 @@ a builder should reconcile when building the named phase.
 | N11 | A ruling-row COMMENT could trip the stale-change-request dismissal while owed rows exist; dismiss only when owed is 0 | 3.7 | P6 |
 | N12 | 4.2 and 4.5 do not say how the codex adapter enumerates MCP server names or finds child rollouts | 4.2 | P2 |
 | N13 | 7.3 Coverage repeats the human-asks bullet | 7.3 | P5 |
+| N14 | 3.6 step 5: within one event, add 1 for a new head first, then apply `count = max(count, N)` for its marker. The P6 case pins this order. | 3.6 | P6 |
+| N15 | The 4.2 codex table cell should point at `custom_tool_call_output` too: the canary's write denial appears there. | 4.2 | P2 |
+| N16 | Parse paths from the `cmd` string inside `exec_command`, never from the `CommandExecution.command` wrapper. That wrapper starts with `/bin/zsh`, an absolute path on every command. | 4.2 | P2 |
+| N17 | The outside-root check on codex `cmd` strings is lexical. Add fail-closed handling for `$HOME`, `$(...)`, globs, `cd` then a relative path, and a `cmd` that cannot be tokenized. It stays a backstop: codex reads are declared unconfined. | 4.2 | P2 |
+| N18 | List the custom tool names that count as reads for codex. | 4.2, 4.5 | P2 |
+| N19 | When a credit and a counted marker share a review id, keep the marker's `round <N>`. | 3.6 | P6 |
+| N20 | 3.6 says both "newest counted head" and "head with an event" for the baseline; use one term. | 3.6 | P6 |
+| N21 | 4.1's planted-allow-rule canary sentence should say that a run caught only at ratification fails, as P3 now does. | 4.1 | P3 |
