@@ -1,0 +1,14 @@
+{
+  "nonce": "91d1b78ffe53",
+  "model": "claude-haiku-4.5",
+  "effort": null,
+  "cliVersion": "3.2.1",
+  "rootMutated": false,
+  "plantSymlink": false,
+  "expect": {
+    "status": "PASS",
+    "failureClass": null,
+    "failed": []
+  },
+  "note": "Recorded live smoke (P3, kiro-cli 3.2.1, v2 engine over ACP, claude-haiku-4.5, separate auth_home login) on the planted-defect root, sanitized. Two in-root reads ran with no permission request; the review found the planted defect."
+}
