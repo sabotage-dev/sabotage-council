@@ -39,7 +39,10 @@ interface Leg {
   logFile: string;
 }
 
-async function runCase(kase: Record<string, unknown>, opts: { timeoutMs?: number; pins?: AcpPin[]; killOn?: RegExp; plant?: (root: string, outside: string) => void } = {}): Promise<Leg> {
+async function runCase(
+  kase: Record<string, unknown>,
+  opts: { timeoutMs?: number; pins?: AcpPin[]; killOn?: RegExp; plant?: (root: string, outside: string) => void; sessionCwd?: (root: string, outside: string) => string; allowAll?: boolean } = {},
+): Promise<Leg> {
   const dir = scratch('sc-acp-');
   const root = join(dir, 'root');
   const outside = join(dir, 'outside');
@@ -61,10 +64,10 @@ async function runCase(kase: Record<string, unknown>, opts: { timeoutMs?: number
     logFile,
     stderrFile: join(dir, 'stderr.log'),
     recordFile: join(dir, 'process.json'),
-    sessionCwd: root,
+    sessionCwd: opts.sessionCwd?.(root, outside) ?? root,
     promptText: `NONCE: ${NONCE}\nreview`,
     pins: opts.pins ?? PINS,
-    onPermission: readOnlyPolicy(root, ['read', 'search']),
+    onPermission: opts.allowAll ? () => ({ allow: true, why: 'a broken policy (test)' }) : readOnlyPolicy(root, ['read', 'search']),
     timeoutMs: opts.timeoutMs ?? 15_000,
     killGraceMs: 300,
     cancelGraceMs: 300,
@@ -252,6 +255,43 @@ describe('ACP conformance against the fake agent', () => {
     expect(leg.exit.killedOn).toContain('Opening browser');
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(leg.exit.timedOut).toBe(false);
+  });
+});
+
+describe('ACP ratification: each check on its own', () => {
+  it('handshake: initialize refused', async () => {
+    const leg = await runCase({ initializeError: { code: -32600, message: 'unsupported protocol' } });
+    expect(ratify(leg).failed).toEqual(['answer', 'handshake', 'nonce', 'prompt', 'session']);
+  });
+  it('cwd: a session opened somewhere else than the root', async () => {
+    const leg = await runCase({ steps: REVIEW }, { sessionCwd: (_root, outside) => outside });
+    expect(ratify(leg).failed).toEqual(['cwd']);
+    expect(ratify(leg).cls).toBe('contaminated');
+  });
+  it('model and effort: the agent reports other values than the pins', async () => {
+    const model = await runCase({ forceConfig: { model: 'other-model' }, steps: REVIEW });
+    expect(ratify(model).failed).toEqual(['answer', 'model', 'nonce', 'prompt', 'refusal']);
+    expect(ratify(model).cls).toBe('model');
+    const effort = await runCase({ forceConfig: { thought_level: 'high' }, steps: REVIEW });
+    expect(ratify(effort).failed).toEqual(['answer', 'effort', 'nonce', 'prompt', 'refusal']);
+  });
+  it('permissions: a grant the record shows was not an in-root read (a broken live policy)', async () => {
+    const leg = await runCase(
+      { steps: [{ tool: { toolCallId: 'w', title: 'Write x', kind: 'edit', rawInput: { path: '__ROOT__/x' } }, ask: true, failAfterAllow: true }, ...REVIEW] },
+      { allowAll: true },
+    );
+    const r = ratify(leg);
+    expect(r.failed).toEqual(['permissions']);
+    expect(r.status).toBe('CONTAMINATED');
+  });
+  it('prompt: a turn that stopped for another reason than end_turn', async () => {
+    const leg = await runCase({ stopReason: 'max_tokens', steps: REVIEW });
+    expect(ratify(leg).failed).toEqual(['prompt']);
+  });
+  it('root-unchanged: the residue sweep saw a change', async () => {
+    const leg = await runCase({ steps: REVIEW });
+    expect(ratify(leg, false).failed).toEqual(['root-unchanged']);
+    expect(ratify(leg, false).cls).toBe('contaminated');
   });
 });
 

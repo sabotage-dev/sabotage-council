@@ -92,7 +92,7 @@ async function runSteps(steps) {
         allowed = picked !== undefined && picked.kind.startsWith('allow');
         if (step.record) writeFileSync(join(home, `fake-acp-permission-${tc.toolCallId}.json`), JSON.stringify(res));
       }
-      if (allowed || step.runAnyway) {
+      if ((allowed && !step.failAfterAllow) || step.runAnyway) {
         update({ sessionUpdate: 'tool_call_update', toolCallId: tc.toolCallId, status: 'in_progress' });
         update({ sessionUpdate: 'tool_call_update', toolCallId: tc.toolCallId, status: 'completed', rawOutput: step.output ?? 'ok' });
       } else {

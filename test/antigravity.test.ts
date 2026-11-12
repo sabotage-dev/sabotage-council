@@ -258,6 +258,12 @@ describe('antigravity through the fake agent (synthetic, every conformance case)
     expect(r.status).toBe('CONTAMINATED');
   });
 
+  it('a log that never names the conversation: agy-log', async () => {
+    const { r } = await launch({ steps: REVIEW }, { agyLog: AGY_LOG.split('\n').filter((l) => !l.includes('Created conversation')).join('\n') });
+    expect(failedNames(r)).toEqual(['agy-log']);
+    expect(r.failureClass).toBe('setup');
+  });
+
   it('another CLI version in the log than preflight saw: setup', async () => {
     const { r } = await launch({ steps: REVIEW }, { agyLog: AGY_LOG.replace('version: 1.5.7', 'version: 1.5.9') });
     expect(failedNames(r)).toEqual(['cli-version']);

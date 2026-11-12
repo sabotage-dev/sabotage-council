@@ -71,10 +71,10 @@ function ctxFor(extraEnv: Record<string, string> = {}): RoundCtx & { outside: st
   return { root, legDir, nonce: NONCE, briefFile, timeoutMs: 15_000, env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', HOME: '/nonexistent-real-home', ...extraEnv }, rootUnchanged: () => ({ unchanged: true, changes: [] }), outside };
 }
 
-function sessionRecord(over: { agent?: string; model?: string; turnModel?: string; effort?: string | null; trusted?: string[] } = {}): Record<string, unknown> {
+function sessionRecord(over: { agent?: string; model?: string; turnModel?: string; effort?: string | null; trusted?: string[]; cwd?: string } = {}): Record<string, unknown> {
   return {
     session_id: '${SESSION}',
-    cwd: '${CWD}',
+    cwd: over.cwd ?? '${CWD}',
     session_created_reason: 'subagent',
     session_state: {
       version: 'v1',
@@ -233,6 +233,7 @@ describe('kiro through the fake agent (synthetic, every conformance case)', () =
     ['another agent', { agent: 'kiro_default' }, 'record-agent', 'contaminated'],
     ['another effort', { effort: 'high' }, 'record-effort', 'model'],
     ['a trusted tool', { trusted: ['fs_write'] }, 'record-permissions', 'contaminated'],
+    ['another cwd', { cwd: '/elsewhere' }, 'record-cwd', 'contaminated'],
   ])('the session record with %s fails %s', async (_what, over, check, cls) => {
     const { r } = await launch({ steps: REVIEW }, { record: sessionRecord({ effort: 'low', ...over }) });
     expect(failedNames(r)).toEqual([check]);
