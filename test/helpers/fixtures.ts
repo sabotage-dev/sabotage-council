@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll } from 'vitest';
 import { removeDir, tempDir } from './git-fixture.js';
@@ -23,7 +23,14 @@ export function cleanScratchAfterAll(): void {
 export const ROOT_PLACEHOLDER = '__SC_ROOT__';
 export const SESSION_PLACEHOLDER = '__SC_SESSION__';
 
-export function fixtureDir(kind: 'codex' | 'claude', name: string): string {
+export type FixtureKind = 'codex' | 'claude' | 'antigravity' | 'kiro';
+
+/** ACP fixtures also carry the canary's outside dir, the temp parent of both, and the leg dir. */
+export const OUTSIDE_PLACEHOLDER = '__SC_OUTSIDE__';
+export const TMP_PLACEHOLDER = '__SC_TMP__';
+export const LEG_PLACEHOLDER = '__SC_LEG__';
+
+export function fixtureDir(kind: FixtureKind, name: string): string {
   return new URL(`../fixtures/${kind}/${name}`, import.meta.url).pathname;
 }
 
@@ -45,13 +52,16 @@ export interface Materialized {
 }
 
 /** Copies a fixture to a temp dir and replaces its placeholders with a real root (and session id). */
-export function materialize(kind: 'codex' | 'claude', name: string, replacements: Record<string, string> = {}): Materialized {
-  const tmp = scratch(`sc-${kind}-${name}-`);
+export function materialize(kind: FixtureKind, name: string, replacements: Record<string, string> = {}): Materialized {
+  const tmp = realpathSync(scratch(`sc-${kind}-${name}-`));
   const root = join(tmp, 'root');
   mkdirSync(root);
+  const outside = join(tmp, 'outside');
+  mkdirSync(outside);
+  writeFileSync(join(outside, 'secret.txt'), 'outside the root\n');
   const dir = join(tmp, 'fixture');
   cpSync(fixtureDir(kind, name), dir, { recursive: true });
-  const all: Record<string, string> = { [ROOT_PLACEHOLDER]: root, ...replacements };
+  const all: Record<string, string> = { [ROOT_PLACEHOLDER]: root, [OUTSIDE_PLACEHOLDER]: outside, [TMP_PLACEHOLDER]: tmp, [LEG_PLACEHOLDER]: dir, ...replacements };
   for (const file of listFiles(dir)) {
     let text = readFileSync(file, 'utf8');
     for (const [from, to] of Object.entries(all)) text = text.split(from).join(to);

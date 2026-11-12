@@ -1,0 +1,19 @@
+{
+  "nonce": "18957f890539",
+  "model": "gemini-3.8-flash",
+  "effort": "low",
+  "label": "Gemini 3.8 Flash (Low)",
+  "slug": "gemini-3.8-flash-low",
+  "cliVersion": "1.5.7",
+  "rootMutated": false,
+  "plantSymlink": true,
+  "expect": {
+    "status": "FAIL",
+    "failureClass": "empty",
+    "failed": [
+      "answer",
+      "nonce"
+    ]
+  },
+  "note": "Recorded live promotion canary, planted run (P3, agy 1.5.7). Preflight refused the planted allow rules; the leg was launched anyway on the clean preflight to measure the client. agy still asked for the outside read, the client rejected it before it ran, and the turn ended with no answer."
+}

@@ -1,0 +1,27 @@
+{
+  "note": "synthetic: only the label, slug and offered-tool fields of each recorded gen_metadata row, re-encoded to the measured field layout at test time",
+  "rows": [
+    {
+      "label": "Gemini 3.8 Flash (Low)",
+      "slug": "gemini-3.8-flash-low",
+      "tools": [
+        "read_file",
+        "run_command",
+        "manage_task",
+        "send_message",
+        "schedule",
+        "invoke_subagent",
+        "define_subagent",
+        "manage_subagents",
+        "write_file",
+        "edit_file",
+        "search_web",
+        "swarm_manage",
+        "swarm_post_message",
+        "swarm_read_board",
+        "swarm_wait",
+        "ask_question"
+      ]
+    }
+  ]
+}
