@@ -2,6 +2,7 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -151,6 +152,23 @@ describe('tree hash, git commit and residue sweep (plan 3.1, 5.3)', () => {
     const { sealed } = prepareRoot(rootPath(), inputs(), brief);
     chmodSync(join(sealed.root, 'fixture/README.md'), 0o755);
     expect(sweepResidue(sealed).changes).toEqual([{ path: 'fixture/README.md', change: 'modified' }]);
+  });
+
+  // Each change below keeps the owner execute bit, the only mode bit the hash recorded before round 1.
+  it.each([
+    ['0644 to 0666 (group and other may write)', 'fixture/README.md', 0o644, 0o666],
+    ['0755 to 04755 (setuid)', 'fixture/README.md', 0o755, 0o4755],
+    ['0755 to 0777 on a directory', 'fixture/src', 0o755, 0o777],
+  ])('notices any other permission change: %s', (_name, path, from, to) => {
+    const built = buildRoot(rootPath(), inputs());
+    chmodSync(join(built.root, path), from);
+    writeFileSync(join(built.root, 'BRIEF.md'), 'brief\n');
+    const sealed = sealRoot(built, ['BRIEF.md']);
+    chmodSync(join(sealed.root, path), to);
+    expect(lstatSync(join(sealed.root, path)).mode & 0o7777).toBe(to);
+    const report = sweepResidue(sealed);
+    expect(report.unchanged).toBe(false);
+    expect(report.changes).toEqual([{ path, change: 'modified' }]);
   });
 
   it('keeps comparing hashes when the git dir is gone', () => {

@@ -6,8 +6,8 @@ export interface ManifestEntry {
   /** Root-relative, `/` separated. */
   path: string;
   kind: EntryKind;
-  /** Owner execute bit (files only). */
-  exec: boolean;
+  /** The full permission word, `mode & 0o7777`: rwx for owner, group and other, plus setuid, setgid and sticky. */
+  mode: number;
   size: number;
   /** sha256 of a file's bytes or a link's target; empty for directories and other kinds. */
   digest: string;
@@ -32,21 +32,22 @@ function digestFile(path: string): string {
 /** Every entry under the root, by lstat, with content digests. */
 export function manifestOf(root: string): ManifestEntry[] {
   return walk(root).map((entry) => {
-    const exec = entry.kind === 'file' && (entry.stats.mode & 0o100) !== 0;
+    const mode = entry.stats.mode & 0o7777;
     let digest = '';
     if (entry.kind === 'file') digest = digestFile(entry.abs);
     else if (entry.kind === 'symlink') digest = createHash('sha256').update(readlinkSync(entry.abs)).digest('hex');
-    return { path: entry.rel, kind: entry.kind, exec, size: entry.kind === 'dir' ? 0 : entry.stats.size, digest };
+    return { path: entry.rel, kind: entry.kind, mode, size: entry.kind === 'dir' ? 0 : entry.stats.size, digest };
   });
 }
 
 function canonicalLine(e: ManifestEntry): string {
-  return `${e.kind}\t${e.exec ? 'x' : '-'}\t${e.size}\t${e.digest}\t${JSON.stringify(e.path)}\n`;
+  return `${e.kind}\t${e.mode.toString(8).padStart(4, '0')}\t${e.size}\t${e.digest}\t${JSON.stringify(e.path)}\n`;
 }
 
 /**
- * The root's tree hash (plan 5.3): sha256 over every entry's kind, execute bit, size, content digest and path,
- * sorted by path. It covers files, links, empty directories and the brief, and nothing outside the root.
+ * The root's tree hash (plan 5.3): sha256 over every entry's kind, permission word, size, content digest and path,
+ * sorted by path. It covers files, links, empty directories and the brief, and nothing outside the root. Any
+ * permission change (0644 to 0666, 0755 to 04755) changes the hash.
  */
 export function hashManifest(entries: readonly ManifestEntry[]): string {
   const hash = createHash('sha256');
