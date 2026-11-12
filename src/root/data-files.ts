@@ -11,6 +11,21 @@ export function dataLines(text: string): string[] {
   return lines.map((line) => (line === '' ? DATA_PREFIX : `${DATA_PREFIX} ${line}`));
 }
 
+/**
+ * Characters JSON.stringify leaves raw that can still break or hide a line: DEL, the C1 controls (NEL among them),
+ * zero-width and bidirectional format characters, U+2028, U+2029 and the byte-order mark.
+ */
+const UNSAFE_IN_JSON = /[\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+
+/**
+ * A name from the reviewed tree as one JSON string on one line, for a `DATA:` line: control characters, every line
+ * break and the invisible format characters are escaped as `\uXXXX`, so the name can never end the line or start an
+ * unmarked one.
+ */
+export function quoteName(name: string): string {
+  return JSON.stringify(name).replace(UNSAFE_IN_JSON, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
 export interface PrComment {
   author?: string | undefined;
   /** ISO time, as the forge reports it. */

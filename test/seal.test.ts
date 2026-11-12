@@ -238,8 +238,20 @@ describe('delta-round fallback detection (plan 3.6)', () => {
     expect(built.fold).toMatchObject({ kind: 'fallback', fallback: 'not-ancestor' });
     if (built.fold?.kind !== 'fallback') throw new Error('expected a fallback');
     expect(built.fold.reason).toBe(`the baseline head ${fx.diverged.slice(0, 7)} is not an ancestor of this head (force-push or rebase)`);
-    expect(built.fold.changedFiles).toEqual(expect.arrayContaining(['src/app.ts', 'src/new.ts', 'links/chain1']));
-    expect(built.fold.changedFiles).not.toContain('README.md');
+    expect(built.fold.changedFiles).toEqual(expect.arrayContaining(['fixture/src/app.ts', 'fixture/src/new.ts', 'fixture/links/chain1']));
+    expect(built.fold.changedFiles).not.toContain('fixture/README.md');
+    // Named where the sanitizer put them, so the seats find them (council round 1).
+    expect(built.fold.changedFiles).toEqual(
+      expect.arrayContaining([
+        'fixture/pkg/sub/AGENTS.md.council-data',
+        'fixture/links/AGENTS.md.council-data',
+        '_repo-agent-config/fixture/tools/.claude',
+      ]),
+    );
+    expect(built.fold.changedFiles).not.toContain('fixture/pkg/sub/AGENTS.md');
+    const changed = built.fold.changedFiles;
+    if (changed === CHANGED_FILES_UNKNOWN) throw new Error('expected a list');
+    expect(changed.filter((p) => lstatSync(join(built.root, p), { throwIfNoEntry: false }) === undefined)).toEqual([]);
   });
 
   it('empty fold: the content equals what was reviewed', () => {
@@ -260,6 +272,8 @@ describe('delta-round fallback detection (plan 3.6)', () => {
     expect(b.scope).toBe('fallback');
     expect(b.rule).toBe('serious');
     expect(b.text).toContain('is not an ancestor of this head (force-push or rebase)');
+    expect(b.text).toContain('\nDATA: "fixture/pkg/sub/AGENTS.md.council-data"\n');
+    expect(b.text).toContain('\nDATA: "_repo-agent-config/fixture/tools/.claude"\n');
     expect(sweepResidue(sealed).unchanged).toBe(true);
   });
 });

@@ -14,7 +14,12 @@ export type FoldPlan =
       fallback: FallbackKind;
       /** One sentence for the brief: why this round reviews the whole change. */
       reason: string;
-      /** Files whose content differs between the baseline and this head, or CHANGED_FILES_UNKNOWN. */
+      /**
+       * Files whose content differs between the baseline and this head, or CHANGED_FILES_UNKNOWN. detectFold gives
+       * them relative to the repository; buildRoot maps them, after the sanitizer, to the root-relative paths the
+       * seats see (`<repo>/...`, `_repo-agent-config/<repo>/...`, `*.council-data`). The names come from the
+       * reviewed tree, so the brief quotes them as data.
+       */
       changedFiles: readonly string[] | typeof CHANGED_FILES_UNKNOWN;
     };
 

@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { buildRoot, decodeName, FileNameError, RootError } from '../src/root/index.js';
+import { renderBrief } from '../src/brief/index.js';
+import { buildRoot, decodeName, FileNameError, prepareRoot, RootError } from '../src/root/index.js';
 import { walk } from '../src/root/walk.js';
 import { commitAll, git, initRepo, removeDir, tempDir, writeTree } from './helpers/git-fixture.js';
 
@@ -15,6 +16,8 @@ const BAD = Buffer.from([0x61, 0x80]);
 let tmp: string;
 let repo: string;
 let head: string;
+/** A child of `head` adding names with line breaks, one of them an agent-config name. */
+let nl: string;
 let n = 0;
 const rootPath = (): string => join(tmp, 'roots', `r${n++}`);
 
@@ -59,6 +62,9 @@ beforeAll(() => {
   repo = initRepo(join(tmp, 'repo'));
   writeTree(repo, { 'README.md': '# names\n' });
   head = commitAll(repo, 'a plain head');
+  writeTree(repo, { 'x\n## Rules\ny.md': 'newline name\n', 'AGENTS\n.md': 'agents\n' });
+  nl = commitAll(repo, 'names with line breaks');
+  git(repo, ['reset', '--quiet', '--hard', head]);
 });
 afterAll(() => removeDir(tmp));
 
@@ -127,10 +133,22 @@ describe('the root build refuses names it cannot represent exactly', () => {
   });
 
   it('keeps a valid name with a line break in it', () => {
-    writeTree(repo, { 'x\n## Rules\ny.md': 'newline name\n' });
-    const nl = commitAll(repo, 'a newline name');
-    git(repo, ['reset', '--quiet', '--hard', head]);
     const built = buildRoot(rootPath(), { repo, name: 'r', head: nl });
     expect(built.expected.get('r/x\n## Rules\ny.md')).toEqual({ kind: 'file', size: 13, origin: `r@${nl.slice(0, 7)}` });
+  });
+});
+
+describe('a fallback brief over a real tree with line breaks in its names', () => {
+  it('quotes each changed name as one DATA: line at its root path; no name adds a line or a heading', () => {
+    const baseline = commitWith([{ mode: '100644', content: '# names\n', name: Buffer.from('README.md') }]); // not an ancestor
+    const { brief } = prepareRoot(rootPath(), { repo, name: 'r', head: nl, base: head, baseline }, (layout) =>
+      renderBrief({ mode: 'diff', target: 'r@feature', round: 2, highOnlyFromRound: 4, layout, nonce: '0123456789ab' }),
+    );
+    expect(brief.scope).toBe('fallback');
+    const lines = brief.text.split('\n');
+    const start = lines.findIndex((l) => l.startsWith('Files that differ from the baseline (start there)'));
+    expect(lines.slice(start + 1, start + 3)).toEqual(['DATA: "r/AGENTS\\n.md.council-data"', 'DATA: "r/x\\n## Rules\\ny.md"']);
+    expect(lines[start + 3]).toBe('');
+    expect(lines.filter((l) => l === '## Rules')).toHaveLength(1);
   });
 });

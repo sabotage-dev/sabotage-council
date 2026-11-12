@@ -1,6 +1,7 @@
 export {
   BriefError,
   generateNonce,
+  MAX_CHANGED_FILES,
   MAX_QUESTIONS,
   MODES,
   renderBrief,

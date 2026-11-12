@@ -17,6 +17,7 @@ export {
   DATA_PREFIX,
   dataLines,
   ITEM_ID,
+  quoteName,
   renderPreviousReviews,
   renderPrMd,
   type EarlierItem,

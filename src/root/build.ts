@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { extractTree, listTree } from './archive.js';
 import { dataLines, ITEM_ID, renderPreviousReviews, renderPrMd, type EarlierItem, type PrData } from './data-files.js';
-import { detectFold, type FoldPlan } from './fold.js';
+import { CHANGED_FILES_UNKNOWN, detectFold, type FoldPlan } from './fold.js';
 import { commitExists, DIFF_ARGS, FULL_SHA, openShadow, resolveCommit, runGit, type ShadowRepo } from './git.js';
 import { FileNameError } from './names.js';
 import { sanitizedPathMap, sanitizeTrees, type SanitizedEntry } from './sanitize.js';
@@ -271,6 +271,10 @@ function build(root: string, work: string, inputs: RootInputs, items: readonly E
   const finalPath = sanitizedPathMap(sanitized);
   const mapped = new Map<string, ExpectedEntry>();
   for (const [path, entry] of expected) mapped.set(finalPath(path), entry);
+  // The fallback's changed files, named as the seats see them: under <repo>/, where the sanitizer put them.
+  if (fold?.kind === 'fallback' && fold.changedFiles !== CHANGED_FILES_UNKNOWN) {
+    fold = { ...fold, changedFiles: fold.changedFiles.map((p) => finalPath(`${inputs.name}/${p}`)) };
+  }
 
   return {
     root,
