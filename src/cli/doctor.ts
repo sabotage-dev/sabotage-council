@@ -52,7 +52,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     line('ok', `config ${config.path} loaded`);
     seats = config.config.seats;
     if (!config.modelsChecked) {
-      line('note', 'config-wide model and family checks wait for every backend adapter; codex and claude seats are preflighted below');
+      line('note', 'config-wide model and family checks wait for every backend adapter; codex, claude, antigravity and kiro seats are preflighted below');
     }
   } else {
     line('fail', `config ${config.path} has ${config.errors.length} error(s)`);
@@ -87,12 +87,12 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     try {
       for (const seat of seats) {
         const occupants: Array<{ label: string; o: Occupant }> = [
-          { label: seat.id, o: { backend: seat.backend, model: seat.model, effort: seat.effort } },
+          { label: seat.id, o: { backend: seat.backend, model: seat.model, effort: seat.effort, authHome: seat.auth_home } },
         ];
         if (seat.fallback) {
           occupants.push({
             label: `${seat.id} fallback`,
-            o: { backend: seat.fallback.backend, model: seat.fallback.model, effort: seat.fallback.effort },
+            o: { backend: seat.fallback.backend, model: seat.fallback.model, effort: seat.fallback.effort, authHome: seat.fallback.auth_home },
           });
         }
         for (const { label, o } of occupants) {
@@ -117,6 +117,8 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
             continue;
           }
           options.write(`  ${name}: ${pre.cliVersion !== null ? `${o.backend} ${pre.cliVersion}, ` : ''}enforcement ${pre.enforcement}`);
+          // Which HOME a kiro seat signs in from (plan 4.3, the auth_home setting).
+          if (o.backend === 'kiro') options.write(`        home  ${o.authHome !== undefined ? `${o.authHome} (auth_home)` : "the user's HOME (default)"}`);
           for (const c of pre.checks) {
             if (c.status === 'fail') failed = true;
             options.write(`        ${c.status.padEnd(4)}  ${c.name}: ${c.detail}`);
@@ -137,10 +139,11 @@ function formatIssue(issue: ConfigIssue): string {
 }
 
 function describeSeat(seat: SeatConfig): string {
-  const primary = [seat.backend, seat.model, seat.effort].filter((p) => p !== undefined).join(' / ');
+  const home = (h: string | undefined): string => (h !== undefined ? `, auth_home ${h}` : '');
+  const primary = [seat.backend, seat.model, seat.effort].filter((p) => p !== undefined).join(' / ') + home(seat.auth_home);
   if (!seat.fallback) return `${seat.id}  ${primary}`;
   const f = seat.fallback;
-  const fallback = [f.backend, f.model, f.effort].filter((p) => p !== undefined).join(' / ');
+  const fallback = [f.backend, f.model, f.effort].filter((p) => p !== undefined).join(' / ') + home(f.auth_home);
   return `${seat.id}  ${primary}  (fallback ${fallback} on ${f.on.join(', ')})`;
 }
 

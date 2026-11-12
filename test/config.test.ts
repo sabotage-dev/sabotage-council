@@ -206,6 +206,25 @@ describe('config: fallbacks', () => {
     ]);
   });
 
+  it('accepts auth_home on a kiro seat or fallback: absolute and existing; rejects it elsewhere', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sc-auth-home-'));
+    try {
+      const kiro = (authHome: string): string => seat({ ...C, backend: 'kiro', model: 'claude-sonnet-4.5' }) + `auth_home = "${authHome}"\n`;
+      okOf(await parseConfigText(toml(seat(A), seat(B), kiro(home))));
+      okOf(await parseConfigText(toml(seat({ ...A, fallback: `{ backend = "kiro", model = "gpt-5.6-sol", auth_home = "${home}", on = ["auth"] }` }), seat(B), seat(C))));
+      expect(errorsOf(await parseConfigText(toml(seat(A), seat(B), kiro('relative/home')))).map((e) => [e.path, e.message])).toEqual([['seats[2].auth_home', 'auth_home must be an absolute path']]);
+      expect(errorsOf(await parseConfigText(toml(seat(A), seat(B), kiro(join(home, 'missing'))))).map((e) => e.path)).toEqual(['seats[2].auth_home']);
+      expect(errorsOf(await parseConfigText(toml(seat(A) + `auth_home = "${home}"\n`, seat(B), seat(C)))).map((e) => [e.path, e.message])).toEqual([
+        ['seats[0].auth_home', 'auth_home applies only to kiro (this occupant is codex)'],
+      ]);
+      expect(
+        errorsOf(await parseConfigText(toml(seat({ ...A, fallback: `{ backend = "claude", model = "claude-opus-5-5", auth_home = "${home}", on = ["auth"] }` }), seat(B), seat(C)))).map((e) => e.path),
+      ).toEqual(['seats[0].fallback.auth_home']);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('rejects an unknown failure class and an empty on list', async () => {
     const bad = '{ backend = "kiro", model = "gpt-5.6-sol", on = ["rate_limit"] }';
     const empty = '{ backend = "kiro", model = "gpt-5.6-sol", on = [] }';

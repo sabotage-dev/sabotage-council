@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import type { AdapterRegistry, ModelInfo } from './registry.js';
 import type { CouncilConfig, SeatConfig } from './schema.js';
 import { ADJUDICATOR_FAMILY, QUORUM, type BackendId } from './vocab.js';
@@ -96,6 +97,32 @@ export function checkSandboxOnlyForGrok(seats: readonly SeatConfig[]): ConfigIss
     }
   });
   return issues;
+}
+
+/**
+ * `auth_home` is a kiro setting (a separate Kiro login): on any other backend it is an error, and the directory
+ * must exist (a typo would otherwise run on the user's own login or fail later at preflight).
+ */
+export function checkAuthHome(seats: readonly SeatConfig[], exists: (path: string) => boolean = isDirectory): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  seats.forEach((seat, i) => {
+    const occupants: Array<{ path: string; backend: string; authHome: string | undefined }> = [{ path: `seats[${i}].auth_home`, backend: seat.backend, authHome: seat.auth_home }];
+    if (seat.fallback) occupants.push({ path: `seats[${i}].fallback.auth_home`, backend: seat.fallback.backend, authHome: seat.fallback.auth_home });
+    for (const o of occupants) {
+      if (o.authHome === undefined) continue;
+      if (o.backend !== 'kiro') issues.push({ path: o.path, message: `auth_home applies only to kiro (this occupant is ${o.backend})` });
+      else if (!exists(o.authHome)) issues.push({ path: o.path, message: `auth_home ${o.authHome} is not an existing directory` });
+    }
+  });
+  return issues;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** A fallback must be a different occupant from its seat's primary. */

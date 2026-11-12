@@ -3,6 +3,7 @@ import type { AdapterRegistry } from './registry.js';
 import {
   checkDistinctOccupants,
   checkFallbacksDiffer,
+  checkAuthHome,
   checkSandboxOnlyForGrok,
   checkModels,
   checkUniqueSeatIds,
@@ -40,6 +41,7 @@ export async function validateConfig(raw: unknown, options: ValidateOptions = {}
   errors.push(...checkDistinctOccupants(config.seats));
   errors.push(...checkFallbacksDiffer(config.seats));
   errors.push(...checkSandboxOnlyForGrok(config.seats));
+  errors.push(...checkAuthHome(config.seats));
 
   const warnings: ConfigIssue[] = [];
   let modelsChecked = false;

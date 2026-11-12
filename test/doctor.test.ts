@@ -40,7 +40,7 @@ describe('doctor', () => {
     expect(lines).toEqual([
       'ok    node v22.13.0 satisfies >=22.13',
       `ok    config ${configPath} loaded`,
-      'note  config-wide model and family checks wait for every backend adapter; codex and claude seats are preflighted below',
+      'note  config-wide model and family checks wait for every backend adapter; codex, claude, antigravity and kiro seats are preflighted below',
       `ok    store ${dbPath} at schema version 1, applied migration(s) 1`,
       'seats:',
       '  a  codex / gpt-6.1-sol / high  (fallback kiro / gpt-5.6-sol / high on usage_limit, auth)',
@@ -132,6 +132,23 @@ describe('doctor preflight per seat (plan 4.3)', () => {
       '        ok    auth: logged in',
       '  c  grok / grok-4.7 / high: no adapter in this build',
     ]);
+  });
+
+  it('shows which HOME a kiro seat signs in from: its auth_home, or the user HOME by default', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sc-kiro-auth-home-'));
+    try {
+      writeFileSync(configPath, PLAN_EXAMPLE.replace('effort = "high", on = ["usage_limit", "auth"] }', `effort = "high", auth_home = "${home}", on = ["usage_limit", "auth"] }`));
+      const adapters: SeatAdapters = (backend) => (backend === 'kiro' ? stubAdapter({ enforcement: 'pending', cliVersion: '3.2.1' }) : undefined);
+      const { code, lines } = await doctor({ adapters });
+      expect(code).toBe(0);
+      expect(lines).toContain(`  a  codex / gpt-6.1-sol / high  (fallback kiro / gpt-5.6-sol / high, auth_home ${home} on usage_limit, auth)`);
+      expect(lines).toContain(`        home  ${home} (auth_home)`);
+      writeFileSync(configPath, PLAN_EXAMPLE);
+      const plain = await doctor({ adapters });
+      expect(plain.lines).toContain("        home  the user's HOME (default)");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('fails when a seat fails its preflight, and says why', async () => {
