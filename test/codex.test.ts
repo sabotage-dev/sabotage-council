@@ -487,6 +487,8 @@ describe('codex exec scripts (N16)', () => {
     ['tools spread into another object', 'const t = {...tools}; await t.view_image({path: "/etc/hosts"});', 'reached as a property'],
     ['tools read as a property', 'const t = x.tools; await t.view_image({path: "/etc/hosts"});', 'reached as a property'],
     ['tools read with optional chaining', 'await x?.tools.view_image({path: "/etc/hosts"});', 'reached as a property'],
+    ['tools read as a property after a no-break space', 'await x.\u00a0tools.view_image({path: "/etc/hosts"});', 'reached as a property'],
+    ['tools read as a property after a form feed', 'await x.\ftools.view_image({path: "/etc/hosts"});', 'reached as a property'],
     ['a regex literal that holds a comment opener', '/[/*]/.test(x); await tools.view_image({path: "/etc/hosts"});', 'regex literal'],
     ['a regex literal with an escaped slash', 'const r = /\\//; await tools.view_image({path: "/etc/hosts"});', 'regex literal'],
     ['a division', 'const half = n / 2; text(half);', 'division'],
