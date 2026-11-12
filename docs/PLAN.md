@@ -435,17 +435,24 @@ There are two shared transports:
   - It logs every `session/update` (tool calls, messages, plan, usage) to the leg dir.
 
   ACP is used where a backend has it natively (D9). It *can* give the strongest read-only guarantee, but only
-  under three conditions, and none of them is measured yet (14):
+  under four conditions (N6). P3 measured them on antigravity and kiro (see 4.2 and 14):
   - **The agent asks.** A rule in the user's own agent settings, or an `accept-edits` or `auto` session mode, lets
     a tool run with no `session/request_permission` at all. So:
     - the client sets the session mode the adapter declares (via `session/set_config_option`; never
       `accept-edits` or `auto`):
-      - for antigravity the candidate is `default`, the mode that asks before commands and file changes (`plan`
-        only adds a planning step);
-      - for kiro and opencode, P3 names the mode id from measurement;
-      - the adapter refuses any session whose reported mode differs.
-    - preflight refuses the leg when the backend's user-level rules allow write or shell. Each adapter declares the
-      path of its user rule file, and P3 records them. A backend whose rules cannot be read stays `pending`.
+      - for antigravity it is `default`, the mode that asks before commands and file changes (`plan` only adds a
+        planning step), set with `session/set_config_option` (config id `mode`; agy also reports the older
+        `modes` field);
+      - for kiro it is the council agent `sabotage-council`, set by the v2 engine's `--agent` launch flag and
+        checked as reported in `modes.currentModeId` (the v2 engine reports no `configOptions`); opencode's is
+        named in P4;
+      - the adapter refuses any session whose reported mode differs, before the prompt is sent.
+    - preflight refuses the leg when the rules the leg will load allow anything. Each adapter declares where those
+      rules live (P3): antigravity runs every leg on its own `--gemini-dir`, so the leg loads only
+      `<leg>/gemini/antigravity-cli/settings.json` and `<leg>/gemini/config/config.json`, which the adapter writes;
+      kiro runs every leg on its own `KIRO_HOME`, so the leg loads only `$KIRO_HOME/agents/sabotage-council.json`,
+      which the adapter writes and hashes. The user's own rule files never reach a leg. A backend whose rules
+      cannot be read stays `pending`.
   - **The client checks real paths.** "A read inside the root" is judged by realpath, after symlink resolution
     (5.3).
   - **Every executed read is realpath-checked,** including reads that ran with no permission request (a user rule
@@ -453,8 +460,10 @@ There are two shared transports:
   - **Ratification watches execution.** Every tool call reported in `session/update` must be in the read set, or
     must be a call the client denied. A non-read tool that executed with no permission request is `contaminated`.
 
-  Until the P3 canary has run with a user-side allow rule planted, ACP backends carry the `pending` enforcement
-  label (5.2), not `strong`.
+  Every ACP backend carries the `pending` enforcement label (5.2) until its own canary (antigravity and kiro in
+  P3, opencode in P4) has run, clean and with a user-side allow rule planted, and every attempted action was
+  refused at preflight or denied by the client before it executed. A run where an action executed and was only
+  caught at ratification fails the canary (N21), and so does an action the canary never put to the client.
 
 ### 4.2 The eight backends
 
@@ -632,9 +641,9 @@ listed by `doctor`) from **repository-controlled** context (never allowed).
 |---|---|
 | codex | Run from the root, `codex debug prompt-input` with the leg's `-c`/`--disable` flags shows no MCP tool definitions and no repository instructions. This command accepts only `-c`, `--enable` and `--disable`. The user's global `~/.codex/AGENTS.md` is listed as user-owned; it loads even with `--ignore-user-config` (probe). `--ignore-user-config` and per-server `-c mcp_servers.<name>.enabled=false` must not be combined: together they fail config load with "invalid transport" (measured). The leg uses the per-server flags, so this preflight renders exactly the leg's config; the binding proof is the rollout's `top_level_tools` (4.2). |
 | grok | `grok inspect --json` under the leg env shows no project instructions, hooks or permission sources. Servers from `$GROK_HOME/config.toml` still list and start; they are user-owned and unreachable under the tool allowlist. The binding proof is `tool_definitions.json` after launch. |
-| antigravity | No preflight proof exists over ACP: the `/permissions` and `/hooks` commands belong to `agy -p`, which D7 rules out. Proof is per leg: the sanitized root, plus ratification of observed tool calls and denials. The label stays `pending` until P3. |
+| antigravity | No `agy -p` policy proof (D7). Preflight runs only the no-turn `/usage` and `agy models`, and checks the rules the leg will load: its own `--gemini-dir` settings (no allow rule, no auto mode, workspace-only access). Proof is per leg: the update log, the CLI log (the leg's own app data dir) and the conversation DB (every model call's label). Label `pending` (P3 canary below). |
 | claude | `system/init.tools` (stream-json, `--verbose`) ⊆ the leg's tool set, with no exception; `permissionMode` is `dontAsk`. P2 measured on 2.1.322 that `--setting-sources ""` (any set without `user`) drops plugin tools, user hooks and user allow rules while the login (Keychain) still works, so every Claude leg launches that way. On an untested version, a subscription user with an enabled plugin is refused at preflight and must use an API key; `doctor` says so. |
-| kiro | Agent profile hash plus an empty `KIRO_HOME` steering and hooks. |
+| kiro | The HOME kiro-cli runs with (the seat's `auth_home`, else the user's), the token store's expiry and refresh-token presence (never a value), `chat --list-models` under a short cap, the agent profile hash, and a fresh `KIRO_HOME` (no steering, hooks, MCP config or other agents). Label `pending` (P3 canary below). |
 | opencode | Effective config dump shows the council agent only, with `skill` denied. |
 
 **Canary root:** `doctor --deep` runs the isolation checks against a canary root that contains planted hook,
@@ -781,6 +790,8 @@ backend = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
 fallback = { backend = "kiro", model = "gpt-5.6-sol", effort = "high", on = ["usage_limit", "auth"] }
+# kiro seats and fallbacks may add auth_home = "/abs/dir": kiro-cli then runs with HOME there, so a separate
+# Kiro login (its own token store) is used; the default is the user's HOME (P3).
 
 [[seats]]
 id = "b"
@@ -847,7 +858,7 @@ It warns (and `doctor` repeats the warning) when:
 |---|---|---|
 | `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | claude 2.1.322 with the P2 leg flags (`--tools`, `--restricted`, `--setting-sources ""`): its P2 canary, with a planted user allow rule, had every outside read (by path, through a symlink, Glob and Grep) denied before execution, and write, command and fetch tools not offered. grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
 | `sandboxed-exec` | Commands run inside a write- and network-denied sandbox, but reads are not confined to the root. | codex |
-| `pending` | The mechanism exists but its denial has not been measured (14). | claude on an untested version; antigravity and kiro until their P3 canaries; opencode until its P4 canary. Each backend leaves `pending` only through its own canary, including a planted user allow rule |
+| `pending` | The mechanism exists but its denial has not been measured (14). | claude on an untested version; antigravity 1.5.7 and kiro 3.2.1 (their P3 canaries ran and did not prove every action, 14); opencode until its P4 canary. Each backend leaves `pending` only through its own canary, including a planted user allow rule |
 | `weak` | Enforcement depends on config the agent may not honour, or is unmeasured. | cursor; muse until probed; grok with `--sandbox off` or with a user MCP server started |
 
 **PRs from authors without write access** (`auto` and `pr`): any seat whose label is not `strong` follows
@@ -1247,7 +1258,7 @@ existing private council until the two agree for 10 rounds in a row (Q9).
 | **P0** Scaffold | Repo, MIT, CI (ubuntu + macos, Node 22/24), lint/typecheck/vitest, config schema + loader, store schema + migrations, `doctor` skeleton | `npm test` green on both OSes; schema migration round-trip test; config rejects 2 or 4 seats, unknown backend, duplicate ids | S |
 | **P1** Root, brief, parsers | Root builder (archive via temp file, `_base`, diffs, `PR.md` as DATA, symlink neutralization, integrity, tree hash after the brief, residue sweep), recursive sanitizer with the per-backend agent-config list (case-insensitive), brief templates for every mode and round rule (incl. the change-request section), verdict + findings-block parser, severity normalizer | Golden tests over a fixture repo with planted agent-config files at the top level and nested (all moved), and symlinks to `~/.ssh`, `../..`, an absolute path and a chain (all neutralized); parser table tests including two-verdict `none`, missing block, CRITICAL->HIGH, and two formats seen from real seats: a verdict split across two lines (`VERDICT:` then the word on the next line), and a findings block written as a JSON array instead of the line grammar; mutation check: removing any sanitizer entry or the symlink pass fails a test | M |
 | **P2** Headless transport + codex + claude | Supervisor (process group, caps, kill), record-based done signal, codex and claude adapters with ratifiers and failure classifiers, recorded fixtures from live probes | Replay tests per adapter: success, usage_limit, auth, wrong model, empty, contaminated (tool used), root mutated; codex exec-input ratification (outside-root path, denied write, a subagent whose own rollout fails); two replays against the recorded fixtures that must ratify, the exec-only review leg (with the full measured 14-name offer list) and a delegating leg that calls `spawn_agent`, `send_message` and `wait_agent`; claude: a measured answer to whether a settings-source set without `user` drops plugin tools while the login works, plus the refusal path for a subscription user with plugins; the claude promotion canary (outside-root read by path and through a symlink, write, command, fetch, with a planted user allow rule; every one refused or denied before execution, `--restricted` confining Glob and Grep, read paths ratified from the transcript). Pass = claude moves from `pending` to `strong`, fail = it stays `pending`; one opt-in live smoke per adapter on the planted-defect fixture (`SC_LIVE=codex,claude`) | M |
-| **P3** ACP transport + antigravity + kiro | ACP client (initialize, session/new with `mcpServers: []`, most restrictive mode via `session/set_config_option`, prompt, realpath-checked reject-all-but-read permissions, update log), agy and kiro adapters | ACP conformance tests against a fake agent, incl. one that executes a tool without asking (must ratify `contaminated`); live canary per backend: a leg asked to read a file outside the root (by path and through a symlink), write, run a command and fetch has every one denied and the root hash unchanged, run twice: clean, and with a user-side allow rule planted (must be refused at preflight or denied by the client before it executes; a run where it executed and was only caught at ratification fails the canary, and the backend stays `pending`). Only then may that backend's label move from `pending` to `strong`. For kiro, P3 also records the engine it pins (the `acp` flags on V2, or `session/set_config_option` on V3) and the record fields that must ratify. opencode's equivalent canary is part of P4's acceptance | M |
+| **P3** ACP transport + antigravity + kiro | ACP client (initialize, session/new with `mcpServers: []`, the adapter-declared mode (agy `default` via `session/set_config_option`; kiro's council agent via the v2 `--agent` flag, checked as reported) (N7), prompt, realpath-checked reject-all-but-read permissions, update log), agy and kiro adapters | ACP conformance tests against a fake agent, incl. one that executes a tool without asking (must ratify `contaminated`); live canary per backend: a leg asked to read a file outside the root (by path and through a symlink), write, run a command and fetch has every one denied and the root hash unchanged, run twice: clean, and with a user-side allow rule planted (must be refused at preflight or denied by the client before it executes; a run where it executed and was only caught at ratification fails the canary, and the backend stays `pending`). Only then may that backend's label move from `pending` to `strong`. For kiro, P3 also records the engine it pins (the `acp` flags on V2, or `session/set_config_option` on V3) and the record fields that must ratify. opencode's equivalent canary is part of P4's acceptance | M |
 | **P4** grok, opencode, cursor, muse | Four adapters; grok `HOME` isolation + offered-tools ratification; opencode per-leg XDG + DB; cursor versioned-binary path + hooks; muse contributor-off + export ratification | Replay tests per adapter; `doctor --deep` canary root fails any backend that loads a planted hook. Per backend where the user has auth, the same promotion canary as P3: outside-root read by path and through a symlink, write, command, fetch, with a planted user allow rule. Only a refusal or a denial before execution passes. Pass = opencode or grok moves from `pending` (grok: from `weak`) to `strong`; cursor and muse stay below `strong` in v1 whatever the result. A backend with no canary run stays non-`strong`, and the README says so: with the default `fallback` policy an untrusted-PR round then needs `strong` fallbacks or fails below quorum, visibly | L |
 | **P5** Round runner + plan/diff + plugin | Parallel launch, poll, fallback in-round, relaunch-once, quorum, `round start/wait`, `adjudicate` validator + store, Claude Code plugin (skill, commands, ADJUDICATE.md) | End-to-end with fake CLIs (stubs replaying fixtures): fallback on usage_limit, quorum 2 of 3, solo labelled, contaminated leg excluded; a real `plan` round on this plan file | L |
 | **P6** PR mode + GitHub | PR read, round count by the 3.6 algorithm (allowlisted logins, `commit_id` heads, distinct heads, round-N floor, credits; fail closed), baseline + the three full-round fallbacks, earlier items and the user's change request as data, body renderer, event mapping, post guards, dismissals, identity approval (3.10) | Table tests for every event-mapping row; round-count tests: two councils on one head = one round, a stranger's marker review ignored, marker sha7 vs `commit_id` mismatch ignored, dismissed reviews counted; our own marker REQUEST_CHANGES never becomes a human ask or a hold, while an unmarked one by the same login does; identity-approval guard tests (3.10), and an identity review never advances the round count; a hand credit on a head that preceded a `round 2` marker gives a new head round 3, not 4; a credit and a later `round 2` marker on the same head give a new head round 3 (the floor survives de-duplication); fallback tests for rebase, missing baseline ("changed files unknown") and empty fold; a dry-run on a real PR; one real post on a sandbox repo | M |
@@ -1354,11 +1365,35 @@ asked the agent to write a file, run `echo` and fetch a URL; total about $0.18 p
 
 Still not verified (P2-P4 live smokes settle each):
 
-- Antigravity over ACP:
-  - permission requests and their denial;
-  - tool-call names;
-  - the model label in its records.
-- Kiro over ACP: everything (model and effort fields, credits, permission denial).
+- Antigravity over ACP: whether a symlink read, a write, a command and a fetch are each put to the client and
+  denied when the model issues them alone (the P3 canary could not tell: agy ended the turn at the first
+  rejection, below).
+- Kiro over ACP: the offered tool set from a record (kiro records none; the P3 canary saw no write, command or
+  fetch attempt), and the effort field on a model that has effort levels (the personal account's cheapest
+  model has none).
+
+Settled by P3 (agy 1.5.7 and kiro-cli 3.2.1, 2026-11-12; one smoke and one canary of two runs each, on the
+owner's consumer Google sign-in and a separate personal Kiro login):
+
+- **antigravity.** `--gemini-dir <abs dir>` moves the settings, the shared config and the conversation records
+  while the keyring sign-in still works. Tool calls carry `name` (`read_file`, `run_command`, `write_file`, ...),
+  `kind`, `args` and `locations`. Reads inside the workspace run with no permission request; an outside read asks,
+  and the client's rejection held (the canary's secret never reached the stream). agy reports `in_progress` when
+  a call starts, before it asks, so only `completed` after a rejection counts as execution. **A rejection ends
+  the turn:** agy fails the rest of the model's batch without asking or running it, and the turn ends with no
+  answer. The model label of every call is in the conversation DB (`gen_metadata`, field 1.21); the CLI log
+  names only the default model. With planted `read_file`, `write_file` and `command` allow rules in the leg's
+  settings, preflight refused the leg; launched anyway, agy still asked for the outside read and the client
+  rejected it. Result: `pending` (four of the five actions were never put to the client).
+- **kiro.** `acp --agent-engine v2 --agent --model --effort` works over ACP; the v2 engine loads the profile from
+  `KIRO_HOME`, reports agent and model in `modes`/`models`, and writes `$KIRO_HOME/sessions/cli/<session>.json`
+  with the agent, the model per turn and credits (`metering_usage`). Reads inside the cwd run with no permission
+  request; the outside read by path, the read through the symlink and the search outside each asked and the
+  client rejected them before they ran. With a planted allow rule in the leg's profile (`allowedTools` and an
+  `fs_read` `allowedPaths` of `/**`), preflight refused the leg; launched anyway, kiro read the outside file and
+  the symlink with no request and the secret reached the stream, caught only at ratification. So the profile
+  check at preflight is the guard, not the client. Result: `pending` (write, command and fetch were not
+  attempted, and the offer is not in any record).
 - Cursor: whether the installed CLI has a native ACP mode, and the strength of its read-only stack.
 - Muse Code: its `--json` event names and the model and effort fields in a logged-in run.
 - opencode: a full review run with a paid provider.
@@ -1394,6 +1429,7 @@ a builder should reconcile when building the named phase.
 | N19 | When a credit and a counted marker share a review id, keep the marker's `round <N>`. | 3.6 | P6 |
 | N20 | 3.6 says both "newest counted head" and "head with an event" for the baseline; use one term. | 3.6 | P6 |
 | N21 | 4.1's planted-allow-rule canary sentence should say that a run caught only at ratification fails, as P3 now does. | 4.1 | P3 |
+| N6, N7, N21 | Folded in P3: 4.1 names four conditions and says each ACP backend stays `pending` until its own canary (opencode's in P4) (N6); the P3 row says the adapter-declared mode (N7); 4.1 says a run caught only at ratification fails the canary (N21). | 4.1, 10 | P3 |
 | N22-N25 | Folded in rev 1.5 (council round 5's follow-ups): the codex native list is declared verbatim and enforced as an allowlist, orchestration calls are allowed at use, and P2 replays the exec-only and delegating fixtures. | 4.5, 10 | P2 |
 | N8, N12, N15-N18, N27-N32 | Folded in P2: the P2 row's child case reads "a subagent whose own rollout fails" (N8); 4.2 says how MCP names and child rollouts are found (N12), where a denial shows and what is parsed (N15, N16); 4.5 lists the fail-closed path rules, the reads, the offer-to-call map, exact membership, calls on children and the input stall (N17, N18, N28-N31); N27's delegating leg was recorded fresh with one cheap live run; N32's two references now say D17. | 4.2, 4.5, 3.5 | P2 |
 | N26 | 3.2's verdict-line wording vs the P1 split-line test; the P1 findings fixture should also cover YAML; this section's header and intro say "round 3" for items from later rounds. | 3.2, 10, 15 | P1 |
