@@ -69,6 +69,24 @@ export function sameOccupant(a: OccupantKey, b: OccupantKey): boolean {
   return a.effort === undefined || b.effort === undefined || a.effort === b.effort;
 }
 
+/**
+ * Three seats need three distinct occupants (owner ruling 2026-11-12): two seats that would run the same backend,
+ * model and effort are one voice counted twice. D10 still allows the same backend with different models.
+ */
+export function checkDistinctOccupants(seats: readonly SeatConfig[]): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  seats.forEach((seat, j) => {
+    const i = seats.findIndex((other, k) => k < j && sameOccupant(other, seat));
+    if (i >= 0) {
+      issues.push({
+        path: `seats[${j}]`,
+        message: `seat "${seat.id}" is the same occupant as seat "${seats[i]!.id}" (${describe(seat)}); the three seats must differ in backend, model or effort`,
+      });
+    }
+  });
+  return issues;
+}
+
 /** `sandbox` is a grok setting (plan 4.2); on any other backend it is an error, not a silent no-op. */
 export function checkSandboxOnlyForGrok(seats: readonly SeatConfig[]): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
@@ -109,6 +127,8 @@ export interface ModelCheckResult {
   errors: ConfigIssue[];
   /** The family of each seat's primary model, aligned with `config.seats`; undefined when the check failed. */
   primaryFamilies: (string | undefined)[];
+  /** The family of each seat's fallback model, aligned with `config.seats`; undefined when absent or unchecked. */
+  fallbackFamilies: (string | undefined)[];
 }
 
 /**
@@ -165,15 +185,22 @@ export async function checkModels(config: CouncilConfig, registry: AdapterRegist
   }
 
   const primaryFamilies = config.seats.map((_, i) => found.get(`seats[${i}].model`)?.family);
-  return { errors, primaryFamilies };
+  const fallbackFamilies = config.seats.map((_, i) => found.get(`seats[${i}].fallback.model`)?.family);
+  return { errors, primaryFamilies, fallbackFamilies };
 }
 
 /**
  * Family warnings (plan 5.2), returned as warnings, never errors:
  * - two seats whose primary models share a family;
- * - a seat whose primary model shares the adjudicator's family (the adjudicator is Claude Code, D8).
+ * - a seat whose primary model shares the adjudicator's family (the adjudicator is Claude Code, D8);
+ * - fallbacks count too (owner ruling 2026-11-12): a fallback that shares a family with another seat's primary, or
+ *   with the adjudicator, makes the council less independent in every round where that fallback is seated.
  */
-export function familyWarnings(seats: readonly SeatConfig[], primaryFamilies: readonly (string | undefined)[]): ConfigIssue[] {
+export function familyWarnings(
+  seats: readonly SeatConfig[],
+  primaryFamilies: readonly (string | undefined)[],
+  fallbackFamilies: readonly (string | undefined)[] = [],
+): ConfigIssue[] {
   const warnings: ConfigIssue[] = [];
 
   const byFamily = new Map<string, string[]>();
@@ -196,6 +223,24 @@ export function familyWarnings(seats: readonly SeatConfig[], primaryFamilies: re
       warnings.push({
         path: `seats[${i}].model`,
         message: `seat "${seat.id}" shares the adjudicator's model family (${ADJUDICATOR_FAMILY}); the adjudicator is Claude Code (D8), and a same-family seat is correlated with the adjudicator's own reading (and often with Claude-written code); the scorecard's agreement matrix shows whether it still adds an independent view`,
+      });
+    }
+  });
+
+  seats.forEach((seat, i) => {
+    const family = fallbackFamilies[i];
+    if (family === undefined) return;
+    const others = seats.filter((_, j) => j !== i && primaryFamilies[j] === family).map((other) => `"${other.id}"`);
+    if (others.length > 0) {
+      warnings.push({
+        path: `seats[${i}].fallback.model`,
+        message: `seat "${seat.id}"'s fallback shares the ${family} model family with seat ${others.join(' and ')}; in a round where it is seated, two seats come from one family`,
+      });
+    }
+    if (family === ADJUDICATOR_FAMILY) {
+      warnings.push({
+        path: `seats[${i}].fallback.model`,
+        message: `seat "${seat.id}"'s fallback shares the adjudicator's model family (${ADJUDICATOR_FAMILY}); in a round where it is seated, that seat is correlated with the adjudicator's own reading`,
       });
     }
   });

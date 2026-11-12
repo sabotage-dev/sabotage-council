@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type { AdapterRegistry } from './registry.js';
 import {
+  checkDistinctOccupants,
   checkFallbacksDiffer,
   checkSandboxOnlyForGrok,
   checkModels,
@@ -36,6 +37,7 @@ export async function validateConfig(raw: unknown, options: ValidateOptions = {}
   const config = parsed.data;
 
   errors.push(...checkUniqueSeatIds(config.seats));
+  errors.push(...checkDistinctOccupants(config.seats));
   errors.push(...checkFallbacksDiffer(config.seats));
   errors.push(...checkSandboxOnlyForGrok(config.seats));
 
@@ -44,7 +46,7 @@ export async function validateConfig(raw: unknown, options: ValidateOptions = {}
   if (options.registry) {
     const models = await checkModels(config, options.registry);
     errors.push(...models.errors);
-    warnings.push(...familyWarnings(config.seats, models.primaryFamilies));
+    warnings.push(...familyWarnings(config.seats, models.primaryFamilies, models.fallbackFamilies));
     modelsChecked = true;
   }
 

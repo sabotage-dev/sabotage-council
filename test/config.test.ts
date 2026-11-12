@@ -237,6 +237,24 @@ describe('config: quorum is not configurable', () => {
   });
 });
 
+describe('config: three distinct occupants', () => {
+  it('rejects two seats with the same backend, model and effort', async () => {
+    const errors = errorsOf(await parseConfigText(toml(seat(A), seat({ ...A, id: 'b' }), seat(C))));
+    expect(errors.map((e) => e.path)).toEqual(['seats[1]']);
+    expect(errors[0]?.message).toMatch(/^seat "b" is the same occupant as seat "a"/);
+  });
+
+  it('rejects two seats that differ only by one leaving effort unset', async () => {
+    const errors = errorsOf(await parseConfigText(toml(seat(A), seat(C), seat({ id: 'd', backend: 'codex', model: 'gpt-6.1-sol' }))));
+    expect(errors.map((e) => e.path)).toEqual(['seats[2]']);
+  });
+
+  it('accepts the same backend with different models or efforts (D10)', async () => {
+    okOf(await parseConfigText(toml(seat(A), seat({ ...A, id: 'b', model: 'gpt-5.6-sol' }), seat(C))));
+    okOf(await parseConfigText(toml(seat(A), seat({ ...A, id: 'b', effort: 'medium' }), seat(C))));
+  });
+});
+
 describe('config: family warnings', () => {
   it('warns when two seats share a model family, and still loads', async () => {
     const result = okOf(
@@ -252,6 +270,20 @@ describe('config: family warnings', () => {
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]?.path).toBe('seats[1].model');
     expect(result.warnings[0]?.message).toMatch(/^seat "b" shares the adjudicator's model family \(anthropic\)/);
+  });
+
+  it("warns when a seat's fallback shares a family with another seat's primary", async () => {
+    const fallback = '{ backend = "kiro", model = "gpt-5.6-sol", on = ["usage_limit"] }';
+    const result = okOf(await parseConfigText(toml(seat(A), seat({ ...C, fallback }), seat(D)), { registry: fakeRegistry() }));
+    expect(result.warnings.map((w) => w.path)).toEqual(['seats[1].fallback.model']);
+    expect(result.warnings[0]?.message).toMatch(/^seat "c"'s fallback shares the openai model family with seat "a"/);
+  });
+
+  it("warns when a seat's fallback shares the adjudicator's family", async () => {
+    const fallback = '{ backend = "kiro", model = "claude-sonnet-5.5", on = ["auth"] }';
+    const result = okOf(await parseConfigText(toml(seat({ ...A, fallback }), seat(C), seat(D)), { registry: fakeRegistry() }));
+    expect(result.warnings.map((w) => w.path)).toEqual(['seats[0].fallback.model']);
+    expect(result.warnings[0]?.message).toMatch(/^seat "a"'s fallback shares the adjudicator's model family \(anthropic\)/);
   });
 
   it('takes the family from the model, not the backend (a Claude model served by kiro)', async () => {
