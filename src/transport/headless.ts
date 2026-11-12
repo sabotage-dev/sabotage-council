@@ -56,6 +56,8 @@ export interface HeadlessExit {
   /** SIGKILL was needed (SIGTERM did not end the group within the grace). */
   sigkilled: boolean;
   spawnError: string | null;
+  /** Writing the process record failed (at start, at exit, or both). Supervision went on regardless. */
+  recordError: string | null;
 }
 
 export interface HeadlessProcess {
@@ -178,6 +180,11 @@ export function startHeadless(spec: HeadlessSpec): HeadlessProcess {
   let sigkilled = false;
   let killing: Promise<void> | null = null;
 
+  let recordError: string | null = null;
+  /**
+   * Never throws: a failed write (a full disk, a removed leg dir) is kept in `recordError`, so a throw here can
+   * neither leave the spawned group running with no cap nor leave `exited` unresolved.
+   */
   const writeRecord = (exit: HeadlessExit | null): void => {
     if (spec.recordFile === undefined) return;
     const record = {
@@ -194,7 +201,12 @@ export function startHeadless(spec: HeadlessSpec): HeadlessProcess {
       started_at: startedAt.toISOString(),
       exit,
     };
-    writeFileSync(spec.recordFile, `${JSON.stringify(record, null, 2)}\n`);
+    try {
+      writeFileSync(spec.recordFile, `${JSON.stringify(record, null, 2)}\n`);
+    } catch (error) {
+      const message = `${exit === null ? 'start' : 'exit'}: ${error instanceof Error ? error.message : String(error)}`;
+      recordError = recordError === null ? message : `${recordError}; ${message}`;
+    }
   };
   writeRecord(null);
 
@@ -277,8 +289,11 @@ export function startHeadless(spec: HeadlessSpec): HeadlessProcess {
         leftoverKilled,
         sigkilled,
         spawnError: error,
+        recordError,
       };
       writeRecord(record);
+      // A failed write of this very record is reported to the caller.
+      record.recordError = recordError;
       resolve(record);
     };
 

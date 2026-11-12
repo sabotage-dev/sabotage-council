@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { groupAlive, runCommand, scrubEnv, startHeadless, type HeadlessSpec } from '../src/transport/headless.js';
@@ -59,7 +59,7 @@ describe('headless supervisor', () => {
       ),
     );
     const exit = await p.exited;
-    expect(exit).toMatchObject({ exitCode: 3, signal: null, doneBy: 'exit', timedOut: false, recordDone: false, spawnError: null });
+    expect(exit).toMatchObject({ exitCode: 3, signal: null, doneBy: 'exit', timedOut: false, recordDone: false, spawnError: null, recordError: null });
     expect(readFileSync(join(dir, 'out.txt'), 'utf8')).toBe(`${dir}|from stdin|ONLY_THIS,PATH`);
     expect(readFileSync(join(dir, 'err.txt'), 'utf8')).toBe('err');
     expect(exit.pgid).toBe(exit.pid);
@@ -158,6 +158,27 @@ describe('headless supervisor', () => {
     expect(Date.now() - started).toBeLessThan(1000);
     expect(exit).toMatchObject({ doneBy: 'cancel', cancelled: true, sigkilled: true, signal: 'SIGKILL' });
     expect(existsSync(marker2)).toBe(false);
+  });
+
+  it('keeps supervising when the process record cannot be written at start: the cap still kills the group (round 1)', async () => {
+    const dir = scratch('sc-hl-');
+    const p = startHeadless(spec(dir, `setInterval(() => {}, 1000);`, { recordFile: join(dir, 'no-such-dir', 'process.json'), timeoutMs: 300 }));
+    const exit = await p.exited;
+    expect(exit).toMatchObject({ doneBy: 'timeout', timedOut: true });
+    expect(exit.recordError).toMatch(/^start: .*ENOENT.*; exit: .*ENOENT/);
+    expect(groupAlive(exit.pgid as number)).toBe(false);
+  });
+
+  it('resolves exited when the final process record cannot be written (round 1)', async () => {
+    const dir = scratch('sc-hl-');
+    const legDir = join(dir, 'leg');
+    mkdirSync(legDir);
+    const p = startHeadless(spec(dir, `setTimeout(() => {}, 300);`, { recordFile: join(legDir, 'process.json') }));
+    expect(existsSync(join(legDir, 'process.json'))).toBe(true);
+    rmSync(legDir, { recursive: true });
+    const exit = await p.exited;
+    expect(exit).toMatchObject({ doneBy: 'exit', exitCode: 0 });
+    expect(exit.recordError).toMatch(/^exit: .*ENOENT/);
   });
 
   it('reports a binary that cannot start as a spawn error, without throwing', async () => {
