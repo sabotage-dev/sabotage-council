@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Revision | 1.1 (2026-11-12): council round 1 folded |
+| Revision | 1.2 (2026-11-12): council rounds 1 and 2 folded |
 | Owner | Sabotage Development LLC, public repo `sabotage-dev/sabotage-council`, MIT |
 | Status | Plan under council review. Nothing is built yet. |
 | Decisions | D1-D16 in section 12, ruled by the owner on 2026-11-12 |
@@ -201,7 +201,7 @@ The adjudicator sets each canonical finding's final severity, which may differ f
 |---|---|---|
 | 1 | The whole change (PR diff, branch diff, or plan). | Any verified HIGH, MEDIUM or LOW defect the change introduces. |
 | 2-3 | Only the **delta**: `FOLD.diff` from the baseline head (3.6) to this head. The rest of the tree is context. When 3.6 falls back to a full round, the round reviews the whole change but keeps its number and this row's owed rule. | (a) A defect the delta introduced or left that ships wrong behaviour on real input, breaks the build or tests, or is a security or data-loss defect. (b) An earlier owed row the delta did not close. (c) An earlier reviewer's HIGH/MEDIUM/LOW item not closed. (d) Every ask in the human's own open change request (3.9, 7.3). |
-| 4+ (D5) | Only the delta. | Only `HIGH`: a new HIGH caused by the delta, an earlier HIGH not closed, or the human's own open change-request asks (Q7). Everything else, including carried MEDIUM/LOW items, becomes a follow-up listed in the approval. |
+| 4+ (D5) | Only the delta; a 3.6 fallback reviews the whole change and keeps its number (Q14 decides the owed rule). | Only `HIGH`: a new HIGH caused by the delta, an earlier HIGH not closed, or the human's own open change-request asks (Q7). Everything else, including carried MEDIUM/LOW items, becomes a follow-up listed in the approval. |
 
 Rules that hold in every round:
 - **Nits never block.**
@@ -231,16 +231,19 @@ Rules that hold in every round:
   2. **Keep council reviews.** A kept review counts when its first non-empty line, after stripping one heading or
      emphasis wrapper, matches our marker or a pattern in `github.markers_also_count`.
 
-     Never counted: the engine's own identity-approval reviews (3.10), and reviews that only report a refused
-     resume.
+     Never counted: the engine's own identity-approval reviews (first line `sabotage-council identity approval on
+     ...`, 3.10).
   3. **The reviewed head is the review's `commit_id`**, never text. When the marker's `<sha7>` disagrees with
      `commit_id`, the review is not counted and the mismatch is logged.
-  4. **Count heads.** Walk the counted heads in `submitted_at` order. Each head not seen before adds 1, so two
-     councils reviewing one head make one round. A counted marker that states `round <N>` raises the running count
-     to N.
-  5. **Add hand credits.** Credits recorded with `sabotage-council credit <pr> <sha>` (for an unmarked review the
-     user vouches for) count as reviewed heads.
-  6. **Compute the round.** It is the count, plus 1 when the current head has no counted review and no credit.
+  4. **Merge hand credits first.** Credits are recorded with `sabotage-council credit <pr> <review-id>` for an
+     unmarked review the user vouches for. Each carries that review's own `commit_id` and `submitted_at`. They join
+     the counted reviews in one chronological, de-duplicated list of reviewed heads *before* any counting. A credit
+     added later can never land after a round-N floor that it actually preceded.
+  5. **Count heads.** Walk the merged list in `submitted_at` order:
+     - each head not seen before adds 1, so two councils reviewing one head make one round;
+     - a counted marker that states `round <N>` raises the running count to N, never lowers it.
+  6. **Compute the round.** It is the count, plus 1 when the current head is not in the list. Any head in the list
+     can serve as a baseline.
 
 - **Fail closed.** If any read fails or is partial, the round does not run; the engine never guesses round 1.
 - **Plan and diff targets.** The run store keeps the round number:
@@ -252,8 +255,13 @@ Rules that hold in every round:
   - not an ancestor of the current head (force-push, rebase);
   - or gives an empty `FOLD.diff`.
 
-  The brief states which of these applied, and lists the files whose content differs between the baseline tree and
-  this head's tree, so the seats can focus there.
+  The brief states which of these applied:
+  - When the baseline tree is available (not an ancestor), the brief lists the files whose content differs
+    between it and this head's tree, so the seats can focus there.
+  - When the baseline is missing, the engine first tries an exact fetch of that commit. If it is still
+    unavailable, the list is "changed files unknown (baseline unavailable)", the seats review the whole change, and
+    the round keeps its number and Q14's rule.
+  - An empty fold means the content equals what was reviewed. The round still runs, as a full review.
 
   Which owed rule a fallback round uses is Q14. The default keeps the round's own rule, so a rebase does not
   restart convergence.
@@ -274,16 +282,18 @@ Rules that hold in every round:
 9. Refuted items, each with its proof.
 10. The blocker call in plain words.
 
-**Event mapping:**
+**Event mapping.** Rows are checked top to bottom; the first match wins.
 
 | Condition | Event |
 |---|---|
+| The user is the PR author | `COMMENT` (GitHub refuses the other two on your own PR) |
+| A `ruling` finding, or `needs_ruling: true` | `COMMENT` with a "Ruling needed" section; the ledger row holds until the user records a ruling (3.8) |
+| Identity path (3.10), with `auto.approve` on, CI green, and the repo not on the hold list | `APPROVE` with the identity marker as its first line |
+| Identity path, any of those failing | `COMMENT` "approval held: identity, <why>" |
 | Verdict SHIP or SWF, 0 owed, legs clear, `needs_ruling: false` and no finding with outcome `ruling`, adjudicator `approve: true`, CI green (configurable), tests allow (if enabled), repo not on the hold list | `APPROVE` with `commit_id` = the reviewed head |
 | NEEDS-WORK, or owed >= 1 | `REQUEST_CHANGES` |
 | CI red | `REQUEST_CHANGES` "CI red: <checks>" (configurable to `COMMENT`) |
 | Any other hold (legs not clear, tests failed or held, hold list, CI pending, adjudicator declined) | `COMMENT` "approval held: <why>" |
-| A `ruling` finding | `COMMENT` with a "Ruling needed" section; the ledger row holds until the user records a ruling (10.6) |
-| The user is the PR author | `COMMENT` (GitHub refuses the other two on your own PR) |
 
 **Guards:**
 - **Head moved.** Re-check the head before posting. If it moved, the round is `superseded` and nothing posts.
@@ -304,7 +314,9 @@ It must also fit GitHub's size limit (60,000 bytes), and the counts must match `
 
 A round enters `needs-ruling` in any of these cases:
 - the adjudicator marks a finding `ruling`;
-- the user's own change request stands on the current head;
+- the user's own change request stands on the current head (a review by `github.login` that carries no council
+  or identity marker: the engine posts as the same login, and its own marker reviews are never the user's
+  request);
 - the adjudicator's output fails validation twice, after one retry that feeds the validator errors back to it. This
   fixes the private council's silent-ruling gap.
 
@@ -326,8 +338,23 @@ When all of the following hold, the engine approves the PR by identity, with no 
   byte-identical to this head's tree;
 - re-checked live: that review is still APPROVED, and the trees still match.
 
-The typical case is a promotion PR whose content was already reviewed. The review body starts with an identity
-marker that the round counter excludes (3.6), and it names the earlier PR and commit. The path can be switched off
+The typical case is a promotion PR whose content was already reviewed. The review body's first line is the
+identity marker `sabotage-council identity approval on <owner>/<repo>#<num> at <sha7>`. The round counter
+excludes it (3.6), and the body names the earlier PR and commit.
+
+An identity approval goes through the same guards as any APPROVE (3.7, 9.4):
+- the head re-check and the approval-race dismissal;
+- the CI gate;
+- the hold list (a hold-listed repo gets COMMENT "approval held: identity");
+- the user's own open change request (`needs-ruling`).
+
+P6 tests:
+- a live re-check that finds the earlier approval dismissed;
+- a hold-listed repo;
+- red CI;
+- the off switch.
+
+The path can be switched off
 with `auto.identity_approval = false` (Q13).
 
 ### 3.9 The brief
@@ -344,7 +371,7 @@ Quote the NONCE line verbatim as the first line of your reply.
 ## This round's rule              (from 3.5, in plain words)
 ## Established facts (do not refile)   (interactive modes: facts the main loop verified; may be empty)
 ## Earlier items                  (delta rounds: PREVIOUS-REVIEWS.md, give each a row: closed / half-closed / open)
-## Your reviewer's open change request   (when github.login's latest review on an earlier head is
+## Your reviewer's open change request   (when github.login's latest UNMARKED review on an earlier head is
                                           CHANGES_REQUESTED: each ask quoted as data with an id H1, H2, ...;
                                           give each a row: closed / half-closed / open)
 ## Rules
@@ -407,11 +434,18 @@ There are two shared transports:
   under three conditions, and none of them is measured yet (14):
   - **The agent asks.** A rule in the user's own agent settings, or an `accept-edits` or `auto` session mode, lets
     a tool run with no `session/request_permission` at all. So:
-    - the client sets the most restrictive session mode the agent offers (via `session/set_config_option`;
-      never `accept-edits` or `auto`);
-    - preflight refuses the leg when the backend's user-level rules allow write or shell, where they can be read.
+    - the client sets the session mode the adapter declares (via `session/set_config_option`; never
+      `accept-edits` or `auto`):
+      - for antigravity the candidate is `default`, the mode that asks before commands and file changes (`plan`
+        only adds a planning step);
+      - for kiro and opencode, P3 names the mode id from measurement;
+      - the adapter refuses any session whose reported mode differs.
+    - preflight refuses the leg when the backend's user-level rules allow write or shell. Each adapter declares the
+      path of its user rule file, and P3 records them. A backend whose rules cannot be read stays `pending`.
   - **The client checks real paths.** "A read inside the root" is judged by realpath, after symlink resolution
     (5.3).
+  - **Every executed read is realpath-checked,** including reads that ran with no permission request (a user rule
+    can auto-allow them). A read that resolved outside the root makes the leg `contaminated`.
   - **Ratification watches execution.** Every tool call reported in `session/update` must be in the read set, or
     must be a call the client denied. A non-read tool that executed with no permission request is `contaminated`.
 
@@ -425,13 +459,13 @@ facts confirmed by a live run; see section 14 for what is still unverified.
 
 | Backend | Transport (D9) | Auth the adapter supports | Read-only mechanism | Model / effort | Ratification record |
 |---|---|---|---|---|---|
-| **codex** (OpenAI Codex CLI, Apache-2.0) | headless `codex exec --json`, prompt on stdin (`-`) | ChatGPT login, `CODEX_API_KEY` | `-s read-only`: the sandbox denies writes and network, but **shell commands still run inside it** and reads are not confined to the root (probe); `-c web_search="disabled"`; `--disable apps --disable plugins --disable hooks`; each user MCP server disabled by name (`-c 'mcp_servers={}'` is a no-op, probe); subagent tools cannot be removed, so they are ratified instead; the user's global `~/.codex/AGENTS.md` still loads even with `--ignore-user-config` (probe; user-owned, shown by `doctor`) | `-m <slug>`, `-c model_reasoning_effort=<e>` (always pass: some models default to low) | Rollout `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*-<thread>.jsonl` (thread id = `thread.started`, probe): `session_meta` (cwd, cli_version, originator), `turn_context` (model, effort, sandbox_policy, approval_policy, permission_profile), `token_count` (tokens, plan quota), `task_complete.duration_ms`, offered tools in `world_state.state.top_level_tools`; denied writes appear only inside code-mode exec inputs, which the ratifier parses (all probe) |
+| **codex** (OpenAI Codex CLI, Apache-2.0) | headless `codex exec --json`, prompt on stdin (`-`) | ChatGPT login, `CODEX_API_KEY` | `-s read-only`: the sandbox denies writes and network, but **shell commands still run inside it** and reads are not confined to the root (probe); `-c web_search="disabled"`; `--disable apps --disable plugins --disable hooks`; each user MCP server disabled by name with `-c mcp_servers.<name>.enabled=false` (never `mcp_servers={}`, a measured no-op); subagent tools cannot be removed, so they are ratified instead; the user's global `~/.codex/AGENTS.md` still loads even with `--ignore-user-config` (probe; user-owned, shown by `doctor`) | `-m <slug>`, `-c model_reasoning_effort=<e>` (always pass: some models default to low) | Rollout `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*-<thread>.jsonl` (thread id = `thread.started`, probe): `session_meta` (cwd, cli_version, originator), `turn_context` (model, effort, sandbox_policy, approval_policy, permission_profile), `token_count` (tokens, plan quota), `task_complete.duration_ms`, offered tools in `world_state.state.top_level_tools`; denied writes appear only inside code-mode exec inputs, which the ratifier parses (all probe) |
 | **claude** (Claude Code) | headless `claude -p --output-format stream-json --verbose` (stream-json needs `--verbose`; `system/init` is only in the stream format) | the user's own login on the unmodified binary, `ANTHROPIC_API_KEY`, Bedrock/Vertex (6.5) | **`--tools Read,Glob,Grep`** (required: with `--allowedTools` alone the leg is still offered CronCreate, RemoteTrigger, SendMessage, Workflow, PushNotification and more, and the permission mode inherits the user's default such as `auto`; probe), `--permission-mode dontAsk`, `--restricted`, `--strict-mcp-config`, `permissions.blockReadsOutsideWorkingDirectories`; tools from the user's installed plugins survive `--strict-mcp-config` (probe), so ratification checks `system/init.tools` | `--model`, `--effort` | `system/init` (model, cwd, tools, permissionMode), result (`session_id`, `total_cost_usd`, `modelUsage`, `is_error`, `permission_denials`), transcript `~/.claude/projects/<cwd-slug>/<session>.jsonl` with effort per request (probe) |
 | **grok** (xAI Grok Build CLI, Apache-2.0) | headless `grok --prompt-file ... --output-format streaming-messages-json` | xAI login, `XAI_API_KEY` | Allowlist `--tools read_file,grep,list_dir` (probe: `tool_definitions.json` lists exactly those three), `--permission-mode dontAsk`, `--disable-web-search --no-subagents`, `HOME` isolated with `GROK_HOME` for auth (probe: planted `AGENTS.md`, `.claude` hook and `.mcp.json` in the root were not loaded); `--sandbox read-only` where it starts, but it **refuses to start** on macOS when Docker Desktop's socket is a symlink, so the adapter then runs `--sandbox off` with the allowlist as the enforcement and records that on the leg (probe); MCP servers in `$GROK_HOME/config.toml` still start but are unreachable without `use_tool` | `-m`, `--effort` | `$GROK_HOME/sessions/<enc-cwd>/<id>/`: `summary.json` (model, effort, sandbox), `usage.json` (served model, tokens, `costUsdTicks`/1e10 = USD), `events.jsonl` (tools used, outcome), **`tool_definitions.json` (tools offered: must be exactly the read set)**, `prompt_context.json` (injected instruction files: must be empty) |
 | **antigravity** (Google `agy`) | **ACP `agy acp`** (D7: the documented client route; "Any ACP client can launch Antigravity CLI") | Google sign-in, Gemini Enterprise, `GEMINI_API_KEY` | ACP permission rejection (`agy acp` has no `--settings`, so per-run permission rules from the `-p` route do not apply here; probe); `--sandbox`; `--disable-telemetry`; `--include-default-customizations=false`; `AGY_CLI_DISABLE_AUTO_UPDATE=true` (it updated itself 1.4.12 -> 1.5.6 overnight during planning); root sanitized of `.agents/`, `AGENTS.md`, `GEMINI.md` | `session/set_config_option` for model and effort over ACP (probe, 1.5.6); all account models, incl. Claude and GPT-OSS, are offered to a generic ACP client (probe) | ACP stream (tool calls, messages, usage if sent) + the conversation record and log for the model label (pending a probe on a personal sign-in) |
 | **kiro** (AWS Kiro CLI) | **ACP `kiro-cli acp`** (not probed: the probe machine's login was out of bounds) | Builder ID / IAM Identity Center, `KIRO_API_KEY` | ACP rejection + a council agent profile with read tools only, permissions denying shell/write/web, `includeMcpJson:false`; `KIRO_HOME` isolated (no user steering, hooks, MCP); root sanitized of `.kiro/` and nested `AGENTS*.md` (Kiro injects a nested `AGENTS.md` once a file beside it is read) | `--agent`, `--model`, `--effort` on `acp` (all three in the 3.2.1 help; the help marks them v2-engine) | ACP stream; session record under `$KIRO_HOME/sessions/` (the isolated home, not `~/.kiro`) with model, effort, credits (`metering_usage`) |
 | **opencode** (MIT, multi-provider) | **ACP `opencode acp`** (probe: works; headless `opencode run --standalone --format json` also works) | provider env vars (Anthropic, OpenAI, Google, OpenRouter, local, ...) | ACP rejection + a council agent in `OPENCODE_CONFIG_CONTENT`: deny all, allow read/glob/grep, deny `skill` explicitly (probe: honored, but `skill` was still offered), `external_directory` deny; `OPENCODE_DISABLE_PROJECT_CONFIG=1`, `OPENCODE_DISABLE_CLAUDE_CODE=1`; per-run XDG dirs and `OPENCODE_DB` (these two env switches are from source, not yet probed) | `provider/model#variant` | SQLite `session_v2` (directory, cost, tokens, `idle_outcome`) and `session_message` per step; on ACP sessions the agent and model are reliable only per message, not on the session row (probe) |
-| **cursor** (Anysphere Cursor CLI) | ACP if the installed version has it (**not probed**; Cursor's ACP reports no token usage), else headless `cursor-agent -p --trust --output-format stream-json` (`--trust` is required headless and enables project hooks, so the sanitizer must have run) | Cursor login, `CURSOR_API_KEY` | ACP rejection where available; else `--mode ask --sandbox enabled` + council-written `.cursor/cli.json` deny rules + a `.cursor/hooks.json` that denies all but reads + `readBoundary: workspace`. **Weakest enforcement of the eight (label `weak`).** | effort is part of the slug (`--model gpt-5.5-high`) | stream `system/init` (cwd, session, model display name), `result.usage`; council hooks receive `model_id` and `model_params.effort` |
+| **cursor** (Anysphere Cursor CLI) | ACP if the installed version has it (**not probed**; Cursor's ACP reports no token usage), else headless `cursor-agent -p --trust --output-format stream-json` (`--trust` is required headless and enables project hooks, so the sanitizer must have run) | Cursor login, `CURSOR_API_KEY` | ACP rejection where available; else `--mode ask --sandbox enabled` + council deny rules and a deny-all-but-reads hook, both under a council-owned `CURSOR_CONFIG_DIR` outside the root (never written into the root at launch, since that would fail the residue sweep; if P4 shows Cursor honours only project-level files, the root builder writes them before the tree hash) + a read boundary of the root only. **Weakest enforcement of the eight (label `weak`).** | effort is part of the slug (`--model gpt-5.5-high`) | stream `system/init` (cwd, session, model display name), `result.usage`; council hooks receive `model_id` and `model_params.effort` |
 | **muse** (Meta Muse Code) | headless `muse exec --json` | Meta account, `META_API_KEY` | `--permission-profile :read-only --disable-write --disable-shell --disable-web-tools --no-foreign-personal-context` (the profile cannot be combined with `--sandbox-network` or `--approval-judge`; probe); **no `--trust-workspace`** (an untrusted workspace still ran in the probe, with the offline echo provider only, and trust would load project rules and hooks); **`--contributor-mode off` always** (on by default for subscriptions: lets Meta train on the reviewed code); `MUSE_NO_AUTO_UPDATE=1` | `--model`, `--reasoning-effort` | session log `~/.local/share/muse/sessions/YYYY/MM/DD/<id>/session.jsonl` and offline `muse export --session <id>` (probe: both without a model call): `session_build`, `workspace_root`, `side_effect_intent` per action, `model_completed.usage` (model fields pending a logged-in run) |
 
 Per-backend hazards the adapters handle (each one was found in the research or measured on a real machine):
@@ -452,7 +486,11 @@ Per-backend hazards the adapters handle (each one was found in the research or m
     the rollout. It fails the leg on:
     - a command that was denied a write;
     - a command whose path arguments resolve outside the root;
-    - a subagent spawn (`spawn_agent`, which cannot be switched off) or a custom tool call that is not a read.
+    - a subagent spawn (`spawn_agent`, which cannot be switched off) whose own rollout does not ratify under the
+      same checks. A council round on 2026-11-12 measured one: same root, same model and effort, the read-only
+      sandbox and approvals `never`, 17 reads. So inheritance holds on 0.167.0, and the ratifier reads every child
+      rollout;
+    - a custom tool call that is not a read.
 
     The untrusted-PR policy (5.2) applies.
 - **grok**
@@ -464,9 +502,11 @@ Per-backend hazards the adapters handle (each one was found in the research or m
     symlink. The research said grok would carry on unsandboxed; in practice it refuses.
     - `doctor` detects this case.
     - The seat config takes `sandbox = "read-only" | "off"`.
-    - With `off`, the allowlist is the only enforcement, and the leg records it. `read_file` is not confined to
-      the cwd, so ratification reads every `read_file`, `grep` and `list_dir` path from `chat_history.jsonl` and
-      fails the leg on one outside the root.
+    - With `off`, the allowlist is the only enforcement, and the leg records it.
+  - **Read paths are audited in every sandbox mode.** The research says even the read-only sandbox permits reads
+    everywhere. Ratification reads every `read_file`, `grep` and `list_dir` path from `updates.jsonl`
+    `tool_call.rawInput` (cross-checked against `chat_history.jsonl`) and
+    fails the leg on one that resolves outside the root.
   - MCP servers listed in the `GROK_HOME` config start even under the allowlist. The probe saw `context7` started
     through `npx`: a process with network.
     - With `XAI_API_KEY`, the leg uses an isolated `GROK_HOME` with no MCP entries.
@@ -530,9 +570,14 @@ Per-backend hazards the adapters handle (each one was found in the research or m
       drops them, along with user hooks and `CLAUDE.md` discovery. But `--bare` accepts only `ANTHROPIC_API_KEY`
       or an `apiKeyHelper` and never reads an OAuth login (`claude --help`, 2.1.322).
     - So, with an API key, the adapter runs `--bare`.
-    - With a subscription login, the user's plugin tools, hooks and global `CLAUDE.md` load. The defences are then
-      `dontAsk`, which denies every tool not in `--allowedTools`, plus ratification of `system/init.tools` and
-      `permission_denials`. `doctor` lists the hooks that will run in every leg.
+    - With a subscription login, the user's hooks and global `CLAUDE.md` load (user-owned, listed by `doctor`).
+      If any installed plugin adds a tool, the launch stops (4.3, 6.4; no exception) until P2 finds a
+      settings-source set that drops plugin tools while keeping the login. Until then, such a user:
+      - needs `ANTHROPIC_API_KEY` for Claude seats and for the headless adjudicator;
+      - keeps interactive `plan` and `diff` adjudication, which runs in the host session;
+      - gets a clear refusal from `pr` on an untrusted PR, naming the API-key route (6.3).
+
+      P2 and P7 each test this route.
 
 ### 4.3 Preflight and `doctor`
 
@@ -592,15 +637,20 @@ A leg ratifies only if all of these hold, read from the CLI's own records:
 3. Model == the occupant's pin, by presence of the pinned tier in composite strings. For example, `grok-4.7` is
    served as `grok-4.7-build`; a table per adapter defines which suffixes are accepted.
 4. Effort == the pin, where the CLI records it.
-5. Tools used ⊆ the backend's read set.
+5. Tools used ⊆ the backend's read set (sandboxed-exec exception below).
 6. Tools offered: no write, shell, web or MCP tool, where the record lists offered tools. The offered-tools source
    differs per backend:
    - claude: `system/init.tools`
    - grok: `tool_definitions.json`
    - codex: `world_state.state.top_level_tools`
 
-   One exception: a backend labelled sandboxed-exec (codex) may run commands. Every command is recorded, and a
-   command that was denied a write fails the leg.
+   **Sandboxed-exec exception (items 5 and 6).** A backend labelled sandboxed-exec (codex) may run commands.
+   Every command and every child rollout is recorded and parsed (exec and `custom_tool_call` inputs). The leg
+   fails on any of:
+   - a write denial;
+   - a path that resolves outside the root;
+   - a non-read custom tool;
+   - a subagent whose own rollout does not ratify (4.2).
 7. Root tree hash unchanged.
 8. The nonce appears in the answer.
 9. A clean completion (no error event, no truncation).
@@ -657,6 +707,7 @@ User config lives at `~/.config/sabotage-council/config.toml`; the repo has a pe
 ```toml
 [council]                          # quorum is fixed at 2 and seats at 3 (D10); neither is configurable
 leg_timeout_minutes = 25
+untrusted_seat_policy = "fallback" # PRs from authors without write access (auto and pr): "fallback" | "skip" | "allow" (5.2)
 high_only_from_round = 4          # D5
 
 [[seats]]
@@ -698,7 +749,9 @@ approve = true                     # D6
 ci_gate = "required-checks"        # or "all" | "off"
 max_rounds_per_day = 30            # Q8
 identity_approval = true           # 3.10, Q13
-untrusted_seat_policy = "fallback" # PRs from authors without write access: "fallback" | "skip" | "allow" (5.2)
+
+[pr]
+interactive_adjudication = "trusted-only"  # or "untrusted-too" (6.3)
 
 [auto.tests."your-org/api"]        # D12: opt-in, collaborators only, never forks
 setup = "npm ci"
@@ -727,13 +780,13 @@ It warns (and `doctor` repeats the warning) when:
 
 | Label | Meaning | Backends now |
 |---|---|---|
-| `strong` | No tool beyond file reads is offered, reads are confined to the root, and both are proven by the record. | claude (with `--tools`); grok with its sandbox running |
+| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | none yet. claude with `--tools` reaches it when P2 proves `--restricted` confines Glob and Grep and its read paths are ratified from the transcript; grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
 | `sandboxed-exec` | Commands run inside a write- and network-denied sandbox, but reads are not confined to the root. | codex |
-| `pending` | The mechanism exists but its denial has not been measured (14). | antigravity, kiro, opencode (ACP) until the P3 canary |
-| `weak` | Enforcement depends on config the agent may not honour, or is unmeasured. | cursor; muse until probed; grok with `--sandbox off` |
+| `pending` | The mechanism exists but its denial has not been measured (14). | claude (with `--tools`) until P2; antigravity and kiro until their P3 canaries; opencode until its P4 canary. Each backend leaves `pending` only through its own canary, including a planted user allow rule |
+| `weak` | Enforcement depends on config the agent may not honour, or is unmeasured. | cursor; muse until probed; grok with `--sandbox off` or with a user MCP server started |
 
 **PRs from authors without write access** (`auto` and `pr`): any seat whose label is not `strong` follows
-`auto.untrusted_seat_policy`:
+`council.untrusted_seat_policy`:
 - `fallback` (default): use the seat's fallback if that is `strong`, else skip the seat;
 - `skip`;
 - `allow`: an explicit acknowledgement, recorded on every such leg.
@@ -980,7 +1033,10 @@ Cross-checks enforced by code:
 - **Approval guard.** `approve: true` is rejected when `needs_ruling` is true or any finding has outcome
   `ruling`. It is also rejected when an earlier item or human ask that is owed-eligible under the round's rule
   (3.5) is `open` or `half-closed` without a linked owed finding (`fix_row`).
-- **Coverage.** Every earlier item has a row. Every ask in the brief's change-request section has a `human_asks`
+- **Human asks.** Each ask in the brief's change-request section has one `findings` row with
+  `kind: "human_ask"`. `human_asks[]` entries point at that row, and the owed count covers those rows.
+- **Coverage.** Every earlier item has a row, except closed-context items (3.5). A regression in the code they
+  cover is caught by rule (a) of the delta round. Every ask in the brief's change-request section has a `human_asks`
   row.
 - **Refutations.** `refuted` rows have proof. A finding raised by 2+ seats that would be owed under the round's
   rule (3.4 rule 3), and is `refuted`, forces `needs_ruling` in `auto`.
@@ -1009,7 +1065,7 @@ Finding ids:
 | `earlier_items` | round_id, source_id, kind, status, evidence, body_sha256 (a closed item with an unchanged hash is not re-asked, 3.5) |
 | `ledger` | repo, num, head, state, attempts, claim_pid, claim_started, heartbeat_at, round_id, round_no, records_sha, review_id, updated_at |
 | `followups` | id, target_id, finding_id, status, exported_at, hook_rc |
-| `credits` | repo, num, sha, credited_by, credited_at, note (hand credits for unmarked council reviews, 3.6) |
+| `credits` | repo, num, review_id, commit_id, submitted_at (of the credited review), credited_by, credited_at, note (hand credits for unmarked council reviews, 3.6) |
 | `events` | ts, kind, round_id, detail_json (notifications, holds, rulings, retries) |
 
 ### 8.2 Scorecard metrics
@@ -1098,7 +1154,8 @@ The daemon does six things:
   rounds.
 - **Holds.**
   - Hold-listed repos: rounds post, but approval is always held.
-  - The user's own (`github.login`) change request on the current head: `needs-ruling`. Other reviewers' change
+  - The user's own change request on the current head: `needs-ruling`. "Own" means a `github.login` review
+    with no council or identity marker; the engine's marker reviews never count. Other reviewers' change
     requests are earlier items (3.5), not holds.
   - The CI gate.
 - **Notifications.** On `needs-ruling`, failure, approval held, and approval dismissed. Delivery goes to the
@@ -1124,12 +1181,12 @@ existing private council until the two agree for 10 rounds in a row (Q9).
 |---|---|---|---|
 | **P0** Scaffold | Repo, MIT, CI (ubuntu + macos, Node 22/24), lint/typecheck/vitest, config schema + loader, store schema + migrations, `doctor` skeleton | `npm test` green on both OSes; schema migration round-trip test; config rejects 2 or 4 seats, unknown backend, duplicate ids | S |
 | **P1** Root, brief, parsers | Root builder (archive via temp file, `_base`, diffs, `PR.md` as DATA, symlink neutralization, integrity, tree hash after the brief, residue sweep), recursive sanitizer with the per-backend agent-config list (case-insensitive), brief templates for every mode and round rule (incl. the change-request section), verdict + findings-block parser, severity normalizer | Golden tests over a fixture repo with planted agent-config files at the top level and nested (all moved), and symlinks to `~/.ssh`, `../..`, an absolute path and a chain (all neutralized); parser table tests including two-verdict `none`, missing block, CRITICAL->HIGH; mutation check: removing any sanitizer entry or the symlink pass fails a test | M |
-| **P2** Headless transport + codex + claude | Supervisor (process group, caps, kill), record-based done signal, codex and claude adapters with ratifiers and failure classifiers, recorded fixtures from live probes | Replay tests per adapter: success, usage_limit, auth, wrong model, empty, contaminated (tool used), root mutated; one opt-in live smoke per adapter on the planted-defect fixture (`SC_LIVE=codex,claude`) | M |
-| **P3** ACP transport + antigravity + kiro | ACP client (initialize, session/new with `mcpServers: []`, most restrictive mode via `session/set_config_option`, prompt, realpath-checked reject-all-but-read permissions, update log), agy and kiro adapters | ACP conformance tests against a fake agent, incl. one that executes a tool without asking (must ratify `contaminated`); live canary per backend: a leg asked to write, run a command and fetch has all three denied and the root hash unchanged, run twice: clean, and with a user-side allow rule planted (must be refused at preflight or caught at ratification). Only then may a backend's label move from `pending` to `strong` | M |
+| **P2** Headless transport + codex + claude | Supervisor (process group, caps, kill), record-based done signal, codex and claude adapters with ratifiers and failure classifiers, recorded fixtures from live probes | Replay tests per adapter: success, usage_limit, auth, wrong model, empty, contaminated (tool used), root mutated; codex exec-input ratification (outside-root path, denied write, subagent spawn); claude: a measured answer to whether a settings-source set without `user` drops plugin tools while the login works, plus the refusal path for a subscription user with plugins; one opt-in live smoke per adapter on the planted-defect fixture (`SC_LIVE=codex,claude`) | M |
+| **P3** ACP transport + antigravity + kiro | ACP client (initialize, session/new with `mcpServers: []`, most restrictive mode via `session/set_config_option`, prompt, realpath-checked reject-all-but-read permissions, update log), agy and kiro adapters | ACP conformance tests against a fake agent, incl. one that executes a tool without asking (must ratify `contaminated`); live canary per backend: a leg asked to read a file outside the root (by path and through a symlink), write, run a command and fetch has every one denied and the root hash unchanged, run twice: clean, and with a user-side allow rule planted (must be refused at preflight or caught at ratification). Only then may that backend's label move from `pending` to `strong`. For kiro, P3 also records the engine it pins (the `acp` flags on V2, or `session/set_config_option` on V3) and the record fields that must ratify. opencode's equivalent canary is part of P4's acceptance | M |
 | **P4** grok, opencode, cursor, muse | Four adapters; grok `HOME` isolation + offered-tools ratification; opencode per-leg XDG + DB; cursor versioned-binary path + hooks; muse contributor-off + export ratification | Replay tests per adapter; live canary per adapter where the user has auth; `doctor --deep` canary root fails any backend that loads a planted hook | L |
 | **P5** Round runner + plan/diff + plugin | Parallel launch, poll, fallback in-round, relaunch-once, quorum, `round start/wait`, `adjudicate` validator + store, Claude Code plugin (skill, commands, ADJUDICATE.md) | End-to-end with fake CLIs (stubs replaying fixtures): fallback on usage_limit, quorum 2 of 3, solo labelled, contaminated leg excluded; a real `plan` round on this plan file | L |
-| **P6** PR mode + GitHub | PR read, round count by the 3.6 algorithm (allowlisted logins, `commit_id` heads, distinct heads, round-N floor, credits; fail closed), baseline + the three full-round fallbacks, earlier items and the user's change request as data, body renderer, event mapping, post guards, dismissals, identity approval (3.10) | Table tests for every event-mapping row; round-count tests: two councils on one head = one round, a stranger's marker review ignored, marker sha7 vs `commit_id` mismatch ignored, dismissed reviews counted; fallback tests for rebase, missing baseline and empty fold; a dry-run on a real PR; one real post on a sandbox repo | M |
-| **P7** Headless adjudicator | `claude -p --restricted ... --output-format stream-json --verbose` launcher, init tool-surface check, placeholders, re-prompt once on validation failure, PreToolUse realpath hook, `--bare` when an API key is set | Canary file outside the root is never read (proved from the transcript); a deliberately installed side-effecting plugin tool plus a planted instruction to call it: the launch is stopped at init, or the call is denied and recorded; validator rejects each class of bad output (incl. NEEDS-WORK with 0 owed, a duplicate in `unmapped`, a missing human-ask row); round 4+ HIGH-only enforced on owed rows and effective verdicts | M |
+| **P6** PR mode + GitHub | PR read, round count by the 3.6 algorithm (allowlisted logins, `commit_id` heads, distinct heads, round-N floor, credits; fail closed), baseline + the three full-round fallbacks, earlier items and the user's change request as data, body renderer, event mapping, post guards, dismissals, identity approval (3.10) | Table tests for every event-mapping row; round-count tests: two councils on one head = one round, a stranger's marker review ignored, marker sha7 vs `commit_id` mismatch ignored, dismissed reviews counted; our own marker REQUEST_CHANGES never becomes a human ask or a hold, while an unmarked one by the same login does; identity-approval guard tests (3.10), and an identity review never advances the round count; a hand credit on a head that preceded a `round 2` marker gives a new head round 3, not 4; fallback tests for rebase, missing baseline ("changed files unknown") and empty fold; a dry-run on a real PR; one real post on a sandbox repo | M |
+| **P7** Headless adjudicator | `claude -p --restricted ... --output-format stream-json --verbose` launcher, init tool-surface check, placeholders, re-prompt once on validation failure, PreToolUse realpath hook, `--bare` when an API key is set | Canary file outside the root is never read (proved from the transcript); a deliberately installed side-effecting plugin tool, a planted user allow rule for it, and a planted instruction to call it: the launch must end at init as `setup`, with no adjudication and no tool executed (removing the init gate must fail this test; "denied by dontAsk" is not a pass); the `--bare` path tested separately; validator rejects each class of bad output (incl. NEEDS-WORK with 0 owed, a duplicate in `unmapped`, a missing human-ask row); round 4+ HIGH-only enforced on owed rows and effective verdicts | M |
 | **P8** Auto daemon (+ opt-in tests) | Queue, ledger state machine, claim fencing, crash resume, continuation, holds, CI gate, notifications, launchd/systemd install, test runner with collaborator/fork checks | State-machine tests incl. crash between POST and review read (no double post), head moved mid-round, human review lands mid-approve; a week of shadow running on the owner's machine posting `--dry-run` | L |
 | **P9** Stats + seats | Scorecard metrics, counterfactuals, recommendations, HTML report, `seats` commands, planted-defect fixture for `seats test` | Metric tests on a synthetic store with known answers (e.g. a seat with 0 unique owed over 25 rounds is flagged); report renders in light and dark | M |
 | **P10** Docs + release 0.1.0 | README, per-backend setup pages (auth, terms notes, enforcement strength), security model page, migration notes, npm publish with provenance, plugin marketplace entry | A clean machine install from the README reaches a first `plan` round; `npm audit` clean | S |
@@ -1210,7 +1267,7 @@ their evidence.
 | Risk | Mitigation |
 |---|---|
 | CLI churn: several of these CLIs ship weekly, sometimes breaking flags or record formats (Kiro, Antigravity, Grok, Cursor). | Tested version ranges per adapter, recorded-fixture tests, `doctor`, a user-run live smoke command, and one adapter owner file per backend so a fix is local. |
-| Read-only enforcement differs per backend. Weakest: Cursor; Muse until probed; grok when its sandbox cannot start; codex runs commands that can read outside the root. Strongest: claude with `--tools`; the ACP backends once their permission denial is measured. | Ratification of offered and used tools, root hashing, the sanitizer, and a "weak enforcement" label that `doctor` and the README show; recommend strong backends for `auto` on untrusted PRs. |
+| Read-only enforcement differs per backend, and no backend has earned `strong` yet (5.2). | The four enforcement labels (5.2), which `doctor` and the README show and the untrusted-PR policy uses. Ratification of offered and used tools and read paths, root hashing, the sanitizer. Every backend's promotion to `strong` is tied to its own canary. |
 | Terms of service shift (Antigravity, Claude subscription use). | ACP for Antigravity; shell-out to the unmodified `claude` binary; API-key paths for every backend; terms notes per backend in the docs. |
 | Record formats move (e.g. a rollout JSONL becoming a DB). | Ratifiers are per adapter and per version range; a missing field fails closed rather than passing. |
 | Cost spikes (retry storms, a 402 mid-run, a resumed background session). | Per-leg wall clock and process-group kill, per-leg isolated state, relaunch once, daily round cap, spend in the scorecard. |
