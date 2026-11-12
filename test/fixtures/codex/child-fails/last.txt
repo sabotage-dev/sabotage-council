@@ -1,0 +1,7 @@
+NONCE: f1de120aacc2
+
+- `notes/a.txt` first line: `alpha line one`
+- `notes/b.txt` first line: `bravo line one`
+- Helper-confirmed line count of `notes/b.txt`: 2
+
+VERDICT: SHIP

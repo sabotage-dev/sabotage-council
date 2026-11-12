@@ -1,0 +1,632 @@
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import {
+  callRule,
+  checkCommandPaths,
+  classifyCodexText,
+  CODEX_DECLARED,
+  codexExecArgs,
+  codexPreflight,
+  createCodexAdapter,
+  judgePromptInput,
+  ratifyCodexLeg,
+  scanExecInput,
+  type CodexRatifyInput,
+} from '../src/adapters/codex/index.js';
+import { CODEX_ENV_ALLOW } from '../src/adapters/codex/launch.js';
+import { rootAliases } from '../src/adapters/paths.js';
+import type { Occupant, RoundCtx } from '../src/adapters/types.js';
+import { runCommand } from '../src/transport/headless.js';
+import { tempDir } from './helpers/git-fixture.js';
+import { fixtureDir, listFiles, materialize, readJsonl, writeJsonl } from './helpers/fixtures.js';
+
+interface CaseFile {
+  nonce: string;
+  model: string;
+  effort: string;
+  cliVersion: string;
+  startedAt: string;
+  rootMutated: boolean;
+  expect: { status: string; failureClass: string | null; failed: string[] };
+}
+
+const CASES = readdirSync(fixtureDir('codex', '')).filter((n) => existsSync(join(fixtureDir('codex', n), 'case.json')));
+
+function caseOf(name: string): CaseFile {
+  return JSON.parse(readFileSync(join(fixtureDir('codex', name), 'case.json'), 'utf8')) as CaseFile;
+}
+
+function inputFor(name: string, edit?: (dir: string) => void, mutated?: boolean): { input: CodexRatifyInput; dir: string; root: string } {
+  const c = caseOf(name);
+  const { dir, root } = materialize('codex', name);
+  edit?.(dir);
+  const changed = mutated ?? c.rootMutated;
+  return {
+    dir,
+    root,
+    input: {
+      root,
+      nonce: c.nonce,
+      model: c.model,
+      effort: c.effort,
+      cliVersion: c.cliVersion,
+      codexHome: join(dir, 'codex-home'),
+      eventsFile: join(dir, 'events.jsonl'),
+      stderrFile: join(dir, 'stderr.log'),
+      lastFile: join(dir, 'last.txt'),
+      startedAt: new Date(c.startedAt),
+      timedOut: false,
+      rootUnchanged: () => ({ unchanged: !changed, changes: changed ? ['modified planted/calc/rangesum.py'] : [] }),
+    },
+  };
+}
+
+function rolloutsOf(dir: string): string[] {
+  return listFiles(join(dir, 'codex-home', 'sessions'))
+    .filter((f) => f.endsWith('.jsonl'))
+    .sort();
+}
+
+const failedNames = (r: ReturnType<typeof ratifyCodexLeg>): string[] => r.checks.filter((c) => !c.ok).map((c) => c.name).sort();
+
+describe('codex replay: every recorded and synthetic case', () => {
+  it('has the cases the brief names', () => {
+    expect(CASES.sort()).toEqual(
+      [
+        'auth',
+        'child-fails',
+        'contaminated-offered',
+        'contaminated-used',
+        'delegating',
+        'empty',
+        'exec-only-offer14',
+        'nested-introspection',
+        'outside-root-cmd',
+        'root-mutated',
+        'success',
+        'usage-limit',
+        'write-denial',
+        'wrong-model',
+      ].sort(),
+    );
+  });
+
+  it.each(CASES)('%s', (name) => {
+    const c = caseOf(name);
+    const r = ratifyCodexLeg(inputFor(name).input);
+    expect({ status: r.status, failureClass: r.failureClass, failed: failedNames(r) }).toEqual({
+      status: c.expect.status,
+      failureClass: c.expect.failureClass,
+      failed: [...c.expect.failed].sort(),
+    });
+  });
+});
+
+describe('codex ratification details', () => {
+  it('records the fields 4.5 lists from the success leg', () => {
+    const r = ratifyCodexLeg(inputFor('success').input);
+    expect(r).toMatchObject({
+      status: 'PASS',
+      enforcement: 'sandboxed-exec',
+      sessionId: '00000000-0000-7000-8000-000000000001',
+      cliVersion: '0.167.0',
+      modelObserved: 'gpt-6.1-sol',
+      effortObserved: 'low',
+      cwdOk: true,
+      nonceSeen: true,
+      rootMutated: false,
+      tokensIn: 62919,
+      tokensOut: 390,
+      quotaUsedPct: 42,
+      durationMs: 17205,
+    });
+    expect(r.quotaNote).toBe('plan plus; 300 min window 6%, 10080 min window 42%');
+    expect(r.toolsOffered).toEqual(CODEX_DECLARED['0.167.0']?.nativeOffer);
+    expect(r.toolsUsed).toEqual(['functions.exec']);
+  });
+
+  it('ratifies the delegating leg and its child under the same checks, mapping calls to offers (N27, N28, N30)', () => {
+    const r = ratifyCodexLeg(inputFor('delegating').input);
+    expect(r.status).toBe('PASS');
+    const threads = r.detail['threads'] as Array<{ role: string; agentPath: string; failed: string[]; model: string; effort: string }>;
+    expect(threads.map((t) => [t.role, t.agentPath, t.model, t.effort, t.failed])).toEqual([
+      ['leg', '/root', 'gpt-6.1-sol', 'low', []],
+      ['child', '/root/read_b', 'gpt-6.1-sol', 'low', []],
+    ]);
+    expect(r.toolsUsed).toEqual(['collaboration.send_message', 'collaboration.spawn_agent', 'collaboration.wait_agent', 'functions.exec']);
+    expect(r.checks.find((c) => c.name === 'children')?.detail).toBe('1 subagent(s), each ratified');
+  });
+
+  const childEdit = (field: string, value: unknown) => (dir: string) => {
+    const child = rolloutsOf(dir)[1] as string;
+    const rows = readJsonl(child).map((row) => {
+      if (row['type'] === 'turn_context' && Number(row['ordinal']) >= 17) (row['payload'] as Record<string, unknown>)[field] = value;
+      return row;
+    });
+    writeJsonl(child, rows);
+  };
+
+  it.each([
+    ['model', 'gpt-6-luna', 'model'],
+    ['effort', 'high', 'effort'],
+    ['approval_policy', 'on-request', 'approval'],
+    ['sandbox_policy', { type: 'danger-full-access' }, 'sandbox'],
+  ])("fails when a child's own %s differs (N30)", (field, value, check) => {
+    const r = ratifyCodexLeg(inputFor('delegating', childEdit(field, value)).input);
+    expect(r.status).toBe('CONTAMINATED');
+    expect(failedNames(r)).toEqual(['children']);
+    expect(r.checks.find((c) => c.name === 'children')?.detail).toContain(`${check}:`);
+  });
+
+  it("ignores the forked parent history in a child's rollout (its aborted turn and the parent's spawn call)", () => {
+    // The child rollout carries the parent's turn_aborted and spawn_agent before subagent_history_start_ordinal.
+    const { dir, input } = inputFor('delegating');
+    const child = readJsonl(rolloutsOf(dir)[1] as string);
+    expect(child.some((r) => (r['payload'] as Record<string, unknown>)['type'] === 'turn_aborted')).toBe(true);
+    expect(ratifyCodexLeg(input).status).toBe('PASS');
+  });
+
+  it('fails when a spawned child has no rollout (N12)', () => {
+    const r = ratifyCodexLeg(inputFor('delegating', (dir) => rmSync(rolloutsOf(dir)[1] as string)).input);
+    expect(r.status).toBe('CONTAMINATED');
+    expect(r.checks.find((c) => c.name === 'children')?.detail).toContain('record: no rollout found');
+  });
+
+  it('finds a child that only names the leg as its parent (scan, N12)', () => {
+    const { dir, input } = inputFor('delegating', (d) => {
+      // Drop every SubAgentActivity from the leg: the child is then found only by its parent_thread_id.
+      const leg = rolloutsOf(d)[0] as string;
+      writeJsonl(
+        leg,
+        readJsonl(leg).filter((row) => {
+          const item = ((row['payload'] as Record<string, unknown>)['item'] ?? {}) as Record<string, unknown>;
+          return item['type'] !== 'SubAgentActivity';
+        }),
+      );
+      // The child also fails, so a found-by-scan child is provably ratified.
+      childEdit('effort', 'max')(d);
+    });
+    void dir;
+    const r = ratifyCodexLeg(input);
+    expect(r.checks.find((c) => c.name === 'children')?.detail).toContain('effort:');
+  });
+
+  it("fails an orchestration call on an agent outside the leg's tree (N30)", () => {
+    const r = ratifyCodexLeg(
+      inputFor('delegating', (dir) => {
+        const leg = rolloutsOf(dir)[0] as string;
+        writeJsonl(
+          leg,
+          readJsonl(leg).map((row) => {
+            const p = row['payload'] as Record<string, unknown>;
+            if (p['type'] === 'function_call' && p['name'] === 'send_message') {
+              p['arguments'] = JSON.stringify({ target: '11111111-2222-7333-8444-555555555555', message: 'x' });
+            }
+            const item = (p['item'] ?? {}) as Record<string, unknown>;
+            if (item['type'] === 'SubAgentActivity' && item['kind'] === 'interacted') item['agent_thread_id'] = '11111111-2222-7333-8444-555555555555';
+            return row;
+          }),
+        );
+      }).input,
+    );
+    expect(r.status).toBe('CONTAMINATED');
+    expect(failedNames(r)).toEqual(['targets']);
+  });
+
+  it('fails a command that ran but appears in no exec script (N16 cross-check)', () => {
+    const r = ratifyCodexLeg(
+      inputFor('success', (dir) => {
+        const leg = rolloutsOf(dir)[0] as string;
+        writeJsonl(
+          leg,
+          readJsonl(leg).map((row) => {
+            const item = ((row['payload'] as Record<string, unknown>)['item'] ?? {}) as Record<string, unknown>;
+            if (item['type'] === 'CommandExecution' && Array.isArray(item['command'])) item['command'] = ['/bin/zsh', '-lc', 'cat notes.txt'];
+            return row;
+          }),
+        );
+      }).input,
+    );
+    expect(failedNames(r)).toEqual(['commands']);
+    expect(r.checks.find((c) => c.name === 'commands')?.detail).toContain('ran but not in any exec script');
+  });
+
+  const legEdit = (change: (row: Record<string, unknown>, rows: Array<Record<string, unknown>>) => void) => (dir: string) => {
+    const leg = rolloutsOf(dir)[0] as string;
+    const rows = readJsonl(leg);
+    for (const row of [...rows]) change(row, rows);
+    writeJsonl(leg, rows);
+  };
+
+  it.each([
+    ['a session_meta from another originator', 'originator', legEdit((row) => {
+      if (row['type'] === 'session_meta') (row['payload'] as Record<string, unknown>)['originator'] = 'codex_tui';
+    })],
+    ['a turn_context cwd outside the root', 'cwd', legEdit((row) => {
+      if (row['type'] === 'turn_context') (row['payload'] as Record<string, unknown>)['cwd'] = '/elsewhere';
+    })],
+    ['a model_reroute event in the rollout', 'no-reroute', legEdit((row, rows) => {
+      if (row['type'] === 'turn_context') rows.push({ timestamp: 'x', type: 'event_msg', payload: { type: 'model_reroute', from_model: 'gpt-6.1-sol', to_model: 'gpt-6-luna' } });
+    })],
+  ])('fails on %s', (_what, check, change) => {
+    const r = ratifyCodexLeg(inputFor('success', change).input);
+    expect(failedNames(r)).toEqual([check]);
+  });
+
+  it('fails a rollout with a malformed line before its end', () => {
+    const r = ratifyCodexLeg(
+      inputFor('success', (dir) => {
+        const leg = rolloutsOf(dir)[0] as string;
+        const lines = readFileSync(leg, 'utf8').split('\n');
+        lines.splice(3, 0, '{not json');
+        writeFileSync(leg, lines.join('\n'));
+      }).input,
+    );
+    expect(failedNames(r)).toEqual(['record-parse']);
+  });
+
+  it('treats a null in a world_state delta as a removed tool, not an offer', () => {
+    const r = ratifyCodexLeg(
+      inputFor('success', legEdit((row, rows) => {
+        if (row['type'] === 'turn_context') rows.push({ timestamp: 'x', type: 'world_state', payload: { state: { top_level_tools: { mcp__example__run: null } } } });
+      })).input,
+    );
+    expect(r.status).toBe('PASS');
+  });
+
+  it("fails a SubAgentActivity that acts on an agent outside the leg's tree, even with a resolvable call target", () => {
+    const r = ratifyCodexLeg(
+      inputFor('delegating', (dir) => {
+        const leg = rolloutsOf(dir)[0] as string;
+        writeJsonl(
+          leg,
+          readJsonl(leg).map((row) => {
+            const item = (((row['payload'] as Record<string, unknown>)['item'] ?? {}) as Record<string, unknown>);
+            if (item['type'] === 'SubAgentActivity' && item['kind'] === 'interacted') {
+              // Not tied to any call: only the activity itself shows the foreign agent.
+              item['agent_thread_id'] = '11111111-2222-7333-8444-555555555555';
+              item['id'] = 'call_unmatched';
+            }
+            return row;
+          }),
+        );
+      }).input,
+    );
+    expect(failedNames(r)).toEqual(['targets']);
+    expect(r.checks.find((c) => c.name === 'targets')?.detail).toContain('interacted on 11111111-2222-7333-8444-555555555555');
+  });
+
+  it('refuses an undeclared CLI version outright', () => {
+    const { input } = inputFor('success');
+    const r = ratifyCodexLeg({ ...input, cliVersion: '0.168.0' });
+    expect(r.ok).toBe(false);
+    expect(r.checks.find((c) => c.name === 'cli-version')?.detail).toContain('no declared native list');
+  });
+
+  it('fails closed with no residue sweep', () => {
+    const { input } = inputFor('success');
+    const r = ratifyCodexLeg({ ...input, rootUnchanged: undefined });
+    expect(failedNames(r)).toEqual(['root-unchanged']);
+  });
+
+  it('classifies a timed-out leg as timeout', () => {
+    const { input } = inputFor('success', (dir) => {
+      const leg = rolloutsOf(dir)[0] as string;
+      writeJsonl(leg, readJsonl(leg).filter((row) => (row['payload'] as Record<string, unknown>)['type'] !== 'task_complete'));
+      writeFileSync(join(dir, 'events.jsonl'), readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').slice(0, 4).join('\n'));
+    });
+    const r = ratifyCodexLeg({ ...input, timedOut: true });
+    expect(r.failureClass).toBe('timeout');
+  });
+});
+
+describe('codex native declaration (4.5, N28, N29)', () => {
+  const decl = CODEX_DECLARED['0.167.0'];
+
+  it('declares the 14 measured names verbatim, as the recorded rollout offers them', () => {
+    const rollout = readJsonl(rolloutsOf(materialize('codex', 'success').dir)[0] as string);
+    const offered = rollout.find((r) => r['type'] === 'world_state') as { payload: { state: { top_level_tools: string[] } } };
+    expect(decl?.nativeOffer).toEqual(offered.payload.state.top_level_tools);
+    expect(decl?.nativeOffer).toHaveLength(14);
+  });
+
+  it('maps every call name to a declared offer, and every leaf offer has a call', () => {
+    const offers = new Set(Object.values(decl?.calls ?? {}).map((r) => r.offer));
+    for (const offer of offers) expect(decl?.nativeOffer).toContain(offer);
+    const leaves = (decl?.nativeOffer ?? []).filter((n) => n.includes('.'));
+    expect([...offers].sort()).toEqual([...leaves].sort());
+    expect(callRule(decl!, 'exec', null)).toEqual({ offer: 'functions.exec', class: 'command' });
+    expect(callRule(decl!, 'spawn_agent', 'collaboration')).toEqual({ offer: 'collaboration.spawn_agent', class: 'spawn' });
+    expect(callRule(decl!, 'sleep', null)).toEqual({ offer: 'clock.sleep', class: 'wait' });
+    expect(callRule(decl!, 'spawn_agent', null)).toBeNull();
+    expect(callRule(decl!, 'apply_patch', null)).toBeNull();
+    expect(decl?.readCalls).toEqual([]);
+  });
+});
+
+describe('codex exec scripts (N16)', () => {
+  it('extracts cmd strings from object and string arguments, pragmas, comments and escapes', () => {
+    const script = [
+      '// @exec: {"yield_time_ms": 10000}',
+      'text(await tools.exec_command({cmd:"pwd; rg --files -g \'calc/**\'",max_output_tokens:4000}));',
+      '/* a comment with tools.exec_command("ignored") */',
+      'const note = "tools are here";',
+      'text(await tools.exec_command("nl -ba calc/a\\u002epy"));',
+      "text(await tools.exec_command({'cmd': `ls -la`, \"yield_time_ms\": 1e3, flag: true}));",
+    ].join('\n');
+    const scan = scanExecInput(script);
+    expect(scan).toEqual({
+      ok: true,
+      calls: [
+        { tool: 'exec_command', cmd: "pwd; rg --files -g 'calc/**'", args: { cmd: "pwd; rg --files -g 'calc/**'", max_output_tokens: 4000 } },
+        { tool: 'exec_command', cmd: 'nl -ba calc/a.py', args: { cmd: 'nl -ba calc/a.py' } },
+        { tool: 'exec_command', cmd: 'ls -la', args: { cmd: 'ls -la', yield_time_ms: 1000, flag: true } },
+      ],
+    });
+  });
+
+  it.each([
+    ['a computed command', 'const c = "cat"; await tools.exec_command({cmd: c + " x"});'],
+    ['an interpolated template', 'await tools.exec_command({cmd: `cat ${f}`});'],
+    ['tools passed around', 'const t = tools; await t.exec_command({cmd: "ls"});'],
+    ['computed member access', 'await tools["exec_command"]({cmd: "ls"});'],
+    ['an unterminated string', 'await tools.exec_command({cmd: "ls});'],
+    ['a second cmd key', 'await tools.exec_command({cmd: "ls", cmd: "cat x"});'],
+    ['ALL_TOOLS introspection (seen live)', 'text(ALL_TOOLS.map(x=>({name:x.name})));'],
+    ['globalThis', 'await globalThis["to" + "ols"].exec_command({cmd: "ls"});'],
+    ['a constructor escape', 'const g = [].constructor.constructor("return globalThis")();'],
+    ['eval', 'eval("tools.exec_command({cmd: \'ls\'})");'],
+  ])('fails closed on %s', (_what, script) => {
+    expect(scanExecInput(script).ok).toBe(false);
+  });
+
+  it('reads every nested call with its literal arguments, including list arguments and empty calls', () => {
+    const scan = scanExecInput('text(await tools.clock__curr_time()); await tools.exec_command({cmd: "ls", prefix_rule: ["git", "pull"]});');
+    expect(scan).toEqual({
+      ok: true,
+      calls: [
+        { tool: 'clock__curr_time', cmd: null, args: {} },
+        { tool: 'exec_command', cmd: 'ls', args: { cmd: 'ls', prefix_rule: ['git', 'pull'] } },
+      ],
+    });
+  });
+});
+
+describe('codex nested exec tools (N18)', () => {
+  /** The success leg with its second exec script replaced. */
+  const withScript = (script: string) =>
+    inputFor('success', (dir) => {
+      const leg = rolloutsOf(dir)[0] as string;
+      writeJsonl(
+        leg,
+        readJsonl(leg).map((row) => {
+          const p = row['payload'] as Record<string, unknown>;
+          if (p['type'] === 'custom_tool_call' && String(p['input']).includes('nl -ba calc/rangesum.py')) {
+            p['input'] = script.replace('__CMD__', 'ls -la; nl -ba calc/rangesum.py; nl -ba calc/test_rangesum.py; nl -ba calc/__init__.py');
+          }
+          return row;
+        }),
+      );
+    }).input;
+
+  it('declares the eight nested tools the 0.167.0 exec description lists', () => {
+    expect(Object.keys(CODEX_DECLARED['0.167.0']?.execNested ?? {}).sort()).toEqual(
+      ['apply_patch', 'clock__curr_time', 'exec_command', 'list_mcp_resource_templates', 'list_mcp_resources', 'read_mcp_resource', 'view_image', 'write_stdin'],
+    );
+  });
+
+  it.each([
+    ['MCP listings and the clock (reads)', 'text(await tools.list_mcp_resources({})); text(await tools.clock__curr_time({})); text(await tools.exec_command({cmd: "__CMD__"}));'],
+    ['view_image inside the root', 'text(await tools.view_image({path: "calc/plot.png"})); text(await tools.exec_command({cmd: "__CMD__"}));'],
+    ['exec_command with declared harmless arguments', 'text(await tools.exec_command({cmd: "__CMD__", workdir: ".", login: false, tty: false, shell: "/bin/zsh", sandbox_permissions: "use_default"}));'],
+  ])('allows %s', (_what, script) => {
+    expect(ratifyCodexLeg(withScript(script)).status).toBe('PASS');
+  });
+
+  it.each([
+    ['apply_patch (write-class)', 'await tools.apply_patch("*** Begin Patch"); text(await tools.exec_command({cmd: "__CMD__"}));', 'apply_patch'],
+    ['write_stdin (bypasses the command parse)', 'await tools.write_stdin({session_id: 1, chars: "cat /etc/hosts"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'write_stdin'],
+    ['read_mcp_resource (MCP-class)', 'await tools.read_mcp_resource({server: "x", uri: "y"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'read_mcp_resource'],
+    ['an undeclared nested tool', 'await tools.web_fetch({url: "https://example.com"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'undeclared nested tool web_fetch'],
+    ['view_image outside the root', 'await tools.view_image({path: "/etc/x.png"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'view_image path /etc/x.png'],
+    ['an escalation request', 'text(await tools.exec_command({cmd: "__CMD__", sandbox_permissions: "require_escalated", justification: "x"}));', 'require_escalated'],
+    ['a prefix rule', 'text(await tools.exec_command({cmd: "__CMD__", prefix_rule: ["ls"]}));', 'prefix_rule'],
+    ['a workdir outside the root', 'text(await tools.exec_command({cmd: "__CMD__", workdir: "/etc"}));', 'workdir leaves the root'],
+    ['another shell', 'text(await tools.exec_command({cmd: "__CMD__", shell: "/usr/bin/python3"}));', 'shell /usr/bin/python3'],
+    ['an undeclared argument', 'text(await tools.exec_command({cmd: "__CMD__", env: "X=1"}));', 'undeclared argument(s) env'],
+  ])('fails %s', (_what, script, detail) => {
+    const r = ratifyCodexLeg(withScript(script));
+    expect(r.status).toBe('CONTAMINATED');
+    expect(failedNames(r)).toEqual(['commands']);
+    expect(r.checks.find((c) => c.name === 'commands')?.detail).toContain(detail);
+  });
+
+  it('resolves relative paths in cmd against workdir, failing any climb after it (N17)', () => {
+    const r = ratifyCodexLeg(withScript('text(await tools.exec_command({cmd: "__CMD__; cat ../x", workdir: "calc"}));'));
+    expect(r.checks.find((c) => c.name === 'commands')?.detail).toContain('cd: ../x');
+  });
+});
+
+describe('codex cmd paths (N17)', () => {
+  const root = '/private/tmp/sc-root';
+  const aliases = rootAliases(root);
+  const kinds = (cmd: string): string[] => checkCommandPaths(cmd, root, aliases).map((p) => p.kind);
+
+  it.each([
+    ['pwd; rg --files -g AGENTS.md -g \'calc/**\' -g \'!**/node_modules/**\''],
+    ['nl -ba calc/rangesum.py; wc -l notes/b.txt 2>/dev/null'],
+    ['PYTHONDONTWRITEBYTECODE=1 python3 -B -c \'print(1)\''],
+    ['cat /private/tmp/sc-root/calc/x.py /tmp/sc-root/calc/y.py'],
+    ['/usr/bin/env python3 -V'],
+    ['awk \'{print $1}\' calc/a.txt'],
+    ['cd calc && nl -ba rangesum.py'],
+    ['git log a..b'],
+    ['ls calc/*.py'],
+  ])('allows %s', (cmd) => {
+    expect(kinds(cmd)).toEqual([]);
+  });
+
+  it.each([
+    ['cat /etc/hosts', 'outside-root'],
+    ['cat ../secret.txt', 'outside-root'],
+    ['nl -ba calc/../../x', 'outside-root'],
+    ['cat ~/.ssh/id_rsa', 'home'],
+    ['cat $HOME/.ssh/id_rsa', 'expansion'],
+    ['cat "$HOME/x"', 'expansion'],
+    ['cat $(echo /etc/hosts)', 'expansion'],
+    ['cat `echo x`', 'expansion'],
+    ['ls /etc/*', 'outside-root'],
+    ['ls ../*', 'outside-root'],
+    ['cat {../x,y}', 'expansion'],
+    ['cd .. && cat x', 'outside-root'],
+    ['cd calc && cat ../../x', 'cd'],
+    ['cd', 'cd'],
+    ['cd ~', 'home'],
+    ['popd', 'cd'],
+    ['python3 -c \'open("/Users/someone/.netrc")\'', 'outside-root'],
+    ['rg --files --hidden --glob=/etc/**', 'outside-root'],
+    ["cat 'unbalanced", 'untokenizable'],
+    ["echo $'\\x41'", 'untokenizable'],
+    ['cat =ls', 'expansion'],
+  ])('fails %s (%s)', (cmd, kind) => {
+    expect(kinds(cmd)).toContain(kind);
+  });
+});
+
+describe('codex failure classifier (4.4)', () => {
+  it.each([
+    ['You’ve hit your usage limit. Upgrade to Pro or try again at 4:32 PM.', 'usage_limit'],
+    ["You've hit your usage limit for gpt-6.1-sol. Switch to another model now.", 'usage_limit'],
+    ['Quota exceeded. Check your plan and billing details.', 'usage_limit'],
+    ['Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.', 'auth'],
+    ['unexpected status 401 Unauthorized: {"error":"invalid"}', 'auth'],
+    ['Selected model is at capacity. Please try a different model.', 'capacity'],
+    ['rate limit exceeded: try later', 'capacity'],
+    ['model rerouted: gpt-6.1-sol -> gpt-6-luna (high demand)', 'model'],
+    ['stream disconnected before completion', 'transport'],
+    ['Not inside a trusted directory and --skip-git-repo-check was not specified.', 'setup'],
+    ['Reading additional input from stdin...', 'setup'],
+  ])('%s -> %s', (text, cls) => {
+    expect(classifyCodexText([text])).toBe(cls);
+  });
+
+  it('returns null for ordinary stderr', () => {
+    expect(classifyCodexText(['', 'warning: something harmless'])).toBeNull();
+  });
+});
+
+const FAKE_CODEX = new URL('./fixtures/bin/fake-codex.mjs', import.meta.url).pathname;
+
+function fakeHome(config: Record<string, unknown>): { home: string; env: NodeJS.ProcessEnv } {
+  const home = tempDir('sc-fake-codex-');
+  writeFileSync(
+    join(home, 'fake-codex.json'),
+    JSON.stringify({ promptInput: join(fixtureDir('codex', 'prompt-input'), 'clean.json'), mcp: ['docs-server', 'cloud_admin'], ...config }),
+  );
+  mkdirSync(join(home, '.codex'));
+  return { home, env: { PATH: process.env['PATH'], HOME: home, CODEX_HOME: join(home, '.codex'), SECRET_TOKEN: 'never-forwarded' } };
+}
+
+const OCC: Occupant = { backend: 'codex', model: 'gpt-6.1-sol', effort: 'low' };
+
+describe('codex preflight (4.3), through a fake CLI', () => {
+  const pre = (config: Record<string, unknown>, o: Occupant = OCC) => {
+    const { home, env } = fakeHome(config);
+    const root = tempDir('sc-pre-root-');
+    return { home, run: codexPreflight(o, { bin: FAKE_CODEX, runner: runCommand, env, root }) };
+  };
+
+  it('passes, disables every MCP server by name, and lists the global AGENTS.md as user-owned', async () => {
+    const { home, run } = pre({});
+    const p = await run;
+    expect(p.ok).toBe(true);
+    expect(p.enforcement).toBe('sandboxed-exec');
+    expect(p.checks.map((c) => `${c.status} ${c.name}`)).toEqual(['ok version', 'ok auth', 'ok model', 'ok mcp', 'ok isolation', 'note user-owned']);
+    expect(p.userOwned[0]).toContain('global AGENTS.md');
+    expect(p.data['mcpNames']).toEqual(['docs-server', 'cloud_admin']);
+    const argv = JSON.parse(readFileSync(join(home, 'prompt-input-argv.json'), 'utf8')) as { args: string[] };
+    expect(argv.args).toContain('mcp_servers.docs-server.enabled=false');
+    expect(argv.args).toContain('mcp_servers.cloud_admin.enabled=false');
+    expect(argv.args).not.toContain('--ignore-user-config');
+  });
+
+  it.each([
+    [{ loggedIn: false }, 'auth', 'auth'],
+    [{ models: ['gpt-6-luna'] }, 'model', 'model'],
+    [{ version: '0.168.0' }, 'setup', 'version'],
+    [{ mcp: ['bad.name'] }, 'setup', 'mcp'],
+    [{ promptInput: join(fixtureDir('codex', 'prompt-input'), 'mcp-server.json') }, 'setup', 'isolation'],
+    [{ promptInput: join(fixtureDir('codex', 'prompt-input'), 'repo-agents-md.json') }, 'setup', 'isolation'],
+    [{ promptInput: join(fixtureDir('codex', 'prompt-input'), 'nested-undeclared.json') }, 'setup', 'isolation'],
+  ])('refuses %j', async (config, cls, check) => {
+    const p = await pre(config).run;
+    expect(p.ok).toBe(false);
+    expect(p.failureClass).toBe(cls);
+    expect(p.checks.find((c) => c.status === 'fail')?.name).toBe(check);
+  });
+
+  it('refuses a seat with no effort', async () => {
+    const p = await pre({}, { backend: 'codex', model: 'gpt-6.1-sol' }).run;
+    expect(p).toMatchObject({ ok: false, failureClass: 'setup' });
+  });
+
+  it('judges a prompt-input render', () => {
+    const decl = CODEX_DECLARED['0.167.0']!;
+    const load = (n: string): unknown => JSON.parse(readFileSync(join(fixtureDir('codex', 'prompt-input'), n), 'utf8'));
+    const nested = Object.keys(decl.execNested);
+    expect(judgePromptInput(load('clean.json'), decl.nativeOffer, nested)).toMatchObject({ undeclared: [], undeclaredNested: [], mcpTools: [], deferredNamespaces: false, repoInstructions: false, globalAgentsMd: true });
+    expect(judgePromptInput(load('clean.json'), decl.nativeOffer, nested).nested).toHaveLength(8);
+    expect(judgePromptInput(load('nested-undeclared.json'), decl.nativeOffer, nested).undeclaredNested).toEqual(['web_fetch']);
+    expect(judgePromptInput(load('mcp-server.json'), decl.nativeOffer)).toMatchObject({ mcpTools: ['mcp__example', 'mcp__example.run_query'], deferredNamespaces: true });
+    expect(judgePromptInput(load('repo-agents-md.json'), decl.nativeOffer).repoInstructions).toBe(true);
+  });
+});
+
+describe('codex launch', () => {
+  it('builds the exact command line from the brief, prompt on stdin', () => {
+    expect(codexExecArgs({ root: '/r', model: 'gpt-6.1-sol', effort: 'high', mcpNames: ['a', 'b-c'], lastFile: '/l/last.txt' })).toEqual([
+      'exec', '--json', '--color', 'never', '-C', '/r', '--skip-git-repo-check', '-s', 'read-only', '-m', 'gpt-6.1-sol',
+      '-c', 'model_reasoning_effort="high"', '--disable', 'apps', '--disable', 'plugins', '--disable', 'hooks', '--disable', 'multi_agent',
+      '-c', 'project_doc_max_bytes=0', '-c', 'skills.include_instructions=false', '-c', 'web_search="disabled"',
+      '-c', 'analytics.enabled=false', '-c', 'check_for_update_on_startup=false',
+      '-c', 'mcp_servers.a.enabled=false', '-c', 'mcp_servers.b-c.enabled=false',
+      '-o', '/l/last.txt', '-',
+    ]);
+  });
+
+  it('runs a leg end to end: preflight, launch, record-based done, collect from the nonce, ratify', async () => {
+    // The fake fills in the placeholders itself, with the root it is given.
+    const { home, env } = fakeHome({ fixture: fixtureDir('codex', 'success') });
+    const root = tempDir('sc-e2e-root-');
+    const legDir = tempDir('sc-e2e-leg-');
+    const briefFile = join(legDir, 'BRIEF.md');
+    writeFileSync(briefFile, 'NONCE: b5c6831e146e\nreview calc/\n');
+    const adapter = createCodexAdapter({ bin: FAKE_CODEX });
+    const ctx: RoundCtx = { root, legDir, nonce: 'b5c6831e146e', briefFile, timeoutMs: 30_000, env, rootUnchanged: () => ({ unchanged: true, changes: [] }) };
+    const handle = await adapter.launch(OCC, ctx);
+    let state = await adapter.poll(handle);
+    while (state.status === 'running') {
+      await new Promise((r) => setTimeout(r, 50));
+      state = await adapter.poll(handle);
+    }
+    expect(state).toMatchObject({ status: 'done', doneBy: 'record' });
+    const text = await adapter.collect(handle);
+    expect(text.fromNonce).toBe(true);
+    expect(text.text?.startsWith('NONCE: b5c6831e146e')).toBe(true);
+    const r = await adapter.ratify(handle, ctx);
+    expect(r.checks.filter((c) => !c.ok)).toEqual([]);
+    expect(r.status).toBe('PASS');
+    expect(adapter.classify(handle)).toBeNull();
+    // The CLI saw the brief on stdin, cwd = root, and a scrubbed environment.
+    const argv = JSON.parse(readFileSync(join(home, 'exec-argv.json'), 'utf8')) as { args: string[]; cwd: string; env: string[] };
+    expect(readFileSync(join(home, 'exec-stdin.txt'), 'utf8')).toContain('NONCE: b5c6831e146e');
+    expect(argv.cwd).toBe(root);
+    expect(argv.args.at(-1)).toBe('-');
+    for (const name of argv.env) expect([...CODEX_ENV_ALLOW, 'NO_COLOR', '__CF_USER_TEXT_ENCODING']).toContain(name);
+    expect(argv.env).not.toContain('SECRET_TOKEN');
+    const record = JSON.parse(readFileSync(join(legDir, 'process.json'), 'utf8')) as { env_names: string[]; exit: { doneBy: string } };
+    expect(record.env_names).not.toContain('SECRET_TOKEN');
+    expect(record.exit.doneBy).toBe('record');
+  });
+});

@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"00000000-0000-7000-8000-000000000001"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"NONCE: 5565c706f9f0\nI’ll review the diff using read-only file tools, without running commands or tests.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"codex","tool":"list_mcp_resources","arguments":{},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"codex","tool":"list_mcp_resources","arguments":{},"result":{"content":[{"type":"text","text":"{\"resources\":[]}"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"codex","tool":"list_mcp_resource_templates","arguments":{},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"codex","tool":"list_mcp_resource_templates","arguments":{},"result":{"content":[{"type":"text","text":"{\"resourceTemplates\":[]}"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"NONCE: 5565c706f9f0\n\nNo verified findings. Available tools cannot read repository text files without running commands, which your rules prohibit.\n\nNot verified: PR.diff, repository files, commit history, or runtime behavior. The review could not be performed; this verdict reflects that limitation, not a verified defect.\n\n```findings\n```\n\nVERDICT: NEEDS-WORK"}}
+{"type":"turn.completed","usage":{"input_tokens":51050,"cached_input_tokens":47104,"cache_write_input_tokens":0,"output_tokens":243,"reasoning_output_tokens":14}}

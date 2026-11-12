@@ -1,0 +1,14 @@
+{
+  "nonce": "f1de120aacc2",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T19:33:17.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "PASS",
+    "failureClass": null,
+    "failed": []
+  },
+  "note": "Recorded delegating leg: spawn_agent, send_message and wait_agent, with the child rollout (N27)."
+}

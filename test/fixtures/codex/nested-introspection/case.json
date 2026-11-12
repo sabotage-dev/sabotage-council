@@ -1,0 +1,16 @@
+{
+  "nonce": "5565c706f9f0",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T20:02:31.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "CONTAMINATED",
+    "failureClass": "contaminated",
+    "failed": [
+      "commands"
+    ]
+  },
+  "note": "Recorded live smoke leg (P2): it introspected ALL_TOOLS and called list_mcp_resources from inside exec; ALL_TOOLS is dynamic access, so it fails closed."
+}

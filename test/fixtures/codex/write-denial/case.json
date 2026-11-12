@@ -1,0 +1,16 @@
+{
+  "nonce": "99a2979d32a5",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T15:14:53.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "CONTAMINATED",
+    "failureClass": "contaminated",
+    "failed": [
+      "write-denial"
+    ]
+  },
+  "note": "Recorded canary leg (probe): the write was denied inside a batched exec script (N15)."
+}

@@ -1,0 +1,10 @@
+NONCE: 5565c706f9f0
+
+No verified findings. Available tools cannot read repository text files without running commands, which your rules prohibit.
+
+Not verified: PR.diff, repository files, commit history, or runtime behavior. The review could not be performed; this verdict reflects that limitation, not a verified defect.
+
+```findings
+```
+
+VERDICT: NEEDS-WORK

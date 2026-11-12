@@ -1,0 +1,16 @@
+{
+  "nonce": "b5c6831e146e",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "cliVersion": "0.167.0",
+  "startedAt": "2026-11-12T15:14:53.000Z",
+  "rootMutated": false,
+  "expect": {
+    "status": "CONTAMINATED",
+    "failureClass": "contaminated",
+    "failed": [
+      "commands"
+    ]
+  },
+  "note": "The success leg with an absolute path outside the root in one cmd; must fail."
+}
