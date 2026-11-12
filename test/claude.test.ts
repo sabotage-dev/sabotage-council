@@ -47,6 +47,7 @@ function inputFor(name: string, edit?: (dir: string) => void): { input: ClaudeRa
       model: c.model,
       effort: c.effort,
       sessionId: c.sessionId,
+      cliVersion: '2.1.322',
       streamFile: join(dir, 'stream.jsonl'),
       stderrFile: join(dir, 'stderr.log'),
       projectsDir: join(dir, 'projects'),
@@ -195,6 +196,14 @@ describe('claude ratification details', () => {
   ])('fails the offer check on an init with %s (round 1)', (_what, change) => {
     const r = ratifyClaudeLeg(inputFor('success', (dir) => edit(join(dir, 'stream.jsonl'), (row) => row['subtype'] === 'init', change)).input);
     expect(failedNames(r)).toEqual(['offered']);
+  });
+
+  it('fails when the leg ran another CLI version than preflight saw (round 1)', () => {
+    const { input } = inputFor('success');
+    const r = ratifyClaudeLeg({ ...input, cliVersion: '2.1.999' });
+    expect(failedNames(r)).toEqual(['cli-version']);
+    expect(r.cliVersion).toBe('2.1.322');
+    expect(r.failureClass).toBe('setup');
   });
 
   it('fails the init gate check when the gate stopped the leg', () => {
@@ -422,6 +431,17 @@ describe('claude end to end, through a fake CLI', () => {
     // The default grace is 5000 ms; the leg ended well inside it, and never saw SIGTERM.
     expect(handle.exit?.durationMs).toBeLessThan(4000);
     expect(existsSync(join(home, 'got-sigterm'))).toBe(false);
+  });
+
+  it('labels a leg by the version it ran, and fails it when that differs from preflight (round 1)', async () => {
+    const { env } = fakeHome({ initVersion: '2.1.999' });
+    const ctx = legCtx(env, caseOf('success').nonce);
+    const adapter = createClaudeAdapter({ bin: FAKE_CLAUDE });
+    const { handle } = await runToDone(adapter, ctx);
+    const r = await adapter.ratify(handle, ctx);
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(['cli-version']);
+    expect(r.cliVersion).toBe('2.1.999');
+    expect(r.enforcement).toBe('pending');
   });
 
   it('merges a canary overlay into the leg settings without dropping the read block', async () => {

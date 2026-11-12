@@ -54,6 +54,8 @@ export interface ClaudeRatifyInput {
   model: string;
   effort: string;
   sessionId: string;
+  /** The CLI version preflight saw; system/init must name the same one. */
+  cliVersion: string;
   streamFile: string;
   stderrFile: string;
   projectsDir: string;
@@ -68,6 +70,7 @@ const CLASS_OF_CHECK: Readonly<Record<string, FailureClass>> = {
   session: 'setup',
   transcript: 'setup',
   'init-gate': 'setup',
+  'cli-version': 'setup',
   cwd: 'contaminated',
   model: 'model',
   'model-usage': 'model',
@@ -141,6 +144,9 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
     init === null ? 'no system/init in the stream' : `init + ${result ? 'result' : 'no result'}; ${stream.malformed} malformed${stream.tornTail ? '; the last line is torn' : ''}`,
   );
   if (input.initGate) check(checks, 'init-gate', false, input.initGate);
+  // The binary may change between preflight and launch; the leg ran the version its init names (round 1).
+  const observedVersion = init ? str(init['claude_code_version']) : null;
+  check(checks, 'cli-version', observedVersion === input.cliVersion, `system/init claude_code_version ${String(observedVersion)}, preflight ${input.cliVersion}`);
   const initSession = init ? str(init['session_id']) : null;
   const resultSession = result ? str(result['session_id']) : null;
   check(checks, 'session', initSession === input.sessionId && (result === null || resultSession === input.sessionId), `init ${String(initSession)}, result ${String(resultSession)}, launched ${input.sessionId}`);
@@ -237,7 +243,7 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
     enforcement: 'pending',
     recordPath: transcriptPath,
     sessionId: initSession,
-    cliVersion: init ? str(init['claude_code_version']) : null,
+    cliVersion: observedVersion,
     modelObserved: initModel,
     effortObserved: efforts.find((e) => e !== null) ?? null,
     cwdObserved: initCwd,

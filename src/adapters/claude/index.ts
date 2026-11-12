@@ -179,6 +179,7 @@ export function createClaudeAdapter(options: ClaudeAdapterOptions = {}): SeatAda
         model: h.occupant.model,
         effort: d.effort,
         sessionId: d.sessionId,
+        cliVersion: d.cliVersion,
         streamFile: h.files['stream'] ?? '',
         stderrFile: h.files['stderr'] ?? '',
         projectsDir: d.projectsDir,
@@ -186,7 +187,8 @@ export function createClaudeAdapter(options: ClaudeAdapterOptions = {}): SeatAda
         rootUnchanged: ctx.rootUnchanged,
         initGate: d.initGate,
       });
-      return { ...r, enforcement: adapter.enforcement(d.cliVersion) };
+      // The label is the one declared for the version the leg actually ran (system/init), not the preflight one.
+      return { ...r, enforcement: adapter.enforcement(r.cliVersion) };
     },
 
     classify(h: LegHandle): FailureClass | null {

@@ -27,9 +27,10 @@ if (args[0] === '--version') {
   writeFileSync(join(home, 'claude-stdin.txt'), stdin);
   const subst = (s) => s.split('__SC_ROOT__').join(process.cwd()).split(FIXTURE_SESSION).join(session);
   const lines = subst(readFileSync(join(config.fixture, 'stream.jsonl'), 'utf8')).split('\n').filter((l) => l !== '');
-  if (config.initTools) {
+  if (config.initTools || config.initVersion) {
     const init = JSON.parse(lines[0]);
-    init.tools = config.initTools;
+    if (config.initTools) init.tools = config.initTools;
+    if (config.initVersion) init.claude_code_version = config.initVersion;
     lines[0] = JSON.stringify(init);
   }
   mkdirSync(join(projects, '-sc-root'), { recursive: true });
