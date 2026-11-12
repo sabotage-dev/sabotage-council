@@ -7,7 +7,7 @@ import { pathInsideRoot, underRoot } from '../paths.js';
  * lexical: the `cmd` string is parsed, because there is no argv field.
  *
  * A command passes only when every pipeline segment (split on `|`, `&&`, `||`, `;` and newlines) runs one of the
- * read commands in READ_COMMANDS with none of its refused options, and every word stays inside the root. It fails
+ * read commands in READ_COMMANDS with only the options it declares, and every word stays inside the root. It fails
  * closed on everything else: any other command (interpreters, git, cd, env, xargs, awk, shell keywords), an
  * environment assignment, a heredoc, an input redirect, a redirect other than to /dev/null, command or process
  * substitution, a subshell, a background job, any word that still holds `~` or `$` after quote removal, brace
@@ -22,53 +22,216 @@ export interface PathProblem {
   detail: string;
 }
 
-/** How one read command is checked. The read preface (launch.ts) is built from the same data. */
+/**
+ * What an option's value is. A `path` value is judged with `pathInsideRoot` in every spelling (`-fX`, `-f X`,
+ * `--file=X`, `--file X`, and inside a cluster such as `-nfX`). A `number` must be a count. A `text` value (a
+ * pattern, a glob, a format) is never opened as a file. A `script` is a sed script, checked by `sedScriptProblem`.
+ */
+export type ValueKind = 'path' | 'number' | 'text' | 'script';
+
+/**
+ * The options one read command may take (round 2: an allowlist, not a refused list). Any option not declared here
+ * fails closed, and a long option must be spelled in full: GNU and BSD getopt accept a unique prefix
+ * (`--compress` for `--compress-program`), which this list never matches. The read preface (launch.ts) is built
+ * from the same data.
+ */
 export interface ReadCommandRule {
-  /**
-   * Options refused outright. `-x` is a short flag, also inside a cluster such as `-nx`; `--name` also refuses
-   * `--name=...`. For `find` (predicates), each entry is a whole predicate word.
-   */
-  refused: readonly string[];
-  /** Short flags that take a value: the rest of the cluster, or the next word. */
-  shortValues?: string;
-  /** Refused entries are whole predicate words (find). */
-  predicates?: boolean;
+  /** Short flags that take no value. */
+  flags: string;
+  /** Short flags that take a value (the rest of the cluster, or the next word), with the value's kind. */
+  values?: Readonly<Record<string, ValueKind>>;
+  /** Long options, spelled in full: null for a flag, else the value's kind (`--name=X` or `--name X`). */
+  long?: Readonly<Record<string, ValueKind | null>>;
+  /** find: its expression words (`-name`), null for one that takes no value. */
+  predicates?: Readonly<Record<string, ValueKind | null>>;
+  /** head and tail: the obsolete `-NUM` count. */
+  countOption?: boolean;
   /** At most this many operands (uniq: one input, never an output file). */
   maxOperands?: number;
+  /** Options left out on purpose (they run a program, write a file, follow links out, or read a hidden file list). */
+  never: readonly string[];
   /** A refusal that is not an option, for the preface. */
   also?: string;
 }
 
+const flags = (names: readonly string[]): Record<string, null> => Object.fromEntries(names.map((n) => [n, null]));
+
 /**
- * The read commands a codex leg may run, in preface order. Measured: real codex council legs use sed, nl, rg, cat,
- * pwd, head, wc, tail, ls, diff and find. The refused options run a program, write a file, or read a list of file
- * names the command line does not show.
+ * The read commands a codex leg may run, in preface order, with the options each may take. Measured: real codex
+ * council legs use sed -n, nl -ba, rg -n/-g/--files/--hidden/--max-count, wc -l, and plain cat, pwd, head, tail,
+ * ls, diff and find. The declarations keep to options GNU and BSD share or that only print, filter or count.
  */
 export const READ_COMMANDS: Readonly<Record<string, ReadCommandRule>> = {
-  rg: { refused: ['--pre', '--pre-glob', '-z', '--search-zip', '--hostname-bin'], shortValues: 'ABCdEefgjMmrtT' },
-  grep: { refused: [] },
-  sed: { refused: ['-i', '-I', '--in-place', '-f', '--file'], also: 'a script with an e, w, W, r or R command' },
-  nl: { refused: [] },
-  cat: { refused: [] },
-  head: { refused: [] },
-  tail: { refused: [] },
-  wc: { refused: ['--files0-from'] },
-  ls: { refused: [] },
-  pwd: { refused: [] },
-  find: {
-    refused: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls', '-files0-from'],
-    predicates: true,
+  rg: {
+    flags: 'nNlciSswxFvoHIUPqabpu0',
+    values: { A: 'number', B: 'number', C: 'number', m: 'number', M: 'number', j: 'number', d: 'number', e: 'text', g: 'text', t: 'text', T: 'text', r: 'text', E: 'text', f: 'path' },
+    long: {
+      ...flags([
+        '--files', '--hidden', '--no-ignore', '--no-ignore-vcs', '--no-ignore-dot', '--no-ignore-parent', '--no-ignore-exclude',
+        '--line-number', '--no-line-number', '--files-with-matches', '--files-without-match', '--count', '--count-matches',
+        '--ignore-case', '--smart-case', '--case-sensitive', '--word-regexp', '--line-regexp', '--fixed-strings', '--invert-match',
+        '--only-matching', '--with-filename', '--no-filename', '--multiline', '--multiline-dotall', '--pcre2', '--quiet', '--text',
+        '--heading', '--no-heading', '--vimgrep', '--json', '--stats', '--trim', '--column', '--no-column', '--null', '--no-messages',
+        '--byte-offset', '--unrestricted', '--no-config', '--passthru', '--sort-files', '--one-file-system', '--crlf', '--binary', '--type-list',
+      ]),
+      '--glob': 'text', '--iglob': 'text', '--type': 'text', '--type-not': 'text', '--regexp': 'text', '--file': 'path',
+      '--max-count': 'number', '--max-depth': 'number', '--max-columns': 'number', '--after-context': 'number',
+      '--before-context': 'number', '--context': 'number', '--threads': 'number', '--sort': 'text', '--sortr': 'text',
+      '--replace': 'text', '--encoding': 'text', '--max-filesize': 'text', '--color': 'text', '--context-separator': 'text',
+    },
+    never: ['--pre', '--pre-glob', '-z', '--search-zip', '--hostname-bin', '-L', '--follow'],
   },
-  diff: { refused: [] },
-  sort: { refused: ['-o', '--output', '--compress-program', '--files0-from'], shortValues: 'ktST' },
-  uniq: { refused: [], shortValues: 'fsw', maxOperands: 1, also: 'an output file operand' },
-  cut: { refused: [] },
-  tr: { refused: [] },
-  stat: { refused: [] },
-  file: { refused: ['-f', '--files-from'] },
+  grep: {
+    flags: 'nlLciwxFEGvoHhrsqaIbU',
+    values: { A: 'number', B: 'number', C: 'number', m: 'number', e: 'text', f: 'path' },
+    long: {
+      ...flags([
+        '--line-number', '--files-with-matches', '--files-without-match', '--count', '--ignore-case', '--word-regexp', '--line-regexp',
+        '--fixed-strings', '--extended-regexp', '--basic-regexp', '--invert-match', '--only-matching', '--with-filename', '--no-filename',
+        '--recursive', '--no-messages', '--quiet', '--silent', '--text', '--byte-offset',
+      ]),
+      '--include': 'text', '--exclude': 'text', '--exclude-dir': 'text', '--regexp': 'text', '--file': 'path',
+      '--max-count': 'number', '--after-context': 'number', '--before-context': 'number', '--context': 'number',
+    },
+    never: ['-R', '--dereference-recursive', '-Z', '-z', '--exclude-from'],
+  },
+  sed: {
+    flags: 'nErsuz',
+    // No -l: BSD reads it as a flag and GNU as a value, so neither spelling is safe to declare.
+    values: { e: 'script' },
+    long: {
+      ...flags(['--quiet', '--silent', '--regexp-extended', '--separate', '--unbuffered', '--null-data', '--posix', '--debug', '--sandbox']),
+      '--expression': 'script',
+    },
+    never: ['-i', '-I', '--in-place', '-f', '--file', '--follow-symlinks'],
+    also: 'a script with an e, w, W, r or R command',
+  },
+  nl: {
+    flags: 'p',
+    values: { b: 'text', n: 'text', s: 'text', h: 'text', f: 'text', d: 'text', w: 'number', v: 'number', i: 'number', l: 'number' },
+    never: [],
+  },
+  cat: {
+    flags: 'nbsvetAETu',
+    long: flags(['--number', '--number-nonblank', '--squeeze-blank', '--show-all', '--show-ends', '--show-tabs', '--show-nonprinting']),
+    never: [],
+  },
+  head: {
+    flags: 'qv',
+    values: { n: 'number', c: 'number' },
+    long: { ...flags(['--quiet', '--silent', '--verbose']), '--lines': 'number', '--bytes': 'number' },
+    countOption: true,
+    never: [],
+  },
+  tail: {
+    flags: 'qvr',
+    values: { n: 'number', c: 'number' },
+    long: { ...flags(['--quiet', '--silent', '--verbose']), '--lines': 'number', '--bytes': 'number' },
+    countOption: true,
+    never: ['-f', '-F', '--follow'],
+  },
+  wc: {
+    flags: 'lwcmL',
+    long: flags(['--lines', '--words', '--bytes', '--chars', '--max-line-length']),
+    never: ['--files0-from'],
+  },
+  ls: {
+    flags: 'laA1RhtrSdFpisnGCxmgoUuckQv',
+    long: flags(['--all', '--almost-all', '--recursive', '--human-readable', '--directory', '--classify', '--size', '--inode', '--reverse', '--numeric-uid-gid']),
+    never: ['-L', '--dereference', '-H'],
+  },
+  pwd: { flags: 'LP', never: [] },
+  find: {
+    flags: 'PE',
+    predicates: {
+      ...flags([
+        '-print', '-print0', '-prune', '-empty', '-not', '-a', '-and', '-o', '-or', '-depth', '-xdev', '-mount', '-quit', '-true',
+        '-false', '-readable', '-writable', '-executable', '-nouser', '-nogroup', '-ls',
+      ]),
+      '-name': 'text', '-iname': 'text', '-path': 'text', '-ipath': 'text', '-wholename': 'text', '-iwholename': 'text',
+      '-regex': 'text', '-iregex': 'text', '-lname': 'text', '-ilname': 'text', '-type': 'text', '-size': 'text', '-perm': 'text',
+      '-user': 'text', '-group': 'text', '-mtime': 'text', '-mmin': 'text', '-atime': 'text', '-amin': 'text', '-ctime': 'text',
+      '-cmin': 'text', '-regextype': 'text', '-printf': 'text', '-maxdepth': 'number', '-mindepth': 'number', '-links': 'number',
+      '-inum': 'number', '-newer': 'path', '-anewer': 'path', '-cnewer': 'path', '-samefile': 'path',
+    },
+    never: ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls', '-files0-from', '-follow', '-L', '-H'],
+  },
+  diff: {
+    flags: 'uqrNwbBiaystTEZpc',
+    values: { U: 'number', C: 'number', W: 'number', x: 'text', I: 'text', L: 'text', X: 'path' },
+    long: {
+      ...flags([
+        '--brief', '--recursive', '--new-file', '--ignore-all-space', '--ignore-space-change', '--ignore-case', '--ignore-blank-lines',
+        '--text', '--side-by-side', '--report-identical-files', '--expand-tabs', '--strip-trailing-cr',
+      ]),
+      '--exclude': 'text', '--label': 'text',
+    },
+    never: [],
+  },
+  sort: {
+    flags: 'nrufbdghiMRVcCsz',
+    values: { k: 'text', t: 'text' },
+    long: {
+      ...flags([
+        '--numeric-sort', '--reverse', '--unique', '--ignore-case', '--version-sort', '--human-numeric-sort', '--general-numeric-sort',
+        '--month-sort', '--stable', '--check', '--zero-terminated', '--dictionary-order', '--ignore-leading-blanks',
+      ]),
+      '--key': 'text', '--field-separator': 'text',
+    },
+    never: ['-o', '--output', '-T', '--temporary-directory', '-S', '--buffer-size', '--compress-program', '--files0-from', '--random-source'],
+  },
+  uniq: {
+    flags: 'cduiDz',
+    values: { f: 'number', s: 'number', w: 'number' },
+    long: { ...flags(['--count', '--repeated', '--unique', '--ignore-case']), '--skip-fields': 'number', '--skip-chars': 'number', '--check-chars': 'number' },
+    maxOperands: 1,
+    never: [],
+    also: 'an output file operand',
+  },
+  cut: {
+    flags: 'snzw',
+    values: { d: 'text', f: 'text', c: 'text', b: 'text' },
+    long: {
+      ...flags(['--only-delimited', '--complement']),
+      '--delimiter': 'text', '--fields': 'text', '--characters': 'text', '--bytes': 'text', '--output-delimiter': 'text',
+    },
+    never: [],
+  },
+  tr: { flags: 'dscCu', never: [] },
+  stat: { flags: '', never: ['-L', '--dereference'] },
+  file: {
+    flags: 'bihkI',
+    long: flags(['--brief', '--mime', '--mime-type', '--mime-encoding', '--no-dereference', '--keep-going']),
+    never: ['-C', '--compile', '-m', '--magic-file', '-f', '--files-from', '-z', '-Z', '-L'],
+  },
 };
 
 export const READ_COMMAND_NAMES: readonly string[] = Object.keys(READ_COMMANDS);
+
+const KIND_WORD: Readonly<Record<ValueKind, string>> = { path: 'FILE', number: 'N', text: 'X', script: 'SCRIPT' };
+
+/** One command's declared options, as the read preface prints them. */
+export function readCommandUsage(name: string): string {
+  const rule = READ_COMMANDS[name];
+  if (rule === undefined) return name;
+  const parts: string[] = [];
+  if (rule.flags !== '') parts.push(`-[${rule.flags}]`);
+  if (rule.countOption) parts.push('-NUM');
+  const byKind = (entries: ReadonlyArray<[string, ValueKind | null]>, short: boolean): void => {
+    for (const kind of ['number', 'text', 'path', 'script'] as const) {
+      const names = entries.filter(([, k]) => k === kind).map(([n]) => (short ? `-${n}` : n));
+      if (names.length > 0) parts.push(`${names.join('/')} ${KIND_WORD[kind]}`);
+    }
+  };
+  byKind(Object.entries(rule.values ?? {}), true);
+  const longFlags = Object.entries(rule.long ?? {}).filter(([, k]) => k === null).map(([n]) => n);
+  if (longFlags.length > 0) parts.push(longFlags.join(' '));
+  byKind(Object.entries(rule.long ?? {}), false);
+  const predicateFlags = Object.entries(rule.predicates ?? {}).filter(([, k]) => k === null).map(([n]) => n);
+  if (predicateFlags.length > 0) parts.push(predicateFlags.join(' '));
+  byKind(Object.entries(rule.predicates ?? {}), false);
+  return `${name}${parts.length > 0 ? ` ${parts.join('; ')}` : ' (no options)'}`;
+}
 
 interface Word {
   /** The word with quotes removed and escapes applied. */
@@ -250,68 +413,54 @@ interface OptionCheck {
   notPaths: Set<Word>;
 }
 
-/** Option problems for one allowed command (the command word is not in `args`). */
-function optionProblems(name: string, rule: ReadCommandRule, args: readonly Word[]): OptionCheck {
-  if (name === 'sed') return sedProblems(args);
-  const out: PathProblem[] = [];
-  const refuse = (token: string): void => {
-    out.push({ kind: 'option', token, detail: `${name} ${token} is refused (it runs a program, writes a file or reads a hidden file list)` });
-  };
-  let operands = 0;
-  let endOfOptions = false;
-  for (let k = 0; k < args.length; k++) {
-    const a = (args[k] as Word).text;
-    if (rule.predicates) {
-      if (rule.refused.includes(a)) refuse(a);
-      continue;
-    }
-    if (endOfOptions || !a.startsWith('-') || a === '-') {
-      operands++;
-      continue;
-    }
-    if (a === '--') {
-      endOfOptions = true;
-      continue;
-    }
-    if (a.startsWith('--')) {
-      const long = a.split('=', 1)[0] ?? a;
-      if (rule.refused.includes(long)) refuse(long);
-      continue;
-    }
-    for (let j = 1; j < a.length; j++) {
-      const flag = a[j] ?? '';
-      if (rule.refused.includes(`-${flag}`)) {
-        refuse(`-${flag}`);
-        break;
-      }
-      if (rule.shortValues?.includes(flag)) {
-        if (j === a.length - 1) k++; // the value is the next word
-        break;
-      }
-    }
-  }
-  if (rule.maxOperands !== undefined && operands > rule.maxOperands) {
-    out.push({ kind: 'option', token: name, detail: `${name} with more than ${rule.maxOperands} operand (${rule.also ?? 'an extra operand'})` });
-  }
-  return { problems: out, notPaths: new Set() };
-}
+/** A count: digits with an optional sign and size suffix (`-n -5`, `-c 1K`, `-mtime` uses text). */
+const NUMBER = /^[+-]?\d+[A-Za-z]{0,3}$/;
 
-/** sed flags that take no value, and the long options that are only flags. */
-const SED_SHORT_FLAGS = 'nErsuz';
-const SED_LONG_FLAGS = ['--quiet', '--silent', '--regexp-extended', '--separate', '--unbuffered', '--null-data', '--posix', '--debug', '--sandbox'];
-
-function sedProblems(args: readonly Word[]): OptionCheck {
-  const out: PathProblem[] = [];
-  const refuse = (token: string, why = 'is refused'): void => {
-    out.push({ kind: 'option', token, detail: `sed ${token} ${why}`.replace(/\s+/g, ' ') });
-  };
-  const scripts: Array<{ text: string; word: Word | undefined }> = [];
+/**
+ * Parses one allowed command's arguments against its declaration (the command word is not in `args`). Any option
+ * not declared fails; every value is checked by its kind, wherever it is written. `pathOf` judges a path value.
+ */
+function optionProblems(name: string, rule: ReadCommandRule, args: readonly Word[], pathOf: (value: string) => PathProblem[]): OptionCheck {
+  const problems: PathProblem[] = [];
+  const notPaths = new Set<Word>();
+  const scripts: string[] = [];
   const operands: Word[] = [];
+  const undeclared = (option: string, why = `is not an option ${name} may take here`): void => {
+    problems.push({ kind: 'option', token: option, detail: `${name} ${option} ${why}` });
+  };
+  /** Checks one value by its kind. `word` is the value's own word when it was written as a separate word. */
+  const value = (option: string, kind: ValueKind, text: string | undefined, word: Word | undefined): void => {
+    if (text === undefined) {
+      undeclared(option, 'needs a value');
+      return;
+    }
+    if (kind === 'path') problems.push(...pathOf(text));
+    else if (kind === 'number' && !NUMBER.test(text)) undeclared(option, `takes a number, not ${JSON.stringify(text)}`);
+    else if (kind === 'script') {
+      scripts.push(text);
+      if (word) notPaths.add(word);
+    }
+  };
   let endOfOptions = false;
   for (let k = 0; k < args.length; k++) {
     const word = args[k] as Word;
     const a = word.text;
-    if (endOfOptions || !a.startsWith('-') || a === '-') {
+    if (rule.predicates) {
+      // find: expression words are whole words; a single-letter word may be one of its leading flags.
+      if (Object.hasOwn(rule.predicates, a)) {
+        const kind = rule.predicates[a];
+        if (kind !== null && kind !== undefined) {
+          const next = args[++k];
+          value(a, kind, next?.text, next);
+        }
+      } else if (a.startsWith('-') && a !== '-') {
+        if (!(a.length === 2 && rule.flags.includes(a[1] ?? ''))) undeclared(a);
+      } else {
+        operands.push(word);
+      }
+      continue;
+    }
+    if (endOfOptions || a === '-' || !a.startsWith('-')) {
       operands.push(word);
       continue;
     }
@@ -322,45 +471,62 @@ function sedProblems(args: readonly Word[]): OptionCheck {
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
       const long = eq < 0 ? a : a.slice(0, eq);
-      if (long === '--expression') {
-        const value = eq < 0 ? args[++k] : word;
-        scripts.push({ text: eq < 0 ? (value?.text ?? '') : a.slice(eq + 1), word: value });
-      } else if (long === '--line-length') {
-        if (eq < 0) k++;
-      } else if (!(eq < 0 && SED_LONG_FLAGS.includes(long))) {
-        refuse(long);
+      if (rule.long === undefined || !Object.hasOwn(rule.long, long)) {
+        undeclared(long, `is not an option ${name} may take here (long options must be spelled in full)`);
+        continue;
+      }
+      const kind = rule.long[long];
+      if (kind === null || kind === undefined) {
+        if (eq >= 0) undeclared(long, 'takes no value');
+        continue;
+      }
+      if (eq >= 0) {
+        value(long, kind, a.slice(eq + 1), kind === 'script' ? word : undefined);
+      } else {
+        const next = args[++k];
+        value(long, kind, next?.text, next);
       }
       continue;
     }
+    if (rule.countOption && /^-\d+$/.test(a)) continue;
     for (let j = 1; j < a.length; j++) {
       const flag = a[j] ?? '';
-      if (flag === 'e') {
-        const value = j < a.length - 1 ? word : args[++k];
-        scripts.push({ text: j < a.length - 1 ? a.slice(j + 1) : (value?.text ?? ''), word: value });
+      if (rule.flags.includes(flag)) continue;
+      const kind = rule.values !== undefined && Object.hasOwn(rule.values, flag) ? rule.values[flag] : undefined;
+      if (kind === undefined) {
+        undeclared(`-${flag}`);
         break;
       }
-      if (flag === 'l') {
-        if (j === a.length - 1) k++;
-        break;
+      if (j < a.length - 1) {
+        // An attached value (`-f/etc/x`, `-nf/etc/x`): the rest of the word is the value.
+        value(`-${flag}`, kind, a.slice(j + 1), kind === 'script' ? word : undefined);
+      } else {
+        const next = args[++k];
+        value(`-${flag}`, kind, next?.text, next);
       }
-      if (!SED_SHORT_FLAGS.includes(flag)) {
-        refuse(`-${flag}`);
-        break;
-      }
+      break;
     }
   }
-  if (scripts.length === 0) {
-    const script = operands.shift();
-    if (script === undefined) refuse('', 'with no script');
-    else scripts.push({ text: script.text, word: script });
+  if (name === 'sed') {
+    // With no -e or --expression, the first operand is the script.
+    if (scripts.length === 0) {
+      const script = operands.shift();
+      if (script === undefined) {
+        undeclared('', 'with no script');
+      } else {
+        scripts.push(script.text);
+        notPaths.add(script);
+      }
+    }
+    for (const script of scripts) {
+      const problem = sedScriptProblem(script);
+      if (problem !== null) problems.push({ kind: 'option', token: script.slice(0, 120), detail: `sed script: ${problem}` });
+    }
   }
-  const notPaths = new Set<Word>();
-  for (const script of scripts) {
-    if (script.word) notPaths.add(script.word);
-    const problem = sedScriptProblem(script.text);
-    if (problem !== null) out.push({ kind: 'option', token: script.text.slice(0, 120), detail: `sed script: ${problem}` });
+  if (rule.maxOperands !== undefined && operands.length > rule.maxOperands) {
+    problems.push({ kind: 'option', token: name, detail: `${name} with more than ${rule.maxOperands} operand (${rule.also ?? 'an extra operand'})` });
   }
-  return { problems: out, notPaths };
+  return { problems, notPaths };
 }
 
 /** sed commands that only print, move or hold text. `q`, `Q` and `l` may take a number. */
@@ -601,13 +767,22 @@ export function checkCommandPaths(cmd: string, root: string, aliases: readonly s
     if (rule === undefined) {
       problems.push({ kind: 'command', token: command.text, detail: `${command.text} is not one of the read commands (${READ_COMMAND_NAMES.join(', ')})` });
     } else {
-      const options = optionProblems(command.text, rule, words.slice(1));
+      const options = optionProblems(command.text, rule, words.slice(1), (value) =>
+        wordProblems({ text: value, quoted: true, expansion: false, braces: false }, cwd, aliases, changedDir),
+      );
       problems.push(...options.problems);
       notPaths = options.notPaths;
     }
     for (const word of words) problems.push(...wordProblems(word, cwd, aliases, changedDir, !notPaths.has(word)));
   }
-  return problems;
+  // A path value written as its own word is judged twice (as a value and as a word); report it once.
+  const seen = new Set<string>();
+  return problems.filter((p) => {
+    const key = `${p.kind}\u0000${p.token}\u0000${p.detail}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** Output of a command that a read-only sandbox denied a write (N15). Seatbelt, Landlock and bwrap spellings. */

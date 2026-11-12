@@ -12,7 +12,18 @@ import { codexCollect, codexSignature, ratifyCodexLeg } from './ratify.js';
 import { eventsDone, readEvents } from './records.js';
 
 export { classifyCodexText, CODEX_FAILURE_PATTERNS } from './classify.js';
-export { checkCommandPaths, READ_COMMAND_NAMES, READ_COMMANDS, sedScriptProblem, tokenizeShell, WRITE_DENIAL, type PathProblem, type ReadCommandRule } from './cmd-paths.js';
+export {
+  checkCommandPaths,
+  READ_COMMAND_NAMES,
+  READ_COMMANDS,
+  readCommandUsage,
+  sedScriptProblem,
+  tokenizeShell,
+  WRITE_DENIAL,
+  type PathProblem,
+  type ReadCommandRule,
+  type ValueKind,
+} from './cmd-paths.js';
 export { scanExecInput, type ExecCall, type ExecScan } from './exec-input.js';
 export { CODEX_ENV_ALLOW, CODEX_READ_PREFACE, codexConfigFlags, codexExecArgs, codexHomeOf } from './launch.js';
 export { callRule, CODEX_DECLARED, codexDecl, type CallClass, type CodexVersionDecl } from './native.js';

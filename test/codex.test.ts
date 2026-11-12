@@ -13,6 +13,7 @@ import {
   ratifyCodexLeg,
   READ_COMMAND_NAMES,
   READ_COMMANDS,
+  readCommandUsage,
   scanExecInput,
   sedScriptProblem,
   type CodexRatifyInput,
@@ -632,7 +633,7 @@ describe('codex nested exec tools (N18)', () => {
     ['view_image outside the root', 'await tools.view_image({path: "/etc/x.png"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'view_image path /etc/x.png'],
     ['view_image hidden in a template expression', 'text(`${await tools.view_image({path: "/etc/hosts"})}`); text(await tools.exec_command({cmd: "__CMD__"}));', 'template literal with ${'],
     ['an interpreter that builds an outside path', 'text(await tools.exec_command({cmd: "python3 -B -c \'print(open(\\"/\\"+\\"etc/hosts\\").read())\'"})); text(await tools.exec_command({cmd: "__CMD__"}));', 'python3 is not one of the read commands'],
-    ['a read with a refused option', 'text(await tools.exec_command({cmd: "__CMD__; rg --pre cat x calc"}));', 'rg --pre is refused'],
+    ['a read with a refused option', 'text(await tools.exec_command({cmd: "__CMD__; rg --pre cat x calc"}));', 'rg --pre is not an option rg may take'],
     ['view_image through a spread copy of tools', 'const t = {...tools}; await t.view_image({path: "/etc/hosts"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'reached as a property'],
     ['an escalation request', 'text(await tools.exec_command({cmd: "__CMD__", sandbox_permissions: "require_escalated", justification: "x"}));', 'require_escalated'],
     ['a prefix rule', 'text(await tools.exec_command({cmd: "__CMD__", prefix_rule: ["ls"]}));', 'prefix_rule'],
@@ -777,19 +778,98 @@ describe('codex cmd paths (N17) and the read allowlist (round 1)', () => {
     expect(kinds(cmd)).toContain(kind);
   });
 
-  it('refuses every refused option the preface names, and passes every read command alone (no drift)', () => {
+  /** A harmless invocation of one option, so each declared option can be shown to pass. */
+  const SAMPLE: Readonly<Record<string, string>> = { path: 'calc', number: '3', text: 'x', script: 'p' };
+  const invoke = (name: string, option: string): string =>
+    name === 'sed' ? `sed ${option} -e p calc` : name === 'find' ? `find calc ${option}` : `${name} ${option} calc`;
+
+  it('passes every option each command declares, in every spelling, and nothing the declaration leaves out (no drift)', () => {
     for (const [name, rule] of Object.entries(READ_COMMANDS)) {
-      const alone = name === 'sed' ? 'sed -n 1p calc' : `${name} calc`;
-      expect(checkCommandPaths(alone, root, aliases), alone).toEqual([]);
-      for (const option of rule.refused) {
+      const cases: string[] = [name === 'sed' ? 'sed -n 1p calc' : `${name} calc`];
+      for (const flag of rule.flags) cases.push(name === 'find' ? `find -${flag} calc` : invoke(name, `-${flag}`));
+      for (const [flag, kind] of Object.entries(rule.values ?? {})) {
+        cases.push(invoke(name, `-${flag} ${SAMPLE[kind] ?? ''}`), invoke(name, `-${flag}${SAMPLE[kind] ?? ''}`));
+      }
+      for (const [long, kind] of Object.entries(rule.long ?? {})) {
+        if (kind === null) cases.push(invoke(name, long));
+        else cases.push(invoke(name, `${long}=${SAMPLE[kind] ?? ''}`), invoke(name, `${long} ${SAMPLE[kind] ?? ''}`));
+        // A unique prefix is what getopt_long accepts; the declaration never does.
+        const prefix = long.slice(0, -1);
+        if (!Object.hasOwn(rule.long ?? {}, prefix)) expect(kinds(invoke(name, prefix)), `${name} ${prefix}`).toContain('option');
+      }
+      for (const [predicate, kind] of Object.entries(rule.predicates ?? {})) cases.push(`find calc ${predicate}${kind === null ? '' : ` ${SAMPLE[kind] ?? ''}`}`);
+      if (rule.countOption) cases.push(`${name} -5 calc`);
+      for (const cmd of cases) expect(checkCommandPaths(cmd, root, aliases), cmd).toEqual([]);
+      for (const option of rule.never) {
         const cmd = name === 'find' ? `find . ${option} x` : `${name} ${option} x calc`;
         expect(kinds(cmd), cmd).toContain('option');
         expect(CODEX_READ_PREFACE).toContain(option);
       }
-      expect(CODEX_READ_PREFACE).toContain(name);
+      expect(CODEX_READ_PREFACE).toContain(readCommandUsage(name));
       if (rule.also !== undefined) expect(CODEX_READ_PREFACE).toContain(rule.also);
     }
     expect(READ_COMMAND_NAMES).toEqual(['rg', 'grep', 'sed', 'nl', 'cat', 'head', 'tail', 'wc', 'ls', 'pwd', 'find', 'diff', 'sort', 'uniq', 'cut', 'tr', 'stat', 'file']);
+  });
+
+  // Round 2 (3/3, reproduced on dist): options the refused-list design let through.
+  it.each([
+    // An attached path value was never path-checked; every spelling is now.
+    ['rg -F -f/etc/hosts README.md', 'outside-root'],
+    ['rg -nf/etc/hosts README.md', 'outside-root'],
+    ['rg -f /etc/hosts README.md', 'outside-root'],
+    ['rg --file=/etc/hosts README.md', 'outside-root'],
+    ['rg --file /etc/hosts README.md', 'outside-root'],
+    ['rg -f../x README.md', 'outside-root'],
+    ['grep -f/etc/hosts README.md', 'outside-root'],
+    ['grep -vf/etc/hosts README.md', 'outside-root'],
+    ['grep --file=/etc/hosts README.md', 'outside-root'],
+    ['diff -X/etc/hosts a b', 'outside-root'],
+    ['find . -newer /etc/hosts', 'outside-root'],
+    ['rg -f~/x README.md', 'home'],
+    // A unique prefix of a long option is what getopt_long accepts.
+    ['sort -S 1 --compress=python3 a.txt', 'option'],
+    ['sort --compress=cat a.txt', 'option'],
+    ['sort --out=x a.txt', 'option'],
+    ['wc --files0=list.txt', 'option'],
+    ['rg --hidd x', 'option'],
+    ['grep --line-num x a.txt', 'option'],
+    // Modes nobody declared.
+    ['file -m/etc/hosts README', 'option'],
+    ['file -C -m rules.magic', 'option'],
+    ['file --compile rules.magic', 'option'],
+    ['sort -T /tmp a.txt', 'option'],
+    ['sort -S 1 a.txt', 'option'],
+    ['find -L . -name x', 'option'],
+    ['rg -L x', 'option'],
+    ['grep -R x .', 'option'],
+    ['tail -f a.txt', 'option'],
+    ['ls -L', 'option'],
+    ['stat -L a', 'option'],
+    // Values are checked by kind.
+    ['head -n x a.txt', 'option'],
+    ['rg --max-count=x y a', 'option'],
+    ['find . -maxdepth x', 'option'],
+    ['rg --files=x', 'option'],
+    ['rg -A', 'option'],
+  ])('fails %j (%s) (round 2)', (cmd, kind) => {
+    expect(kinds(cmd)).toContain(kind);
+  });
+
+  it.each([
+    ["rg -n --max-count 12 'x' docs"],
+    ['rg --max-count=12 -C3 -g\'!**/.git/**\' x docs'],
+    ['rg -f calc/pats.txt docs'],
+    ['grep -f calc/pats.txt -- -x docs'],
+    ['head -20 a.md; tail -n +5 a.md; head -c 1K a.md'],
+    ['find . -maxdepth 2 -type f -name "*.md" -print'],
+    ['sed -n -e 1p -e 2p a.md; sed --expression=1p a.md'],
+    ['nl -ba -w3 a.md'],
+  ])('allows %j (round 2)', (cmd) => {
+    expect(checkCommandPaths(cmd, root, aliases)).toEqual([]);
+  });
+
+  it('reports a path value written as its own word once, not twice', () => {
+    expect(checkCommandPaths('rg -f /etc/hosts README.md', root, aliases)).toHaveLength(1);
   });
 
   it.each([
