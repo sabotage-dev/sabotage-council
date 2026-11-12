@@ -1,7 +1,7 @@
 import { parseFindings, type FindingsResult } from './findings.js';
 import { checkNonce, parseVerdict, type NonceCheck, type VerdictResult } from './verdict.js';
 
-export { parseFindings, type FindingsFormat, type FindingsResult, type LegFinding } from './findings.js';
+export { MAX_FIELD_LENGTH, parseFindings, type FindingsFormat, type FindingsResult, type LegFinding } from './findings.js';
 export { parseLocation, type Location } from './location.js';
 export {
   normalizeSeverity,

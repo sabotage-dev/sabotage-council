@@ -1,6 +1,7 @@
 import { scanFences, type Fence } from './fences.js';
 import { parseLocation } from './location.js';
 import { normalizeSeverity, type Severity, type SeverityFlag } from './severity.js';
+import { oneOf, stripRuns } from './trim.js';
 import { splitLines } from './verdict.js';
 import { parseYamlList, YamlListError, type YamlRecord } from './yaml-list.js';
 
@@ -26,6 +27,20 @@ export type FindingsResult =
 class BlockError extends Error {}
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/;
+const ID_WRAP = oneOf('*_`');
+
+/**
+ * The longest field a finding may carry (id, severity, location, title). A longer one is not a seat's finding but
+ * garbage or hostile input, so the block goes to the adjudicator before any pattern runs on it (council round 1).
+ */
+export const MAX_FIELD_LENGTH = 2000;
+
+function bounded(value: string, field: string, which: string): string {
+  if (value.length > MAX_FIELD_LENGTH) {
+    throw new BlockError(`${which}: the ${field} field is ${value.length} characters, over the ${MAX_FIELD_LENGTH} limit`);
+  }
+  return value;
+}
 const EMPTY_BLOCK = /^(?:none|\(none\)|n\/a|-|no findings\.?|\[\])$/i;
 
 /** Every fenced block in the reply, with its info string (the scan the verdict parser uses too). */
@@ -108,7 +123,7 @@ function jsonRecords(text: string): unknown[] {
 
 function text(value: unknown, field: string, index: number): string | null {
   if (value === undefined || value === null) return null;
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return bounded(value, field, `finding ${index + 1}`);
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   throw new BlockError(`finding ${index + 1}: "${field}" must be a string or a number`);
 }
@@ -156,8 +171,10 @@ function fromLines(body: string): LegFinding[] {
     const parts = line.split('|').map((p) => p.trim());
     const first = (parts[0] ?? '').toLowerCase();
     if (first === 'id' || first === '#') continue; // a header row
-    if (parts.length < 4) throw new BlockError(`expected "ID | SEVERITY | path:line | title", got "${raw.trim()}"`);
-    const id = (parts[0] ?? '').replace(/^[*_`]+|[*_`]+$/g, '');
+    if (parts.length < 4) throw new BlockError(`expected "ID | SEVERITY | path:line | title", got "${raw.trim().slice(0, 200)}"`);
+    ['id', 'severity', 'location'].forEach((field, i) => bounded(parts[i] ?? '', field, `line "${(parts[0] ?? '').slice(0, 40)}"`));
+    bounded(parts.slice(3).join(' | '), 'title', `line "${(parts[0] ?? '').slice(0, 40)}"`);
+    const id = stripRuns(parts[0] ?? '', ID_WRAP, ID_WRAP);
     if (!ID.test(id)) throw new BlockError(`malformed finding id "${parts[0] ?? ''}"`);
     const title = parts.slice(3).join(' | ').trim();
     if (title === '') throw new BlockError(`finding ${id}: missing title`);

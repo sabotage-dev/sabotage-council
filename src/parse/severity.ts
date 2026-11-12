@@ -1,3 +1,5 @@
+import { isSpace, oneOf, stripRuns } from './trim.js';
+
 /** The four canonical severity labels (plan 3.3). */
 export const SEVERITIES = ['HIGH', 'MEDIUM', 'LOW', 'NIT'] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -29,12 +31,16 @@ export interface NormalizedSeverity {
   flag: SeverityFlag | null;
 }
 
-const WRAPPERS = /^[\s*_`[\](){}"'#:]+|[\s*_`[\](){}"'#:.]+$/g;
+// Wrappers around a label: spaces, emphasis, code ticks, brackets, quotes, `#` and `:`, plus a trailing period.
+const WRAP = oneOf('*_`[](){}"\'#:');
+const WRAP_TAIL = oneOf('*_`[](){}"\'#:.');
+const leadWrapper = (c: string): boolean => isSpace(c) || WRAP(c);
+const tailWrapper = (c: string): boolean => isSpace(c) || WRAP_TAIL(c);
 
 export function normalizeSeverity(input: string | null | undefined): NormalizedSeverity {
   const raw = typeof input === 'string' ? input.trim() : '';
   if (raw === '') return { severity: 'LOW', raw: null, flag: 'unlabelled' };
-  const word = raw.replace(WRAPPERS, '').toUpperCase();
+  const word = stripRuns(raw, leadWrapper, tailWrapper).toUpperCase();
   if (word === '') return { severity: 'LOW', raw, flag: 'unlabelled' };
   if ((SEVERITIES as readonly string[]).includes(word)) return { severity: word as Severity, raw, flag: null };
   const alias = SEVERITY_ALIASES[word];

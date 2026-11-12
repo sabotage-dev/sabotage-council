@@ -15,6 +15,8 @@
  * guessing. No dependency: the shape is small and a full YAML parser would accept far more than findings need.
  */
 
+import { isSpace } from './trim.js';
+
 export type YamlScalar = string | number | boolean | null;
 export type YamlRecord = Record<string, YamlScalar>;
 
@@ -39,7 +41,7 @@ const KEY = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:(?:\s+(.*))?$/;
 export function parseYamlList(source: string): YamlRecord[] {
   const lines: Line[] = source.split(/\r\n|\n|\r/).map((raw, i) => {
     const indent = /^ */.exec(raw)?.[0].length ?? 0;
-    return { no: i + 1, indent, text: raw.slice(indent).replace(/\s+$/, '') };
+    return { no: i + 1, indent, text: raw.slice(indent).trimEnd() };
   });
   const items: YamlRecord[] = [];
   let current: YamlRecord | null = null;
@@ -134,11 +136,23 @@ function scalar(value: string, no: number): YamlScalar {
   }
   if (first === '[' || first === '{') throw new YamlListError('flow collections are not supported', no);
   if (first === '&' || first === '*' || first === '!') throw new YamlListError('anchors, aliases and tags are not supported', no);
-  const plain = value.replace(/\s+#.*$/, '').trim();
+  const plain = withoutComment(value).trim();
   if (/^-?\d+$/.test(plain)) return Number.parseInt(plain, 10);
   if (/^(null|~)$/i.test(plain)) return null;
   if (/^(true|false)$/i.test(plain)) return plain.toLowerCase() === 'true';
   return plain;
+}
+
+/**
+ * A plain scalar without its trailing ` # comment`: cut at the first `#` that follows whitespace. The same cut as
+ * `/\s+#.*$/` (a value never holds a line separator: KEY refuses one), in one linear pass instead of a regex that
+ * backtracks quadratically on a long run of spaces (council round 1).
+ */
+function withoutComment(value: string): string {
+  for (let j = 1; j < value.length; j++) {
+    if (value[j] === '#' && isSpace(value[j - 1] as string)) return value.slice(0, j);
+  }
+  return value;
 }
 
 function closingDoubleQuote(value: string): number {

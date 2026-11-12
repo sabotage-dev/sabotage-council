@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   checkNonce,
+  MAX_FIELD_LENGTH,
   normalizeSeverity,
   parseFindings,
   parseLegReply,
@@ -410,5 +411,54 @@ describe('a whole leg reply', () => {
     expect(r.nonce).toEqual({ present: true, where: 'first-line', line: 1, verbatim: true });
     expect(r.verdict).toMatchObject({ verdict: 'NEEDS-WORK', reason: 'ok', onLastLine: true });
     expect(r.findings).toMatchObject({ extracted_by: 'leg', findings: [{ id: 'F1', severity: 'HIGH', path: 'src/session.ts', line: 51 }] });
+  });
+});
+
+// Council round 1: trailing-run regexes backtracked quadratically on a long run followed by one other character.
+describe('hostile input stays linear', () => {
+  const RUN = 100_000;
+  const LIMIT_MS = 200;
+  const timed = <T>(fn: () => T): { value: T; ms: number } => {
+    const start = performance.now();
+    const value = fn();
+    return { value, ms: performance.now() - start };
+  };
+
+  it.each<[string, () => unknown]>([
+    ['a location ending in a run of ")"', () => parseLocation(`a.ts:1${')'.repeat(RUN)}x`)],
+    ['a location starting with a run of "("', () => parseLocation(`${'('.repeat(RUN)}x`)],
+    ['a severity ending in a run of "*"', () => normalizeSeverity(`HIGH${'*'.repeat(RUN)}x`)],
+    ['a severity ending in a run of spaces', () => normalizeSeverity(`HIGH${' '.repeat(RUN)}x`)],
+    ['a YAML line ending in a run of spaces', () => parseYamlList(`- id: F1\n  title: t${' '.repeat(RUN)}\u00a0x`)],
+    ['a YAML value with a run of spaces and no comment', () => parseYamlList(`- id: F1\n  title: a${' '.repeat(RUN)}x`)],
+    ['a YAML value with a run of spaces before a comment', () => parseYamlList(`- id: F1\n  title: a${' '.repeat(RUN)}# c`)],
+    ['a findings line whose id ends in a run of "*"', () => parseFindings(`${FENCE}findings\nF1${'*'.repeat(RUN)}x | HIGH | a.ts | t\n${FENCE}`)],
+    ['a findings line whose location ends in a run of ")"', () => parseFindings(`${FENCE}findings\nF1 | HIGH | a.ts${')'.repeat(RUN)}x | t\n${FENCE}`)],
+  ])(`parses %s of ${RUN} characters in under ${LIMIT_MS} ms`, (_name, fn) => {
+    expect(timed(fn).ms).toBeLessThan(LIMIT_MS);
+  });
+
+  it('keeps the same results as the old patterns', () => {
+    expect(parseLocation('`(src/x.ts:3)`')).toEqual({ path: 'src/x.ts', line: 3, end_line: null });
+    expect(parseLocation(')(')).toEqual({ path: ')(', line: null, end_line: null });
+    expect(normalizeSeverity('**[High].**')).toMatchObject({ severity: 'HIGH', flag: null });
+    expect(parseYamlList('- title: a  # c\n  x: a#b\n  y: a\t#c # d\n  z: "q" # c')).toEqual([{ title: 'a', x: 'a#b', y: 'a', z: 'q' }]);
+  });
+
+  it(`hands a finding field longer than ${MAX_FIELD_LENGTH} characters to the adjudicator`, () => {
+    const long = 'x'.repeat(MAX_FIELD_LENGTH + 1);
+    for (const block of [
+      `F1 | HIGH | a.ts | ${long}`,
+      `F1 | HIGH | ${long} | t`,
+      `F1 | ${long} | a.ts | t`,
+      `[{"id": "F1", "severity": "HIGH", "path": "a.ts", "title": "${long}"}]`,
+      `- id: F1\n  title: ${long}`,
+    ]) {
+      const r = parseFindings(`${FENCE}findings\n${block}\n${FENCE}`);
+      expect(r.extracted_by).toBe('adjudicator-needed');
+      expect(r.extracted_by === 'adjudicator-needed' ? r.reason : '').toMatch(new RegExp(`over the ${MAX_FIELD_LENGTH} limit`));
+    }
+    const atLimit = parseFindings(`${FENCE}findings\nF1 | HIGH | a.ts | ${'x'.repeat(MAX_FIELD_LENGTH)}\n${FENCE}`);
+    expect(atLimit.extracted_by).toBe('leg');
   });
 });

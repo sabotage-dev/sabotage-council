@@ -1,3 +1,5 @@
+import { oneOf, stripRuns } from './trim.js';
+
 export interface Location {
   /** Null when the seat gave no path (`-`, `n/a`, empty). */
   path: string | null;
@@ -15,9 +17,12 @@ function positive(text: string | undefined): number | null {
   return Number.isSafeInteger(n) && n >= 1 ? n : null;
 }
 
-/** Strips wrapping backticks, quotes and brackets a seat may put around a location. */
+const OPENERS = oneOf('`"\'([');
+const CLOSERS = oneOf('`"\')]');
+
+/** Strips wrapping backticks, quotes and brackets a seat may put around a location (linear, council round 1). */
 function unwrap(text: string): string {
-  return text.trim().replace(/^[`"'([]+|[`"')\]]+$/g, '').trim();
+  return stripRuns(text.trim(), OPENERS, CLOSERS).trim();
 }
 
 /**
