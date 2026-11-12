@@ -382,6 +382,52 @@ describe('codex exec scripts (N16)', () => {
     expect(scanExecInput(script).ok).toBe(false);
   });
 
+  // Round 1 (3/3): each of these hid a nested call from the scanner, which returned ok with no calls.
+  it.each([
+    ['a call inside a template expression', 'text(`${await tools.view_image({path: "/etc/hosts"})}`);', 'template literal with ${'],
+    ['a template expression outside any call', 'const s = `${x}`; text(await tools.exec_command({cmd: "pwd"}));', 'template literal with ${'],
+    ['tools spread into another object', 'const t = {...tools}; await t.view_image({path: "/etc/hosts"});', 'reached as a property'],
+    ['tools read as a property', 'const t = x.tools; await t.view_image({path: "/etc/hosts"});', 'reached as a property'],
+    ['tools read with optional chaining', 'await x?.tools.view_image({path: "/etc/hosts"});', 'reached as a property'],
+    ['a regex literal that holds a comment opener', '/[/*]/.test(x); await tools.view_image({path: "/etc/hosts"});', 'regex literal'],
+    ['a regex literal with an escaped slash', 'const r = /\\//; await tools.view_image({path: "/etc/hosts"});', 'regex literal'],
+    ['a division', 'const half = n / 2; text(half);', 'division'],
+    ['an escaped identifier', 'await \\u0074ools.view_image({path: "/etc/hosts"});', 'backslash outside a string'],
+    ['the constructor chain through string keys', '[]["constructor"]["constructor"]("return this")().tools.view_image({path: "/etc/hosts"});', 'computed member access'],
+    ['a computed key after a comment', 'g[/* key */ "x"];', 'computed member access'],
+    ['a template key', 'g[`tools`].view_image({path: "/etc/hosts"});', 'computed member access'],
+    ['a string that names a dynamic route', 'const k = "constructor"; text([][k][k]);', 'names constructor'],
+    ['a template that names a dynamic route', 'const k = `Function`;', 'names Function'],
+    ['a string that names the tools object', 'const k = "tools";', 'names tools'],
+  ])('fails closed on %s (round 1)', (_what, script, reason) => {
+    const scan = scanExecInput(script);
+    expect(scan.ok).toBe(false);
+    expect(scan.ok ? '' : scan.reason).toContain(reason);
+  });
+
+  it('ends a // comment at every JavaScript line terminator, so a call after U+2028 is read', () => {
+    expect(scanExecInput('// note await tools.view_image({path: "/etc/hosts"});')).toEqual({
+      ok: true,
+      calls: [{ tool: 'view_image', cmd: null, args: { path: '/etc/hosts' } }],
+    });
+    expect(scanExecInput('// note tools.view_image({path: "/etc/hosts"});').ok).toBe(true);
+  });
+
+  it('accepts the shapes real council legs write: Promise.allSettled, an index key, a spread result, .output', () => {
+    const script = [
+      'const results = await Promise.allSettled([',
+      '  tools.exec_command({cmd:"nl -ba a.md | sed -n \'1,200p\'","max_output_tokens":12000}),',
+      '  tools.exec_command({cmd:"rg --files","max_output_tokens":4000})',
+      ']); for (let i=0;i<results.length;i++) text({i,...results[i]});',
+      'results.forEach((r,i)=>text({i,...r}));',
+      'text((await tools.exec_command({cmd:"pwd"})).output);',
+      'const note = `no interpolation here`;',
+    ].join('\n');
+    const scan = scanExecInput(script);
+    expect(scan.ok).toBe(true);
+    expect(scan.calls.map((c) => c.cmd)).toEqual(["nl -ba a.md | sed -n '1,200p'", 'rg --files', 'pwd']);
+  });
+
   it('reads every nested call with its literal arguments, including list arguments and empty calls', () => {
     const scan = scanExecInput('text(await tools.clock__curr_time()); await tools.exec_command({cmd: "ls", prefix_rule: ["git", "pull"]});');
     expect(scan).toEqual({
@@ -431,6 +477,8 @@ describe('codex nested exec tools (N18)', () => {
     ['read_mcp_resource (MCP-class)', 'await tools.read_mcp_resource({server: "x", uri: "y"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'read_mcp_resource'],
     ['an undeclared nested tool', 'await tools.web_fetch({url: "https://example.com"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'undeclared nested tool web_fetch'],
     ['view_image outside the root', 'await tools.view_image({path: "/etc/x.png"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'view_image path /etc/x.png'],
+    ['view_image hidden in a template expression', 'text(`${await tools.view_image({path: "/etc/hosts"})}`); text(await tools.exec_command({cmd: "__CMD__"}));', 'template literal with ${'],
+    ['view_image through a spread copy of tools', 'const t = {...tools}; await t.view_image({path: "/etc/hosts"}); text(await tools.exec_command({cmd: "__CMD__"}));', 'reached as a property'],
     ['an escalation request', 'text(await tools.exec_command({cmd: "__CMD__", sandbox_permissions: "require_escalated", justification: "x"}));', 'require_escalated'],
     ['a prefix rule', 'text(await tools.exec_command({cmd: "__CMD__", prefix_rule: ["ls"]}));', 'prefix_rule'],
     ['a workdir outside the root', 'text(await tools.exec_command({cmd: "__CMD__", workdir: "/etc"}));', 'workdir leaves the root'],

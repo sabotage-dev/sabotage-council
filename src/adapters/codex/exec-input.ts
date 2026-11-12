@@ -3,9 +3,18 @@
  * nested tools, e.g. `text(await tools.exec_command({cmd: "rg --files"}));`. Ratification extracts each `cmd`
  * string from the script itself, never from the `/bin/zsh -lc` wrapper of a CommandExecution item.
  *
- * The scanner is deliberately strict: every use of the `tools` object must be a direct call of an allowed nested
- * tool with a literal argument. Anything it cannot read statically (a computed command, `tools[...]`, `tools`
- * passed around, an interpolated template) makes the script untokenizable, and the leg fails closed (N17).
+ * The scanner is an allowlist grammar (round 1 fold): a script passes only when every way it can reach a tool is a
+ * direct `tools.<name>(<literal>)` call the scanner extracted. It fails closed, with a reason, on anything that
+ * could hide a call from it or build one at run time (N17):
+ *   - a template literal holding `${` anywhere, not only as a call argument;
+ *   - a `/` outside a string that does not open a comment (regex literals and division both fail);
+ *   - a `\` outside a string (an escaped identifier such as `\u0074ools`);
+ *   - `tools` reached as a property (`.tools`, `...tools`, `?.tools`), or followed by anything but `.<name>(`;
+ *   - a `[` followed by a string or template (computed member access with a string key, `x["..."]`);
+ *   - a string literal whose content is a DYNAMIC_ACCESS word, or `tools`;
+ *   - a DYNAMIC_ACCESS identifier, or a call argument that is not a literal.
+ * Comments end where JavaScript ends them (any line terminator, U+2028 and U+2029 included), so a call after such
+ * a terminator is never read as part of a comment.
  */
 
 export type LiteralValue = string | number | boolean | null | string[];
@@ -44,8 +53,15 @@ export const DYNAMIC_ACCESS = new Set([
 
 export type ExecScan = { ok: true; calls: ExecCall[] } | { ok: false; reason: string; calls: ExecCall[] };
 
+/** Strings with these contents name the global object or the tools object; any of them fails the script. */
+export const FORBIDDEN_STRINGS: ReadonlySet<string> = new Set([...DYNAMIC_ACCESS, 'tools']);
+
 const IDENT_START = /[A-Za-z_$]/;
 const IDENT = /[A-Za-z0-9_$]/;
+/** ECMAScript WhiteSpace and LineTerminator code points. */
+const JS_SPACE = /[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
+/** ECMAScript LineTerminator: where a `//` comment ends. */
+const LINE_END = /[\n\r\u2028\u2029]/;
 
 class Lexer {
   i = 0;
@@ -59,14 +75,14 @@ class Lexer {
     return this.i >= this.s.length;
   }
 
-  /** Skips whitespace and comments. */
+  /** Skips whitespace and comments, as JavaScript delimits them. */
   skipSpace(): void {
     for (;;) {
       const c = this.peek();
-      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+      if (c !== '' && JS_SPACE.test(c)) {
         this.i++;
       } else if (c === '/' && this.peek(1) === '/') {
-        while (!this.eof() && this.peek() !== '\n') this.i++;
+        while (!this.eof() && !LINE_END.test(this.peek())) this.i++;
       } else if (c === '/' && this.peek(1) === '*') {
         const end = this.s.indexOf('*/', this.i + 2);
         this.i = end < 0 ? this.s.length : end + 2;
@@ -250,41 +266,56 @@ function readCallArgument(lx: Lexer): { cmd: string | null; args: Record<string,
 
 /**
  * Extracts every nested tool call from an `exec` script, with literal arguments. The ratifier applies each
- * nested tool's rule (native.ts); this scanner only refuses scripts it cannot read statically.
+ * nested tool's rule (native.ts); this scanner refuses every script it cannot read statically.
  */
 export function scanExecInput(input: string): ExecScan {
   const lx = new Lexer(input);
   const calls: ExecCall[] = [];
+  const fail = (reason: string): ExecScan => ({ ok: false, reason, calls });
+  // The last significant character outside strings and comments ('string' after a string literal).
   let prev = '';
-  while (!lx.eof()) {
+  for (;;) {
     lx.skipSpace();
     if (lx.eof()) break;
     const c = lx.peek();
     if (c === '"' || c === "'" || c === '`') {
-      if (!lx.stringLiteral()) return { ok: false, reason: 'an unterminated or malformed string literal', calls };
+      const str = lx.stringLiteral();
+      if (!str) return fail('an unterminated or malformed string literal');
+      if (str.interpolated) return fail('a template literal with ${...}');
+      if (FORBIDDEN_STRINGS.has(str.value)) return fail(`a string literal that names ${str.value}`);
       prev = 'string';
+      continue;
+    }
+    if (c === '\\') return fail('a backslash outside a string (an escaped identifier)');
+    // skipSpace consumed every comment, so a / here is a regex literal or a division.
+    if (c === '/') return fail('a / outside a string that opens no comment (a regex literal or a division)');
+    if (c === '[') {
+      lx.i++;
+      lx.skipSpace();
+      const next = lx.peek();
+      if (next === '"' || next === "'" || next === '`') return fail('a [ followed by a string (computed member access with a string key)');
+      prev = '[';
       continue;
     }
     if (IDENT_START.test(c)) {
       const word = lx.ident() ?? '';
-      if (DYNAMIC_ACCESS.has(word)) return { ok: false, reason: `dynamic access through ${word}`, calls };
-      // A property access (`x.tools`) is not the global `tools` object.
-      if (word === 'tools' && prev !== '.') {
+      if (DYNAMIC_ACCESS.has(word)) return fail(`dynamic access through ${word}`);
+      if (word === 'tools') {
+        // `.tools`, `...tools` and `?.tools` all end in a dot: the object reached some other way.
+        if (prev === '.') return fail('tools is reached as a property (.tools, ...tools)');
         lx.skipSpace();
-        if (lx.peek() !== '.') return { ok: false, reason: 'the tools object is used other than as a direct call', calls };
+        if (lx.peek() !== '.') return fail('the tools object is used other than as a direct call');
         lx.i++;
         lx.skipSpace();
         const tool = lx.ident();
-        if (tool === null) return { ok: false, reason: 'tools is followed by something other than a tool name', calls };
+        if (tool === null) return fail('tools is followed by something other than a tool name');
         const arg = readCallArgument(lx);
-        if (arg === null) {
-          return { ok: false, reason: `the argument of tools.${tool} is not a literal command`, calls };
-        }
+        if (arg === null) return fail(`the argument of tools.${tool} is not a literal command`);
         calls.push({ tool, cmd: arg.cmd, args: arg.args });
         prev = ')';
         continue;
       }
-      prev = word;
+      prev = 'ident';
       continue;
     }
     prev = c;
