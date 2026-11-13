@@ -297,9 +297,9 @@ Rules that hold in every round:
   The brief states which of these applied:
   - When the baseline tree is available (not an ancestor), the brief lists the files whose content differs
     between it and this head's tree, so the seats can focus there.
-  - When the baseline is missing, the engine first tries an exact fetch of that commit into its mirror (P6). If it is still
-    unavailable, the list is "changed files unknown (baseline unavailable)", the seats review the whole change, and
-    the round keeps its number and Q14's rule.
+  - When the baseline is missing, the engine first tries an exact fetch of that commit into its mirror (P6). If it
+    is still unavailable, the list is "changed files unknown (baseline unavailable)", the seats review the whole
+    change, and the round keeps its number and Q14's rule.
   - An empty fold means the content equals what was reviewed. The round still runs, as a full review.
 
   A fallback round keeps its own owed rule (D17), so a rebase does not restart convergence.
@@ -389,8 +389,9 @@ A `needs-ruling` round posts a COMMENT (when anything can be posted), notifies t
 head until the user rules or a new head arrives. On the user's own PR the author row (3.7 row 1) matches first;
 its COMMENT still carries the "Ruling needed" section, and the round is still held (N10). In P6 the round records
 `needs_ruling`, and the validator rejects an adjudication of a round whose user change request stands on its head
-unless `needs_ruling` is true; the ledger hold and the `ruling` commands below are P8. Rulings are recorded per finding, not just per round, so the
-scorecard knows which seats were right:
+unless `needs_ruling` is true; the ledger hold and the `ruling` commands below are P8.
+
+Rulings are recorded per finding, not just per round, so the scorecard knows which seats were right:
 
 - `sabotage-council ruling <round> <finding-id> uphold|overturn [--note "..."]` sets that finding's
   `ruling_result`, actor and time (8.1).
