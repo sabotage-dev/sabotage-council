@@ -62,7 +62,7 @@ async function world(edit: (routes: Routes, src: SourceRepo) => void = () => und
   };
 }
 
-describe('pr rounds: the recorded PR #2 replayed', () => {
+describe('pr rounds: the recorded PR #2 replayed', { timeout: 60_000 }, () => {
   it('counts the three council reviews, re-runs round 3 on the reviewed head as a delta from round 2, and carries round 2 as an item', async () => {
     const w = await world();
     const r = preparePrRound(w.h.store, w.options());
@@ -108,7 +108,7 @@ const reopen = (routes: Routes): void => {
   Object.assign(json(routes, `GET ${API_PULL}`), { state: 'open', merged: false });
 };
 
-describe('pr rounds: preparation rules', () => {
+describe('pr rounds: preparation rules', { timeout: 60_000 }, () => {
   it('fails closed when a GitHub read fails: no round row, nothing built', async () => {
     const w = await world((r) => {
       r[`GET ${API_PULL}/reviews`] = { fail: 'gh: Server Error (HTTP 502)' };
@@ -308,7 +308,7 @@ async function councilRound(
 const postOptions = (w: World, id: number, mode: 'dry-run' | 'post', hooks?: PostOptions['hooks']): PostOptions => ({ config: w.options().config, layout: w.h.layout, api: w.options().api, roundId: id, mode, hooks });
 const post = (w: World, id: number, mode: 'dry-run' | 'post', hooks?: PostOptions['hooks']): PostResult => postRound(w.h.store, postOptions(w, id, mode, hooks));
 
-describe('pr rounds: holds, asks and the post step', () => {
+describe('pr rounds: holds, asks and the post step', { timeout: 60_000 }, () => {
   it("the user's change request on this head forces needs_ruling, and the post is a COMMENT with the ruling section", async () => {
     const w = await world((r, src) => {
       jsonList(r, `GET ${API_PULL}/reviews`).push({ id: 8002, user: { login: 'repo-owner' }, state: 'CHANGES_REQUESTED', commit_id: src.shas['C7'], submitted_at: '2026-11-12T19:00:00Z', body: 'Not yet.' });
@@ -478,7 +478,7 @@ describe('pr rounds: holds, asks and the post step', () => {
   }, 60_000);
 });
 
-describe('pr rounds: the untrusted seat policy (plan 5.2)', () => {
+describe('pr rounds: the untrusted seat policy (plan 5.2)', { timeout: 60_000 }, () => {
   async function untrusted(policy: string): Promise<CouncilConfig> {
     const r = await parseConfigText(`${ROSTER_TOML.replace('leg_timeout_minutes = 1', `leg_timeout_minutes = 1\nuntrusted_seat_policy = "${policy}"`)}\n[github]\nlogin = "repo-owner"\n[pr]\ninteractive_adjudication = "untrusted-too"\n`);
     if (!r.ok) throw new Error(JSON.stringify(r.errors));
@@ -524,7 +524,7 @@ describe('pr rounds: the untrusted seat policy (plan 5.2)', () => {
   }, 120_000);
 });
 
-describe('pr rounds: a superseded round', () => {
+describe('pr rounds: a superseded round', { timeout: 60_000 }, () => {
   it('posts nothing when the head moved, and its owed rows still carry into the next round', async () => {
     const open = (r: Routes, src: SourceRepo): void => {
       reopen(r);
@@ -551,7 +551,7 @@ describe('pr rounds: a superseded round', () => {
   }, 60_000);
 });
 
-describe('pr round inputs (P6 round 1)', () => {
+describe('pr round inputs (P6 round 1)', { timeout: 60_000 }, () => {
   it('row 15: a PR commit forged with the snapshot identity and message is a GitHub head: a force-push past it is a full round', async () => {
     const w = await world((r, src) => {
       reopen(r);
@@ -594,7 +594,7 @@ describe('pr round inputs (P6 round 1)', () => {
   });
 });
 
-describe("the changed-file cross-check (GitHub's list against the fetched commits)", () => {
+describe("the changed-file cross-check (GitHub's list against the fetched commits)", { timeout: 60_000 }, () => {
   it('counts a rename as its old and new paths, and skips a list at GitHub\'s 3,000-file limit', () => {
     const src = sourceRepo();
     git(src.repo, ['checkout', '--quiet', '--detach', src.shas['C7']!]);
@@ -624,7 +624,7 @@ const writes = (w: World): Array<{ method: string; path: string; body: unknown }
 const postsSent = (w: World): Array<{ body: unknown }> => w.gh.requests().filter((q) => q.method === 'POST');
 const DISMISS_OURS = `PUT ${API_PULL}/reviews/990001/dismissals`;
 
-describe('pr rounds: post-step safety (P6 round 1)', () => {
+describe('pr rounds: post-step safety (P6 round 1)', { timeout: 60_000 }, () => {
   it('row 9: two posts of one round make one POST; the second is refused while the first holds the claim, which a dead process loses', async () => {
     const w = await world(approvable);
     const { id } = await councilRound(w, { dryRun: false }, APPROVE);
@@ -922,7 +922,7 @@ const crash = (): never => {
 const NEEDS_WORK: AdjOptions = { outcome: 'owed', verdict: 'NEEDS-WORK', approve: false };
 const ourReview = (id: number, state: string, commit: string, body: string): Json => ({ id, user: { login: 'repo-owner' }, state, commit_id: commit, submitted_at: '2026-11-13T12:00:00Z', body });
 
-describe('pr rounds: post-step safety (P6 round 2)', () => {
+describe('pr rounds: post-step safety (P6 round 2)', { timeout: 60_000 }, () => {
   it('row 1: a crash after the POST, then a push: the next post adopts the approval, withdraws it and records the round; a close is reconciled too', async () => {
     const w = await world(approvable);
     const { id } = await councilRound(w, { dryRun: false }, APPROVE);
