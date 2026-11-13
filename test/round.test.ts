@@ -24,6 +24,7 @@ import { git } from './helpers/git-fixture.js';
 import { openStore } from '../src/store/index.js';
 import { claudeCase, codexCase, commitChange, fakeAdapters, fakeHome, fixtureRepo, harness, OCC, ROSTER_TOML, rosterConfig, runRound, type Harness } from './helpers/round.js';
 import { parseConfigText } from '../src/config/index.js';
+import type { LegState, SeatAdapter, SeatAdapters } from '../src/adapters/index.js';
 
 cleanScratchAfterAll();
 
@@ -75,7 +76,7 @@ interface AdjCtx {
 }
 
 describe('round runner: plan 4.4 decisions', () => {
-  const base = { role: 'primary' as const, attempt: 1, fallback: { backend: 'claude' as const, model: 'm', on: ['usage_limit' as const, 'auth' as const] }, timeLeftMs: 10_000, minLegMs: 100, rootClean: true };
+  const base = { role: 'primary' as const, attempt: 1, fallback: { backend: 'claude' as const, model: 'm', on: ['usage_limit' as const, 'auth' as const] }, timeLeftMs: 10_000, minLegMs: 100 };
   it.each([
     ['usage_limit', 'fallback'],
     ['auth', 'fallback'],
@@ -89,9 +90,8 @@ describe('round runner: plan 4.4 decisions', () => {
   ] as const)('%s on a primary first attempt -> %s', (cls, kind) => {
     expect(nextStep({ ...base, failureClass: cls }).kind).toBe(kind);
   });
-  it('relaunches only once, never into a changed root, and only with time left', () => {
+  it('relaunches only once, and only with time left (a changed root is rebuilt, see fold row 12)', () => {
     expect(nextStep({ ...base, failureClass: 'capacity', attempt: 2 }).kind).toBe('out');
-    expect(nextStep({ ...base, failureClass: 'capacity', rootClean: false }).kind).toBe('out');
     expect(nextStep({ ...base, failureClass: 'timeout', timeLeftMs: 50 }).kind).toBe('out');
   });
   it('falls back only from a primary, and only on a class the fallback lists', () => {
@@ -859,4 +859,105 @@ describe('fold rows 10-11: targets, uncommitted follow-ups, explicit ranges and 
     expect(fold).not.toContain('unrelated');
     expect(fold).not.toContain('more.py');
   }, 120_000);
+});
+
+describe('fold rows 12-13: a clean root for every fallback and relaunch; one seat never orphans the others', () => {
+  const claudeWith = (model: string, patch: (real: SeatAdapter) => Partial<SeatAdapter>): SeatAdapters => (backend) => {
+    const real = fakeAdapters(backend);
+    if (!real || backend !== 'claude') return real;
+    const p = patch(real);
+    return {
+      ...real,
+      poll: (h) => (h.occupant.model === model && p.poll ? p.poll(h) : real.poll(h)),
+    };
+  };
+
+  it('rebuilds a changed root before a fallback launches, and the fallback runs in the rebuilt root', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const { prepared, result } = await runRound(
+      h,
+      resolveDiffTarget(repo, 'main..feature'),
+      {
+        codex: { [OCC.a]: [codexCase('usage-limit')] },
+        claude: { [OCC.b]: [claudeCase('success', { delayMs: 2000 })], [OCC.c]: [claudeCase('success', { delayMs: 2000 })] },
+      },
+      { beforeNextLeg: () => writeFileSync(join(rootPathOf(h.layout, 1, 1), 'planted.txt'), 'changed under the runner\n') },
+    );
+    const legs = getLegs(h.store.db, prepared.inputs.roundId);
+    expect(legs.map((l) => [l.seat_id, l.role, l.status])).toEqual(
+      expect.arrayContaining([
+        ['a', 'primary', 'FAIL'],
+        ['a', 'fallback', 'PASS'],
+        ['b', 'primary', 'CONTAMINATED'],
+        ['c', 'primary', 'CONTAMINATED'],
+      ]),
+    );
+    expect(result.quorum).toBe('solo');
+    const rebuilt = getEvents(h.store.db, prepared.inputs.roundId).find((e) => e.kind === 'root-rebuilt')?.detail as { to: string; changes: string[] };
+    expect(rebuilt.to).toBe(rootPathOf(h.layout, 1, 2));
+    expect(rebuilt.changes).toContain('added planted.txt');
+    const fallback = JSON.parse(readFileSync(join(prepared.roundDir, 'legs', 'a-fallback-1', 'ratification.json'), 'utf8')) as { cwdObserved: string };
+    expect(fallback.cwdObserved).toBe(rootPathOf(h.layout, 1, 2));
+    expect(existsSync(join(rootPathOf(h.layout, 1, 2), 'planted.txt'))).toBe(false);
+  }, 60_000);
+
+  it('preflights every fallback before any leg launches', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const calls: string[] = [];
+    const recording: SeatAdapters = (backend) => {
+      const real = fakeAdapters(backend);
+      if (!real) return real;
+      return {
+        ...real,
+        preflight: (o, ctx) => {
+          calls.push(`preflight ${o.model}`);
+          return real.preflight(o, ctx);
+        },
+        launch: (o, ctx, p) => {
+          calls.push(`launch ${o.model}`);
+          return real.launch(o, ctx, p);
+        },
+      };
+    };
+    await runRound(h, resolveDiffTarget(repo, 'main..feature'), { codex: { [OCC.a]: [codexCase('usage-limit')] } }, { adapters: recording });
+    const firstLaunch = calls.findIndex((c) => c.startsWith('launch'));
+    expect(calls.indexOf('preflight claude-sonnet-5-5')).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf('preflight claude-sonnet-5-5')).toBeLessThan(firstLaunch);
+    expect(calls.slice(firstLaunch).some((c) => c.startsWith('preflight'))).toBe(false);
+    expect(calls).toContain('launch claude-sonnet-5-5');
+  }, 60_000);
+
+  it('a seat whose poll throws is cancelled and not counted; the other seats settle', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const adapters = claudeWith('claude-opus-5-5', () => ({
+      poll: () => Promise.reject(new Error('poll broke')),
+    }));
+    const { prepared, result } = await runRound(h, resolveDiffTarget(repo, 'main..feature'), { claude: { [OCC.c]: [claudeCase('success', { hangAfterInit: true })] } }, { adapters });
+    expect(result).toMatchObject({ quorum: 'council', ratified: 2 });
+    const legs = getLegs(h.store.db, prepared.inputs.roundId);
+    expect(legs.filter((l) => l.status === 'RUNNING')).toEqual([]);
+    // Not counted. (The claude ratifier fails a leg with no result line on permission-denials, so it is CONTAMINATED.)
+    expect(['FAIL', 'CONTAMINATED']).toContain(legs.find((l) => l.seat_id === 'c')?.status);
+    expect(getEvents(h.store.db, prepared.inputs.roundId).some((e) => e.kind === 'poll-fail')).toBe(true);
+    const record = JSON.parse(readFileSync(join(prepared.roundDir, 'legs', 'c-primary-1', 'process.json'), 'utf8')) as { exit: { doneBy: string } };
+    expect(record.exit.doneBy).toBe('cancel');
+  }, 60_000);
+
+  it('a seat that throws out of the runner leaves no leg running and the round still settles', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const adapters = claudeWith('claude-opus-5-5', () => ({
+      poll: () => Promise.resolve(undefined as unknown as LegState),
+    }));
+    const { prepared, result } = await runRound(h, resolveDiffTarget(repo, 'main..feature'), { claude: { [OCC.c]: [claudeCase('success', { hangAfterInit: true })] } }, { adapters });
+    expect(result).toMatchObject({ status: 'awaiting-adjudication', quorum: 'council', ratified: 2 });
+    const c = getLegs(h.store.db, prepared.inputs.roundId).find((l) => l.seat_id === 'c');
+    expect(c).toMatchObject({ status: 'FAIL', failure_class: 'transport' });
+    expect(getEvents(h.store.db, prepared.inputs.roundId).find((e) => e.kind === 'seat-error')?.detail).toMatchObject({ seat: 'c' });
+    const record = JSON.parse(readFileSync(join(prepared.roundDir, 'legs', 'c-primary-1', 'process.json'), 'utf8')) as { exit: { doneBy: string } };
+    expect(record.exit.doneBy).toBe('cancel');
+  }, 60_000);
 });

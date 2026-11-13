@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findingIdOf } from '../src/adjudicate/index.js';
@@ -237,5 +237,33 @@ describe('CLI: round start / wait / show and adjudicate', () => {
     expect(failed.startsWith('        failed write-denial: line one line two xxx')).toBe(true);
     expect(failed.endsWith('...')).toBe(true);
     expect(lines.every((l) => !l.includes('\n'))).toBe(true);
+  });
+});
+
+describe('CLI: fold row 13, the worker hand-off', () => {
+  it('hands the worker absolute paths, even from relative flags', async () => {
+    const { repo } = fixtureRepo();
+    writeFileSync(join(repo, '..', 'config.toml'), ROSTER_TOML);
+    const seen: StorePaths[] = [];
+    const lines: string[] = [];
+    const io: ProgramIo = { write: (l) => lines.push(l), env: { HOME: repo }, setExitCode: () => undefined, adapters: fakeAdapters, registry: REGISTRY, cwd: repo, startWorker: (_id, p) => void seen.push(p) };
+    await buildProgram(io).exitOverride().parseAsync(['node', 'sc', 'round', 'start', 'diff', 'main..feature', '--config', '../config.toml', '--db', 'data/council.db', '--roots', 'roots']);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual({ configPath: join(repo, '..', 'config.toml'), dbPath: join(repo, 'data', 'council.db'), rootsPath: join(repo, 'roots') });
+  });
+
+  it('fails the round, removes its root and names it when the worker cannot start', async () => {
+    const { repo } = fixtureRepo();
+    const c = cli(repo, () => {
+      throw new Error('spawn failed');
+    });
+    const r = await c.run('round', 'start', 'diff', 'main..feature');
+    expect(r.code).toBe(1);
+    expect(r.lines.at(-1)).toBe('error: round 1 failed: its worker did not start (spawn failed)');
+    const shown = await c.run('round', 'show', '1', '--json');
+    const summary = JSON.parse(shown.lines.join('\n')) as RoundSummary;
+    expect(summary.status).toBe('failed');
+    expect(summary.events.find((e) => e.kind === 'round-failed')?.detail).toMatchObject({ stage: 'worker-start' });
+    expect(existsSync(summary.root)).toBe(false);
   });
 });

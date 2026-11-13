@@ -6,11 +6,13 @@ import { sameOccupant } from '../config/rules.js';
 import type { FallbackConfig, SeatConfig } from '../config/schema.js';
 import { parseLegReply, type LegReply } from '../parse/index.js';
 import { hashManifest, manifestOf } from '../root/hash.js';
-import { sweepResidue, type SealedRoot } from '../root/seal.js';
+import { buildRoot } from '../root/build.js';
+import { sealRoot, sweepResidue, type SealedRoot } from '../root/seal.js';
 import type { Store } from '../store/open.js';
 import { FactsError, roundFacts, type RoundFacts } from './facts.js';
 import { roundDirOf, type DataLayout } from './prepare.js';
 import { getLegs, insertEvent, now, upsertOccupant, type LegStatus } from './records.js';
+import { createRootDir, removeOwnedRoot } from './roots.js';
 
 /*
  * The round runner (plan 3.1 steps 4-8): preflight every seat serially (auth refresh is serial, plan 4.3), launch
@@ -33,8 +35,6 @@ export interface StepInput {
   timeLeftMs: number;
   /** The smallest leg worth launching. */
   minLegMs: number;
-  /** The root still hashes to its sealed value. */
-  rootClean: boolean;
 }
 
 /** Plan 4.4's effect column, with the fallback rule of 3.1 step 6 and D10. */
@@ -49,7 +49,6 @@ export function nextStep(s: StepInput): NextStep {
     case 'empty':
     case 'timeout':
       if (s.attempt > 1) return { kind: 'out', why: `${s.failureClass} again after one relaunch` };
-      if (!s.rootClean) return { kind: 'out', why: `${s.failureClass}, but the root changed, so no relaunch into it` };
       if (s.timeLeftMs < s.minLegMs) return { kind: 'out', why: `${s.failureClass}, and no time remains in the round for a relaunch` };
       return { kind: 'relaunch' };
     case 'model':
@@ -80,6 +79,8 @@ export interface RunOptions {
   capGraceMs?: number | undefined;
   /** Cancels every running leg; the round fails. */
   signal?: AbortSignal | undefined;
+  /** Tests only: runs before a fallback or relaunch leg is launched (to change the root under the runner). */
+  beforeNextLeg?: ((seat: string) => void) | undefined;
 }
 
 export interface LegResult {
@@ -99,6 +100,8 @@ export interface LegResult {
   rootMutated: boolean;
   /** Who ran the leg: quorum counts distinct occupants (fold row 5). */
   occupant: Occupant;
+  /** Which root the leg ran in: 0 is the first; a rebuilt root (fold row 12) is the next. */
+  rootIndex: number;
 }
 
 export interface RunResult {
@@ -132,7 +135,7 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
   // Everything this run decides on comes from the store and the layout (fold row 3), never from round.json.
   const inputs = roundFacts(store, layout, roundId);
   const roundDir = roundDirOf(layout, roundId);
-  const sealed = sealedFromRoot(inputs);
+  const first = sealedFromRoot(inputs);
   const pollMs = options.pollMs ?? 1000;
   const legTimeoutMs = options.legTimeoutMs ?? inputs.legTimeoutMs;
   const budgetMs = options.roundBudgetMs ?? legTimeoutMs * 2;
@@ -143,19 +146,48 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
   const results: LegResult[] = [];
   const running = new Map<string, { adapter: SeatAdapter; handle: LegHandle }>();
 
-  // The residue sweep (plan 3.1 step 7). `lastClean` is when the root was last seen unchanged: a leg that ended
-  // before it cannot have made a later change.
-  let lastClean = Date.now();
-  const sweep = (): { unchanged: boolean; changes: string[] } => {
-    const at = Date.now();
-    try {
-      const r = sweepResidue(sealed);
-      if (r.unchanged) lastClean = at;
-      return { unchanged: r.unchanged, changes: r.changes.map((c) => `${c.change} ${c.path}`) };
-    } catch (error) {
-      // A root that cannot be read is not the sealed root: fail closed.
-      return { unchanged: false, changes: [`unreadable: ${error instanceof Error ? error.message : String(error)}`] };
-    }
+  // The roots of this round: the first, and any rebuilt for a fallback or relaunch (fold row 12). The residue sweep
+  // (plan 3.1 step 7) is per root; `lastClean` is when that root was last seen unchanged: a leg that ended before it
+  // cannot have made a later change.
+  const roots: RootState[] = [{ index: 0, sealed: first, lastClean: Date.now() }];
+  let current = roots[0] as RootState;
+  const sweepOf =
+    (state: RootState) =>
+    (): { unchanged: boolean; changes: string[] } => {
+      const at = Date.now();
+      try {
+        const r = sweepResidue(state.sealed);
+        if (r.unchanged) state.lastClean = at;
+        return { unchanged: r.unchanged, changes: r.changes.map((c) => `${c.change} ${c.path}`) };
+      } catch (error) {
+        // A root that cannot be read is not the sealed root: fail closed.
+        return { unchanged: false, changes: [`unreadable: ${error instanceof Error ? error.message : String(error)}`] };
+      }
+    };
+
+  /**
+   * A fallback or relaunch never reuses a dirty root (fold row 12): the current root is re-verified against its tree
+   * hash, and a changed one is rebuilt from the round's stored inputs into the next attempt dir, proven to hash to
+   * the sealed tree, and used for every later leg. Legs still running in the old root keep it (and its sweep).
+   */
+  const cleanRoot = (seat: string): RootState => {
+    const check = sweepOf(current)();
+    if (check.unchanged) return current;
+    const index = roots.length;
+    const sealed = rebuildRoot(layout, inputs, index + 1);
+    const state: RootState = { index, sealed, lastClean: Date.now() };
+    roots.push(state);
+    insertEvent(db, 'root-rebuilt', inputs.roundId, { seat, from: current.sealed.root, to: sealed.root, changes: check.changes.slice(0, 50) });
+    current = state;
+    return state;
+  };
+
+  // Preflights run one at a time (plan 4.3: parallel legs racing a token refresh was a measured failure).
+  let preflightLock: Promise<unknown> = Promise.resolve();
+  const serially = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = preflightLock.then(fn, fn);
+    preflightLock = run.catch(() => undefined);
+    return run;
   };
 
   const onAbort = (): void => {
@@ -163,19 +195,19 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
   };
   options.signal?.addEventListener('abort', onAbort, { once: true });
 
-  const ctxFor = (legDir: string, timeoutMs: number): RoundCtx => ({
-    root: inputs.root,
+  const ctxFor = (legDir: string, timeoutMs: number, state: RootState): RoundCtx => ({
+    root: state.sealed.root,
     legDir,
     nonce: inputs.nonce,
-    briefFile: inputs.briefFile,
+    briefFile: join(state.sealed.root, 'BRIEF.md'),
     timeoutMs,
     env,
-    rootUnchanged: sweep,
+    rootUnchanged: sweepOf(state),
   });
 
   const preflight = async (adapter: SeatAdapter, o: Occupant, legDir: string): Promise<Preflight> => {
     try {
-      return await adapter.preflight(o, ctxFor(legDir, legTimeoutMs));
+      return await adapter.preflight(o, ctxFor(legDir, legTimeoutMs, current));
     } catch (error) {
       return {
         ok: false,
@@ -258,18 +290,19 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
     attempt: number,
     o: Occupant,
     pre: Preflight | undefined,
+    state: RootState,
   ): Promise<LegResult> => {
     const adapter = options.adapters(o.backend);
     const legDir = legDirFor(seat.id, role, attempt);
     const startedAt = now();
-    const base = { seat: seat.id, role, attempt, legDir, startedAt, endedAtMs: Date.now(), rootMutated: false, occupant: o };
+    const base = { seat: seat.id, role, attempt, legDir, startedAt, endedAtMs: Date.now(), rootMutated: false, occupant: o, rootIndex: state.index };
     if (!adapter) {
       const legId = insertLeg(seat.id, role, attempt, undefined, o, 'PREFLIGHT_FAIL', legDir);
       const finishedAt = finishLeg(legId, { status: 'PREFLIGHT_FAIL', failureClass: 'setup' });
       insertEvent(db, 'preflight-fail', inputs.roundId, { seat: seat.id, role, attempt, reason: `no adapter for ${o.backend}` });
       return { ...base, legId, status: 'PREFLIGHT_FAIL', failureClass: 'setup', reply: null, finishedAt };
     }
-    const p = pre ?? (await preflight(adapter, o, legDir));
+    const p = pre ?? (await serially(() => preflight(adapter, o, legDir)));
     writeFileSync(join(legDir, 'preflight.json'), `${JSON.stringify(p, null, 2)}\n`);
     if (!p.ok) {
       const legId = insertLeg(seat.id, role, attempt, adapter, o, 'PREFLIGHT_FAIL', legDir);
@@ -279,8 +312,9 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
       return { ...base, legId, status: 'PREFLIGHT_FAIL', failureClass: cls, reply: null, finishedAt };
     }
     const timeoutMs = Math.min(legTimeoutMs, Math.max(1, deadline - Date.now()));
-    const ctx = ctxFor(legDir, timeoutMs);
+    const ctx = ctxFor(legDir, timeoutMs, state);
     const legId = insertLeg(seat.id, role, attempt, adapter, o, 'RUNNING', legDir);
+    seatLeg.set(seat.id, legId);
     let handle: LegHandle;
     try {
       handle = await adapter.launch(o, ctx, p);
@@ -292,16 +326,28 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
     const key = `${seat.id}-${role}-${attempt}`;
     running.set(key, { adapter, handle });
     const launchedAt = Date.now();
+    let settledLeg = false;
     try {
       for (;;) {
-        const state = await adapter.poll(handle);
-        if (state.status === 'done') break;
+        let polled;
+        try {
+          polled = await adapter.poll(handle);
+        } catch (error) {
+          // A poll that throws ends the leg: its group is cancelled, and ratification judges what it left (fold row 13).
+          insertEvent(db, 'poll-fail', inputs.roundId, { seat: seat.id, role, attempt, error: error instanceof Error ? error.message : String(error) });
+          await adapter.cancel(handle).catch(() => undefined);
+          break;
+        }
+        if (polled.status === 'done') break;
         if (options.signal?.aborted === true || Date.now() > launchedAt + timeoutMs + capGraceMs) {
           await adapter.cancel(handle).catch(() => undefined);
         }
         await sleep(pollMs);
       }
+      settledLeg = true;
     } finally {
+      // An error out of the loop must not leave the leg running (fold row 13).
+      if (!settledLeg) await adapter.cancel(handle).catch(() => undefined);
       running.delete(key);
     }
     const endedAtMs = Date.now();
@@ -338,7 +384,7 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
   };
 
   /** A seat's chain: its primary, then a relaunch or its fallback as plan 4.4 allows. */
-  const runSeat = async (seat: SeatConfig, firstPre: Preflight | undefined): Promise<void> => {
+  const runSeat = async (seat: SeatConfig, firstPre: Preflight | undefined, fallbackPre: Preflight | undefined): Promise<void> => {
     let role: 'primary' | 'fallback' = 'primary';
     let o = occupantOf(seat);
     let attempt = 1;
@@ -349,7 +395,17 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
         insertEvent(db, 'seat-out', inputs.roundId, { seat: seat.id, role, attempt, why: 'no time remains in the round for this leg' });
         return;
       }
-      const leg = await runOne(seat, role, attempt, o, pre);
+      let state = current;
+      if (role !== 'primary' || attempt > 1) {
+        options.beforeNextLeg?.(seat.id);
+        try {
+          state = cleanRoot(seat.id);
+        } catch (error) {
+          insertEvent(db, 'seat-out', inputs.roundId, { seat: seat.id, role, attempt, why: `the root changed and could not be rebuilt: ${error instanceof Error ? error.message : String(error)}` });
+          return;
+        }
+      }
+      const leg = await runOne(seat, role, attempt, o, pre, state);
       pre = undefined;
       results.push(leg);
       if (leg.status === 'PASS') return;
@@ -360,15 +416,7 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
           ? role === 'primary' && seat.fallback !== undefined
             ? { kind: 'fallback' }
             : { kind: 'out', why: `preflight failed: ${cls}` }
-          : nextStep({
-              failureClass: cls,
-              role,
-              attempt,
-              fallback: seat.fallback,
-              timeLeftMs: deadline - Date.now(),
-              minLegMs,
-              rootClean: cls === 'contaminated' ? false : sweep().unchanged,
-            });
+          : nextStep({ failureClass: cls, role, attempt, fallback: seat.fallback, timeLeftMs: deadline - Date.now(), minLegMs });
       if (step.kind === 'out') {
         insertEvent(db, 'seat-out', inputs.roundId, { seat: seat.id, role, attempt, failure_class: cls, why: step.why });
         return;
@@ -378,6 +426,8 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
         role = 'fallback';
         o = occupantOf(seat.fallback);
         attempt = 1;
+        // Preflighted serially before any leg launched (fold row 12): no preflight runs beside live legs here.
+        pre = fallbackPre;
       } else {
         insertEvent(db, 'relaunch', inputs.roundId, { seat: seat.id, role, attempt: attempt + 1, failure_class: cls });
         attempt += 1;
@@ -385,31 +435,52 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
     }
   };
 
+  const seatLeg = new Map<string, number>();
   try {
-    // Preflight every primary serially, before any launch: parallel legs racing a token refresh was a measured
-    // failure (plan 4.3).
+    // Preflight every primary and every fallback serially, before any launch (plan 4.3; fold row 12), each in its
+    // own first leg dir: some backends warm per-leg state at preflight that the launch then uses.
     const firstPre: Array<Preflight | undefined> = [];
+    const fallbackPre: Array<Preflight | undefined> = [];
     for (const seat of inputs.roster.seats) {
       const o = occupantOf(seat);
       const adapter = options.adapters(o.backend);
-      // In the first leg's own dir: some backends warm per-leg state at preflight that the launch then uses.
       firstPre.push(adapter ? await preflight(adapter, o, legDirFor(seat.id, 'primary', 1)) : undefined);
+      const f = seat.fallback ? occupantOf(seat.fallback) : null;
+      const fa = f ? options.adapters(f.backend) : undefined;
+      fallbackPre.push(f && fa ? await preflight(fa, f, legDirFor(seat.id, 'fallback', 1)) : undefined);
     }
-    await Promise.all(inputs.roster.seats.map((seat, i) => runSeat(seat, firstPre[i])));
+    // One seat's error never orphans the others (fold row 13): each seat settles on its own, and a seat that throws
+    // has its running leg recorded as failed.
+    const settled = await Promise.allSettled(inputs.roster.seats.map((seat, i) => runSeat(seat, firstPre[i], fallbackPre[i])));
+    settled.forEach((r, i) => {
+      if (r.status === 'fulfilled') return;
+      const seat = inputs.roster.seats[i]?.id ?? '?';
+      const why = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      try {
+        const legId = seatLeg.get(seat);
+        if (legId !== undefined) db.prepare("UPDATE legs SET status = 'FAIL', failure_class = 'transport', finished_at = ? WHERE id = ? AND status = 'RUNNING'").run(now(), legId);
+        insertEvent(db, 'seat-error', inputs.roundId, { seat, error: why });
+      } catch {
+        // The store itself failed; the round is settled below with what was recorded.
+      }
+    });
 
-    // Final residue sweep: a change fails every leg that was running after the root was last seen unchanged.
-    const final = sweep();
-    if (!final.unchanged) {
-      const suspects = residueSuspects(results, lastClean);
+    // Final residue sweep, per root: a change fails every leg that ran in that root after it was last seen unchanged.
+    for (const state of roots) {
+      const final = sweepOf(state)();
+      if (final.unchanged) continue;
+      const suspects = residueSuspects(results.filter((l) => l.rootIndex === state.index), state.lastClean);
       for (const leg of suspects) {
         db.prepare("UPDATE legs SET status = 'CONTAMINATED', failure_class = 'contaminated', root_mutated = 1 WHERE id = ?").run(leg.legId);
         leg.status = 'CONTAMINATED';
         leg.failureClass = 'contaminated';
       }
-      insertEvent(db, 'residue', inputs.roundId, { changes: final.changes.slice(0, 50), failed_legs: suspects.map((l) => l.legId) });
+      insertEvent(db, 'residue', inputs.roundId, { root: state.sealed.root, changes: final.changes.slice(0, 50), failed_legs: suspects.map((l) => l.legId) });
     }
   } finally {
     options.signal?.removeEventListener('abort', onAbort);
+    // Nothing is left running, whatever happened above.
+    await Promise.allSettled([...running.values()].map(({ adapter, handle }) => adapter.cancel(handle)));
   }
 
   return settle(store, inputs, results, options.signal?.aborted === true);
@@ -442,6 +513,32 @@ function sealedFromRoot(facts: RoundFacts): SealedRoot {
   const treeHash = hashManifest(manifest);
   if (treeHash !== facts.detail.tree_hash) throw new FactsError(`the root ${facts.root} no longer hashes to the sealed tree (${facts.detail.tree_hash})`);
   return { root: facts.root, gitDir: `${facts.root}.git`, treeHash, manifest, commit: '' };
+}
+
+interface RootState {
+  index: number;
+  sealed: SealedRoot;
+  lastClean: number;
+}
+
+/**
+ * Rebuilds the round's root into attempt `attempt` from the inputs stored at round start, writes the stored brief,
+ * seals it, and proves it hashes to the stored tree hash (fold row 12). A failure removes only what it created.
+ */
+export function rebuildRoot(layout: DataLayout, facts: RoundFacts, attempt: number): SealedRoot {
+  const dir = createRootDir(layout, facts.roundId, attempt);
+  const gitOwned = !existsSync(`${dir}.git`);
+  try {
+    const built = buildRoot(dir, facts.detail.root_inputs);
+    writeFileSync(join(dir, 'BRIEF.md'), facts.detail.brief_text, { flag: 'wx' });
+    const sealed = sealRoot(built, [...facts.detail.brief_promises, 'BRIEF.md']);
+    if (sealed.treeHash !== facts.detail.tree_hash) throw new FactsError(`the rebuilt root hashes to ${sealed.treeHash}, not the sealed ${facts.detail.tree_hash}`);
+    return sealed;
+  } catch (error) {
+    removeOwnedRoot(layout, dir);
+    if (gitOwned) removeOwnedRoot(layout, `${dir}.git`);
+    throw error;
+  }
 }
 
 function safeClassify(adapter: SeatAdapter, handle: LegHandle): FailureClass | null {

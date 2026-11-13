@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
 import { builtinAdapters, type SeatAdapters } from '../adapters/index.js';
 import type { AdapterRegistry } from '../config/index.js';
@@ -61,11 +62,15 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .option('--config <path>', `config file (default: $${CONFIG_ENV}, else ~/.config/sabotage-council/config.toml)`)
       .option('--db <path>', `run store (default: $${DB_ENV}, else ~/.local/share/sabotage-council/council.db); round dirs go beside it`)
       .option('--roots <dir>', `where review roots are built (default: $${ROOTS_ENV}, else ~/.cache/sabotage-council/roots)`);
-  const pathsOf = (opts: { config?: string; db?: string; roots?: string }): StorePaths => ({
-    configPath: resolveConfigPath(opts.config, io.env),
-    dbPath: resolveDbPath(opts.db, io.env),
-    rootsPath: resolveRootsPath(opts.roots, io.env),
-  });
+  // Absolute before anything is handed on: the worker runs with the round dir as its cwd (fold row 13).
+  const pathsOf = (opts: { config?: string; db?: string; roots?: string }): StorePaths => {
+    const cwd = io.cwd ?? process.cwd();
+    return {
+      configPath: resolve(cwd, resolveConfigPath(opts.config, io.env)),
+      dbPath: resolve(cwd, resolveDbPath(opts.db, io.env)),
+      rootsPath: resolve(cwd, resolveRootsPath(opts.roots, io.env)),
+    };
+  };
   const roundIo = { write: io.write, env: io.env, setExitCode: io.setExitCode, adapters: io.adapters, registry: io.registry, cwd: io.cwd, startWorker: io.startWorker };
   const collect = (value: string, previous: string[]): string[] => [...previous, value];
   type StartOpts = { config?: string; db?: string; roots?: string; json?: boolean; fact: string[]; question: string[] };

@@ -5,7 +5,9 @@ import type { SeatAdapters } from '../adapters/index.js';
 import { adjudicate, AdjudicateError } from '../adjudicate/index.js';
 import { loadConfig, type AdapterRegistry, type ConfigIssue } from '../config/index.js';
 import {
+  failRound,
   prepareRound,
+  removeRoundRoots,
   resolveDiffTarget,
   resolvePlanTarget,
   roundSummary,
@@ -120,8 +122,17 @@ export async function roundStart(io: RoundIo, paths: StorePaths, args: StartArgs
       questions: args.questions,
       nonce: args.nonce,
     });
-    (io.startWorker ?? defaultStartWorker(io.env))(prepared.inputs.roundId, paths);
     const i = prepared.inputs;
+    try {
+      (io.startWorker ?? defaultStartWorker(io.env))(i.roundId, paths);
+    } catch (error) {
+      // The round is prepared but no worker runs it: fail it, remove only its own roots, and name it (fold row 13).
+      failRound(store, i.roundId, 'worker-start', error instanceof Error ? error.message : String(error));
+      removeRoundRoots(layoutOf(paths), i.roundId);
+      io.write(`error: round ${i.roundId} failed: its worker did not start (${error instanceof Error ? error.message : String(error)})`);
+      io.setExitCode(1);
+      return null;
+    }
     if (args.json) {
       io.write(
         JSON.stringify({
