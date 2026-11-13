@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import type { LegReply } from '../parse/index.js';
 import type { Severity } from '../parse/severity.js';
 import type { Store } from '../store/open.js';
@@ -79,29 +79,56 @@ export interface AdjudicateResult {
   stored: boolean;
 }
 
+export interface AdjudicateOptions {
+  /**
+   * Tests only: runs after the call decided to adjudicate and before its write transaction, standing in for another
+   * process that adjudicates the same round at that moment (fold row 4).
+   */
+  beforeTransaction?: (() => void) | undefined;
+}
+
+/** Writes a file whole or not at all: a temp file in the same dir, then a rename. */
+function writeAtomic(path: string, text: string): void {
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
+  writeFileSync(tmp, text);
+  renameSync(tmp, path);
+}
+
 /**
  * Validates and, when it passes, stores the adjudication. A rejection stores nothing but an event with the errors.
- * Only a round whose legs have settled with at least one ratified leg can be adjudicated, and only once.
+ * Only a round whose legs have settled with at least one ratified leg can be adjudicated, and only once: the status
+ * is checked, the context read and the document validated inside one `BEGIN IMMEDIATE` transaction, the round row
+ * moves only from `awaiting-adjudication`, the whole validated document is stored in the `adjudicated` event, and
+ * `ADJUDICATION.json` is written atomically before the commit (fold row 4). The store is the source of truth; the
+ * file is an export of it.
  */
-export function adjudicate(store: Store, layout: DataLayout, roundId: number, text: string): AdjudicateResult {
+export function adjudicate(store: Store, layout: DataLayout, roundId: number, text: string, options: AdjudicateOptions = {}): AdjudicateResult {
   const { db } = store;
-  const round = getRound(db, roundId);
-  if (!round) throw new AdjudicateError(`no round ${roundId} in the store`);
-  if (round.status !== 'awaiting-adjudication') {
-    throw new AdjudicateError(`round ${roundId} is ${round.status}; only a round awaiting adjudication can be adjudicated`);
-  }
-  const { ctx, facts, legs } = adjudicationContext(store, layout, roundId);
-  const outcome = validateAdjudicationText(text, ctx);
-  if (!outcome.ok) {
-    insertEvent(db, 'adjudication-rejected', roundId, { errors: outcome.errors });
-    return { outcome, roundId, stored: false };
-  }
-  const a = outcome.adjudication;
-  const eff = outcome.effective;
-  const legBySeat = new Map(legs.map((l) => [l.seat_id, l]));
-  const lfId = db.prepare('SELECT id FROM leg_findings WHERE leg_id = ? AND local_id = ?');
+  if (!getRound(db, roundId)) throw new AdjudicateError(`no round ${roundId} in the store`);
+  options.beforeTransaction?.();
   db.exec('BEGIN IMMEDIATE');
+  let open = true;
+  const commit = (): void => {
+    db.exec('COMMIT');
+    open = false;
+  };
+  let outcome: ValidationOutcome;
   try {
+    const round = getRound(db, roundId);
+    if (round?.status !== 'awaiting-adjudication') {
+      throw new AdjudicateError(`round ${roundId} is ${String(round?.status)}; only a round awaiting adjudication can be adjudicated`);
+    }
+    const { ctx, facts, legs } = adjudicationContext(store, layout, roundId);
+    outcome = validateAdjudicationText(text, ctx);
+    if (!outcome.ok) {
+      insertEvent(db, 'adjudication-rejected', roundId, { errors: outcome.errors });
+      commit();
+      return { outcome, roundId, stored: false };
+    }
+    const a = outcome.adjudication;
+    const eff = outcome.effective;
+    const legBySeat = new Map(legs.map((l) => [l.seat_id, l]));
+    const lfId = db.prepare('SELECT id FROM leg_findings WHERE leg_id = ? AND local_id = ?');
     const insFinding = db.prepare(
       `INSERT INTO findings (round_id, id, kind, title, path, line, severity, outcome, owner, proof_ref, same_as, closes_item)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -147,9 +174,12 @@ export function adjudicate(store: Store, layout: DataLayout, roundId: number, te
     }
     const fu = db.prepare("INSERT INTO followups (target_id, round_id, finding_id, status) VALUES (?, ?, ?, 'open')");
     for (const id of a.followups) fu.run(round.target_id, roundId, id);
-    db.prepare(
-      "UPDATE rounds SET verdict = ?, owed_count = ?, approve = ?, needs_ruling = ?, status = 'adjudicated', finished_at = ? WHERE id = ?",
-    ).run(eff.verdict, eff.owed, a.approve ? 1 : 0, a.needs_ruling ? 1 : 0, now(), roundId);
+    const moved = db
+      .prepare(
+        "UPDATE rounds SET verdict = ?, owed_count = ?, approve = ?, needs_ruling = ?, status = 'adjudicated', finished_at = ? WHERE id = ? AND status = 'awaiting-adjudication'",
+      )
+      .run(eff.verdict, eff.owed, a.approve ? 1 : 0, a.needs_ruling ? 1 : 0, now(), roundId);
+    if (Number(moved.changes) !== 1) throw new AdjudicateError(`round ${roundId} changed status during adjudication`);
     insertEvent(db, 'adjudicated', roundId, {
       verdict: eff.verdict,
       verdict_given: a.verdict,
@@ -161,15 +191,16 @@ export function adjudicate(store: Store, layout: DataLayout, roundId: number, te
       extracted: eff.extracted.length,
       majority_overrides: eff.majorityOverrides,
       warnings: outcome.warnings,
+      // The whole validated document: the store keeps what the file says (fold row 4, codex F7).
+      document: a,
     });
     if (a.needs_ruling) insertEvent(db, 'needs-ruling', roundId, { rulings: a.findings.filter((f) => f.outcome === 'ruling').map((f) => f.id) });
-    db.exec('COMMIT');
+    writeAtomic(join(roundDirOf(layout, facts.roundId), 'ADJUDICATION.json'), text.endsWith('\n') ? text : `${text}\n`);
+    commit();
   } catch (error) {
-    db.exec('ROLLBACK');
+    if (open) db.exec('ROLLBACK');
     throw error;
   }
-  const roundDir = roundDirOf(layout, roundId);
-  writeFileSync(join(roundDir, 'ADJUDICATION.json'), text.endsWith('\n') ? text : `${text}\n`);
   // The root is deleted at round end (plan 5.4), by its name under the layout's roots dir only (fold row 1); the
   // round dir keeps the brief, the legs and the adjudication.
   removeRoundRoots(layout, roundId);

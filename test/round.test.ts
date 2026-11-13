@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { adjudicate, findingIdOf } from '../src/adjudicate/index.js';
@@ -21,6 +21,7 @@ import {
 } from '../src/engine/index.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 import { git } from './helpers/git-fixture.js';
+import { openStore } from '../src/store/index.js';
 import { claudeCase, codexCase, commitChange, fakeAdapters, fakeHome, fixtureRepo, harness, OCC, rosterConfig, runRound, type Harness } from './helpers/round.js';
 
 cleanScratchAfterAll();
@@ -665,5 +666,39 @@ describe('fold row 2: the snapshot honours the user excludes and leaves secrets 
     for (const f of ['.env', '.env.local', 'server.pem', 'keys/id_ed25519']) expect(existsSync(join(root, f)), f).toBe(false);
     expect(existsSync(join(root, 'id_utils.py'))).toBe(true);
     expect(git(repo, ['diff', '--cached', '--name-only'])).toBe('');
+  }, 60_000);
+});
+
+describe('fold row 4: one adjudication per round, the store is the source of truth', () => {
+  it('two adjudications racing for one round store exactly one', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const r = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    const id = r.prepared.inputs.roundId;
+    const first = adjudicationFor(h, id);
+    const second = adjudicationFor(h, id, (a) => {
+      (a['findings'] as Array<Record<string, unknown>>)[0]!['severity'] = 'MEDIUM';
+      a['reason'] = 'the second adjudicator';
+    });
+    const other = openStore(h.layout.dbPath);
+    try {
+      // The second process gets in between this call's decision and its transaction, and stores first.
+      expect(() =>
+        adjudicate(h.store, h.layout, id, first, {
+          beforeTransaction: () => {
+            expect(adjudicate(other, h.layout, id, second).stored).toBe(true);
+          },
+        }),
+      ).toThrow(/is adjudicated; only a round awaiting adjudication/);
+    } finally {
+      other.close();
+    }
+    expect(getEvents(h.store.db, id).filter((e) => e.kind === 'adjudicated')).toHaveLength(1);
+    expect(h.store.db.prepare('SELECT severity FROM findings WHERE round_id = ?').all(id).map((x) => ({ ...x }))).toEqual([{ severity: 'MEDIUM' }]);
+    // The stored document and the exported file are the second adjudication's.
+    const doc = getEvents(h.store.db, id).find((e) => e.kind === 'adjudicated')?.detail as { document: { reason: string } };
+    expect(doc.document.reason).toBe('the second adjudicator');
+    expect(JSON.parse(readFileSync(join(r.prepared.roundDir, 'ADJUDICATION.json'), 'utf8'))).toMatchObject({ reason: 'the second adjudicator' });
+    expect(readdirSync(r.prepared.roundDir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
   }, 60_000);
 });
