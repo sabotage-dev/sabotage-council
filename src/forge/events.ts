@@ -11,6 +11,7 @@ import type { CiState } from './ci.js';
  *   4 identity path, any of those failing (red CI included, N3)  COMMENT "approval held: identity, <why>"
  *   5 SHIP or SWF, 0 owed, legs clear, no ruling, adjudicator approve, a council (not solo), auto.approve on, CI
  *     green, tests allow, not hold-listed                         APPROVE on the reviewed head
+ * Rows 3 and 5 also need no human change request the round never adjudicated (P6 round 1 row 12).
  *   6 NEEDS-WORK, or owed >= 1                                    REQUEST_CHANGES
  *   7 CI red                                                      REQUEST_CHANGES "CI red: <checks>" (or COMMENT)
  *   8 any other hold                                              COMMENT "approval held: <why>"
@@ -44,6 +45,11 @@ export interface EventFacts {
   userChangeRequest: boolean;
   /** Identity path: why the live re-check failed (the earlier approval no longer stands, or the trees differ); null when it held. */
   identityRecheck: string | null;
+  /**
+   * Human change requests standing now that the round never carried (they came after it was prepared): each holds
+   * an approval, council or identity, until a re-run adjudicates its asks (P6 round 1 row 12). One line each.
+   */
+  unadjudicated: string[];
 }
 
 export interface EventDecision {
@@ -81,6 +87,7 @@ export function identityHolds(f: EventFacts): string[] {
   if (f.onHoldList) why.push('the repository is on the hold list');
   if (f.userChangeRequest) why.push('your own change request stands (needs-ruling, plan 3.8)');
   if (f.identityRecheck !== null) why.push(f.identityRecheck);
+  why.push(...f.unadjudicated);
   return why;
 }
 
@@ -97,6 +104,7 @@ export function councilHolds(f: EventFacts): string[] {
   if (ci !== null) why.push(ci);
   if (f.tests.state === 'failed' || f.tests.state === 'held') why.push(`tests ${f.tests.state}: ${f.tests.why}`);
   if (f.onHoldList) why.push('the repository is on the hold list');
+  why.push(...f.unadjudicated);
   return why;
 }
 

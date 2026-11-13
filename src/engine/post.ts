@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { Adjudication } from '../adjudicate/schema.js';
 import type { CouncilConfig } from '../config/schema.js';
 import { readCi, type CiState } from '../forge/ci.js';
-import { countsAsCouncil, userChangeRequest, type MarkerConfig } from '../forge/count.js';
+import { countsAsCouncil, standingChangeRequests, userChangeRequest, type MarkerConfig } from '../forge/count.js';
 import { decideEvent, type EventDecision, type EventFacts, type ReviewEvent } from '../forge/events.js';
 import { ForgeError, restPath, type GitHubApi } from '../forge/github.js';
 import { apiTreeOf, recheckIdentity, type IdentityMatch } from '../forge/identity.js';
@@ -383,6 +383,31 @@ function runGuards(store: Store, api: GitHubApi, round: RoundRow, ref: PrRef, cf
   }
 }
 
+/* ---------- change requests the round never saw (row 12) ---------- */
+
+/**
+ * The change requests the round carried when it was prepared: a council round's R items and the user's own request
+ * (asks or a hold); for an identity round (which carries none), every review it saw.
+ */
+function knownRequests(store: Store, round: RoundRow): Set<number> {
+  if (round.kind === 'identity') {
+    const d = getEvents(store.db, round.id).find((e) => e.kind === 'identity-prepared')?.detail as { reviews_seen?: number[] } | undefined;
+    return new Set(d?.reviews_seen ?? []);
+  }
+  const pr = preparedDetail(store, round.id).pr;
+  const known = new Set((pr?.review_items ?? []).map((i) => Number(i.replace(/^R/, ''))));
+  if (pr?.user_change_request) known.add(pr.user_change_request.review_id);
+  return known;
+}
+
+/** One hold line per standing human change request the round never carried. */
+function unadjudicatedRequests(store: Store, round: RoundRow, pr: PrSnapshot, cfg: MarkerConfig): string[] {
+  const known = knownRequests(store, round);
+  return standingChangeRequests(pr.reviews, cfg)
+    .filter((r) => !known.has(r.id))
+    .map((r) => `a change request by ${r.login} (review ${r.id}) came after this round was prepared, so its asks were never adjudicated: re-run the round`);
+}
+
 /* ---------- what the user approved (row 8) ---------- */
 
 /** The renders the round's dry runs printed, oldest first: what the user can have seen and approved. */
@@ -518,6 +543,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   const cr = userChangeRequest(pr.reviews, cfg, head);
   const participants = new Set(participantsOf(pr, cfg));
   const identity = round.kind === 'identity';
+  const unadjudicated = unadjudicatedRequests(store, round, pr, cfg);
   const common = {
     isAuthor: sameLogin(pr.author, cfg.login),
     identity,
@@ -526,6 +552,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     ciRedEvent: auto.ci_red_event,
     tests: configuredTests ? { state: 'held' as const, why: 'opt-in test runs are not built yet (P8)' } : { state: 'off' as const, why: 'no tests configured' },
     onHoldList: onList(auto.repos_hold, fullName),
+    unadjudicated,
   };
 
   let facts: EventFacts;
@@ -547,7 +574,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     decision = decideEvent(facts);
     body = renderBody({ kind: 'identity', marker, decision, number: prep.match.number, commitId: prep.match.commitId, reviewId: prep.match.reviewId, ci }, { nonce: null, participants });
     owed = null;
-    holdsDismissal = cr !== null;
+    holdsDismissal = cr !== null || unadjudicated.length > 0;
   } else {
     const { doc, legsClear, quorum } = adjudicationOf(store, round.id);
     const rulings = doc.findings.some((f) => f.outcome === 'ruling');
@@ -583,7 +610,8 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
       { nonce: round.nonce, participants },
     );
     owed = round.owed_count ?? 0;
-    holdsDismissal = facts.needsRuling;
+    // A request the round never adjudicated means its "owes nothing" is not final: our stale request stands too.
+    holdsDismissal = facts.needsRuling || unadjudicated.length > 0;
   }
   result.event = decision.event;
   result.row = decision.row;

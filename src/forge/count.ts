@@ -233,17 +233,30 @@ export function reviewItems(input: {
       items.push({ id: `R${r.id}`, reviewId: r.id, login: r.login, kind: 'council-review', text: text(r, `Council review R${r.id}`) });
     }
   }
-  const outsiders = new Map<string, Review[]>();
-  for (const r of reviews) {
-    if (r.state === 'PENDING' || allowlisted(r.login, cfg)) continue;
-    const key = r.login.toLowerCase();
-    outsiders.set(key, [...(outsiders.get(key) ?? []), r]);
-  }
-  for (const list of outsiders.values()) {
-    const latest = latestStanding(list);
-    if (latest?.state !== 'CHANGES_REQUESTED') continue;
+  for (const latest of othersChangeRequests(reviews, cfg)) {
     if (items.some((i) => i.reviewId === latest.id)) continue;
     items.push({ id: `R${latest.id}`, reviewId: latest.id, login: latest.login, kind: 'change-request', text: text(latest, `Change request R${latest.id}`) });
   }
   return items;
+}
+
+/** Every other reviewer's (outside github.login and council_logins) newest standing review, when it requests changes. */
+function othersChangeRequests(reviews: readonly Review[], cfg: MarkerConfig): Review[] {
+  const byLogin = new Map<string, Review[]>();
+  for (const r of reviews) {
+    if (r.state === 'PENDING' || allowlisted(r.login, cfg)) continue;
+    const key = r.login.toLowerCase();
+    byLogin.set(key, [...(byLogin.get(key) ?? []), r]);
+  }
+  return [...byLogin.values()].map(latestStanding).filter((r): r is Review => r?.state === 'CHANGES_REQUESTED');
+}
+
+/**
+ * Every human change request standing on the PR, on any head (plan 3.5, 3.8): the user's own unmarked one and every
+ * other reviewer's. A round carries each one it saw (asks, a hold or an R item); at post time one it did not carry
+ * holds an approval, since its asks were never adjudicated (P6 round 1 row 12).
+ */
+export function standingChangeRequests(reviews: readonly Review[], cfg: MarkerConfig): Review[] {
+  const own = userChangeRequest(reviews, cfg, '');
+  return [...(own === null ? [] : [own.review]), ...othersChangeRequests(reviews, cfg)];
 }

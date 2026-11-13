@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { judgeCi, type CiState } from '../src/forge/ci.js';
+import { judgeCi, readCiContexts, readRequiredChecks, type CiState } from '../src/forge/ci.js';
+import type { GitHubApi } from '../src/forge/github.js';
 import { changeRequestAsks, countRounds, reviewItems, userChangeRequest, type Credit, type MarkerConfig } from '../src/forge/count.js';
 import { decideEvent, type EventFacts } from '../src/forge/events.js';
 import { firstLine, identityMarker, parseMarker, roundMarker, stripWrapper } from '../src/forge/markers.js';
@@ -185,7 +186,8 @@ describe('earlier reviews carried as items (plan 3.5)', () => {
 });
 
 describe('the CI gate', () => {
-  const ctx = (name: string, result: 'green' | 'red' | 'pending', required = false) => ({ name, result, required });
+  const ctx = (name: string, result: 'green' | 'red' | 'pending', required = false, appId: number | null = null) => ({ name, result, required, appId });
+  const any = (name: string) => ({ name, appId: null });
   it('judges required checks, all checks, or nothing', () => {
     const contexts = [ctx('lint', 'red'), ctx('test', 'green', true)];
     expect(judgeCi('required-checks', contexts).state).toBe('green');
@@ -193,8 +195,61 @@ describe('the CI gate', () => {
     expect(judgeCi('off', contexts).state).toBe('off');
     expect(judgeCi('required-checks', [ctx('test', 'pending', true)])).toMatchObject({ state: 'pending', pending: ['test'] });
     // A required context the branch rules name that has not reported is pending, never green.
-    expect(judgeCi('required-checks', [], ['build'])).toMatchObject({ state: 'pending', pending: ['build (expected, not reported)'] });
-    expect(judgeCi('required-checks', [ctx('build', 'red')], ['build'])).toMatchObject({ state: 'red' });
+    expect(judgeCi('required-checks', [], [any('build')])).toMatchObject({ state: 'pending', pending: ['build (expected, not reported)'] });
+    expect(judgeCi('required-checks', [ctx('build', 'red')], [any('build')])).toMatchObject({ state: 'red' });
+  });
+
+  it("row 11: a required check bound to an app is satisfied only by that app's check of that name", () => {
+    const bound = [{ name: 'build', appId: 15368 }];
+    expect(judgeCi('required-checks', [ctx('build', 'green', false, 999)], bound)).toMatchObject({ state: 'pending', pending: ['build (expected from app 15368, not reported)'] });
+    expect(judgeCi('required-checks', [ctx('build', 'green', false, 15368)], bound).state).toBe('green');
+    // Another app's same-name check is not judged against the requirement, red or green.
+    expect(judgeCi('required-checks', [ctx('build', 'red', false, 999), ctx('build', 'green', false, 15368)], bound).state).toBe('green');
+    // A commit status names no app, so it cannot satisfy a bound requirement; an unbound one takes any app.
+    expect(judgeCi('required-checks', [ctx('build', 'green')], bound).state).toBe('pending');
+    expect(judgeCi('required-checks', [ctx('build', 'green', false, 999)], [any('build')]).state).toBe('green');
+  });
+
+  it('reads each required check with its app, and each reported check run with the app that ran it', () => {
+    const api: GitHubApi = {
+      get: () => ({ protection: { required_status_checks: { contexts: ['build', 'lint'], checks: [{ context: 'build', app_id: 15368 }, { context: 'lint', app_id: -1 }] } } }),
+      list: () => [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'deploy', integration_id: 42 }, { context: 'docs' }] } }, { type: 'deletion' }],
+      graphql: () => ({
+        repository: {
+          pullRequest: {
+            commits: {
+              nodes: [
+                {
+                  commit: {
+                    oid: A,
+                    statusCheckRollup: {
+                      contexts: {
+                        pageInfo: { hasNextPage: false },
+                        nodes: [
+                          { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true, checkSuite: { app: { databaseId: 15368 } } },
+                          { __typename: 'StatusContext', context: 'ci/legacy', state: 'SUCCESS', isRequired: false },
+                        ],
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }),
+      send: () => ({}),
+    };
+    expect(readRequiredChecks(api, REF, 'main')).toEqual([
+      { name: 'build', appId: 15368 },
+      { name: 'lint', appId: null },
+      { name: 'deploy', appId: 42 },
+      { name: 'docs', appId: null },
+    ]);
+    expect(readCiContexts(api, REF, A)).toEqual([
+      { name: 'build', required: true, result: 'green', appId: 15368 },
+      { name: 'ci/legacy', required: false, result: 'green', appId: null },
+    ]);
   });
 });
 
@@ -215,6 +270,7 @@ const BASE: EventFacts = {
   onHoldList: false,
   userChangeRequest: false,
   identityRecheck: null,
+  unadjudicated: [],
 };
 const RED: CiState = { ...GREEN, state: 'red', failing: ['test'] };
 const PENDING: CiState = { ...GREEN, state: 'pending', pending: ['test'] };
@@ -249,6 +305,8 @@ describe('event mapping (plan 3.7, every row)', () => {
     ['row 8: CI unknown', { ci: UNKNOWN }, 'COMMENT', 8],
     ['row 8: adjudicator declined', { adjudicatorApprove: false }, 'COMMENT', 8],
     ['row 8: approvals off (auto.approve)', { autoApprove: false }, 'COMMENT', 8],
+    ['row 8: a change request the round never adjudicated (row 12)', { unadjudicated: ['a change request by alice (review 7) came after'] }, 'COMMENT', 8],
+    ['row 4: identity, a change request the round never saw (row 12)', { identity: true, unadjudicated: ['a change request by alice (review 7) came after'] }, 'COMMENT', 4],
   ])('%s', (_name, facts, event, row) => {
     const d = decideEvent({ ...BASE, ...facts });
     expect([d.event, d.row]).toEqual([event, row]);

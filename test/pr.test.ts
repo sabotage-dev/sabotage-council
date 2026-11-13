@@ -422,6 +422,15 @@ describe('pr rounds: holds, asks and the post step', () => {
     expect([superseded.event, superseded.row]).toEqual(['COMMENT', 4]);
     expect(superseded.body).toContain('the standing review by repo-owner on #9 is now review 9102 (CHANGES_REQUESTED), not approval 9101');
     expect(preparePrRound(w.h.store, w.options({ dryRun: false })).kind).toBe('council');
+
+    // Row 12: a change request that came after the identity round was prepared holds it as well.
+    const late = pr2Routes(w.src.shas);
+    identityRoutes(late, w.src, 'APPROVED');
+    jsonList(late, `GET ${API_PULL}/reviews`).push({ id: 9201, user: { login: 'alice' }, state: 'CHANGES_REQUESTED', commit_id: w.src.shas['C6'], submitted_at: '2026-11-13T09:00:00Z', body: 'No.' });
+    w.gh.setRoutes(late);
+    const lateHeld = post(w, r.roundId, 'dry-run');
+    expect([lateHeld.event, lateHeld.row]).toEqual(['COMMENT', 4]);
+    expect(lateHeld.body).toContain('a change request by alice (review 9201) came after this round was prepared');
   }, 60_000);
 
   it('row 10: refuses to prepare or post when gh is logged in as another account than github.login', async () => {
@@ -735,6 +744,25 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
     expect(c.guards).toEqual([expect.objectContaining({ kind: 'withdraw-off-head', status: 'done', outcome: expect.stringContaining('GitHub dismisses only approvals and change requests') as unknown })]);
     expect(writes(comment).map((q) => q.method)).toEqual(['POST']);
   }, 90_000);
+
+  it('row 12: a human change request that came after the round was prepared holds the approval; one the round carried does not', async () => {
+    const bob = (src: SourceRepo): Json => ({ id: 7301, user: { login: 'bob' }, state: 'CHANGES_REQUESTED', commit_id: src.shas['C6'], submitted_at: '2026-11-12T18:45:00Z', body: 'Rename step 6.' });
+    const w = await world((r, src) => {
+      approvable(r, src);
+      jsonList(r, `GET ${API_PULL}/reviews`).push(bob(src));
+    });
+    const { id, summary } = await councilRound(w, { dryRun: false }, APPROVE);
+    // Bob's request stood when the round started: the round carried it, and the adjudication closed it.
+    expect(summary.earlier_items.map((i) => i.id)).toContain('R7301');
+    expect([post(w, id, 'dry-run').event, post(w, id, 'dry-run').row]).toEqual(['APPROVE', 5]);
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    jsonList(routes, `GET ${API_PULL}/reviews`).push(bob(w.src), { id: 7302, user: { login: 'alice' }, state: 'CHANGES_REQUESTED', commit_id: w.src.shas['C6'], submitted_at: '2026-11-13T09:00:00Z', body: 'Step 7 breaks.' });
+    w.gh.setRoutes(routes);
+    const held = post(w, id, 'dry-run');
+    expect([held.event, held.row]).toEqual(['COMMENT', 8]);
+    expect(held.body).toContain('a change request by alice (review 7302) came after this round was prepared, so its asks were never adjudicated: re-run the round');
+  }, 60_000);
 
   it("row 3: a stranger's marker-shaped review and our own pending draft submitted meanwhile both withdraw the approval; a counted council review does not", async () => {
     const race = async (landed: (src: SourceRepo, marker: string) => Json[], pending: Json[] = []): Promise<PostResult> => {

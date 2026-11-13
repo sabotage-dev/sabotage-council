@@ -3,10 +3,12 @@ import type { PrRef } from './pr.js';
 
 /*
  * The CI gate for a PR head (plan 3.7, 5.2 `auto.ci_gate`): `required-checks` (the default) judges only the
- * checks GitHub marks required for this PR, plus any required context the base branch's protection or rulesets name
+ * checks GitHub marks required for this PR, plus any required check the base branch's protection or rulesets name
  * that has not reported yet (pending, never green); `all` judges every check; `off` skips the gate. One GraphQL
- * query gives every check run and status context on the head with `isRequired` for this PR. A read that fails, or a
- * rollup for another commit, is `unknown`, which never approves.
+ * query gives every check run and status context on the head with `isRequired` for this PR, and the GitHub App that
+ * reported each check run. A required check bound to an app is satisfied only by a check of that name from that app
+ * (P6 round 1 row 11): a same-name check from another app, or a commit status (which names no app), leaves it
+ * pending. A read that fails, or a rollup for another commit, is `unknown`, which never approves.
  */
 
 export type CiGate = 'required-checks' | 'all' | 'off';
@@ -17,7 +19,18 @@ export interface CiContext {
   /** green: success, neutral or skipped; red: failure, error, cancelled, timed out, action required, startup failure;
    * pending: anything not finished (queued, in progress, pending, expected, stale). */
   result: 'green' | 'red' | 'pending';
+  /** The GitHub App that reported a check run (its database id); null for a commit status, or when GitHub does not say. */
+  appId: number | null;
 }
+
+/** A check the base branch requires: its name, and the GitHub App it must come from (null: any app). */
+export interface RequiredCheck {
+  name: string;
+  appId: number | null;
+}
+
+/** Whether a reported check satisfies a requirement: the same name, and the bound app when there is one. */
+export const satisfies = (req: RequiredCheck, c: CiContext): boolean => req.name === c.name && (req.appId === null || req.appId === c.appId);
 
 export interface CiState {
   gate: CiGate;
@@ -42,7 +55,7 @@ export const CI_QUERY = `query($owner: String!, $name: String!, $number: Int!, $
                 pageInfo { hasNextPage endCursor }
                 nodes {
                   __typename
-                  ... on CheckRun { name status conclusion isRequired(pullRequestNumber: $number) }
+                  ... on CheckRun { name status conclusion isRequired(pullRequestNumber: $number) checkSuite { app { databaseId } } }
                   ... on StatusContext { context state isRequired(pullRequestNumber: $number) }
                 }
               }
@@ -64,12 +77,13 @@ function contextOf(node: Obj): CiContext | null {
     const status = String(node['status'] ?? '');
     const conclusion = String(node['conclusion'] ?? '');
     const result = status !== 'COMPLETED' ? 'pending' : GREEN.has(conclusion) ? 'green' : RED.has(conclusion) ? 'red' : 'pending';
-    return { name: String(node['name'] ?? '(unnamed check)'), required: node['isRequired'] === true, result };
+    const app = ((node['checkSuite'] as Obj | null | undefined)?.['app'] as Obj | null | undefined)?.['databaseId'];
+    return { name: String(node['name'] ?? '(unnamed check)'), required: node['isRequired'] === true, result, appId: typeof app === 'number' ? app : null };
   }
   if (node['__typename'] === 'StatusContext') {
     const state = String(node['state'] ?? '');
     const result = state === 'SUCCESS' ? 'green' : state === 'FAILURE' || state === 'ERROR' ? 'red' : 'pending';
-    return { name: String(node['context'] ?? '(unnamed status)'), required: node['isRequired'] === true, result };
+    return { name: String(node['context'] ?? '(unnamed status)'), required: node['isRequired'] === true, result, appId: null };
   }
   return null;
 }
@@ -99,35 +113,48 @@ export function readCiContexts(api: GitHubApi, ref: PrRef, head: string): CiCont
   throw new ForgeError('the CI read has more than 2000 contexts');
 }
 
+/** An app id GitHub binds a required check to: a positive id; null (or -1, "any app") binds none. */
+function boundApp(v: unknown): number | null {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null;
+}
+
 /**
- * Required context names the base branch's protection and rulesets name. Classic protection is read from the branch
- * object (readable without admin); rulesets from `rules/branches`. A read that fails throws: the gate is then
- * unknown, never green.
+ * The checks the base branch's protection and rulesets require, each with the app it is bound to (classic
+ * protection's `checks[].app_id`, a ruleset's `integration_id`; a bare classic `contexts` name binds none). Classic
+ * protection is read from the branch object (readable without admin); rulesets from `rules/branches`. A read that
+ * fails throws: the gate is then unknown, never green.
  */
-export function readRequiredNames(api: GitHubApi, ref: PrRef, baseRef: string): string[] {
-  const names = new Set<string>();
+export function readRequiredChecks(api: GitHubApi, ref: PrRef, baseRef: string): RequiredCheck[] {
+  const out = new Map<string, RequiredCheck>();
+  const add = (name: unknown, appId: number | null): void => {
+    if (typeof name === 'string') out.set(`${name}\u0000${String(appId)}`, { name, appId });
+  };
   const branch = api.get(`${restPath('repos', ref.owner, ref.repo)}/branches/${encodeURIComponent(baseRef)}`) as Obj;
   const protection = (branch['protection'] as Obj | undefined)?.['required_status_checks'] as Obj | undefined;
-  for (const c of (protection?.['contexts'] as unknown[] | undefined) ?? []) if (typeof c === 'string') names.add(c);
-  for (const c of (protection?.['checks'] as Obj[] | undefined) ?? []) if (typeof c['context'] === 'string') names.add(c['context']);
+  const checks = (protection?.['checks'] as Obj[] | undefined) ?? [];
+  for (const c of checks) add(c['context'], boundApp(c['app_id']));
+  // `contexts` repeats the names of `checks` without their apps: a name already bound there is not loosened.
+  for (const c of (protection?.['contexts'] as unknown[] | undefined) ?? []) if (!checks.some((k) => k['context'] === c)) add(c, null);
   const rules = api.list(`${restPath('repos', ref.owner, ref.repo)}/rules/branches/${encodeURIComponent(baseRef)}`) as Obj[];
   for (const rule of rules) {
     if (rule['type'] !== 'required_status_checks') continue;
-    for (const c of (((rule['parameters'] as Obj | undefined)?.['required_status_checks'] as Obj[] | undefined) ?? [])) {
-      if (typeof c['context'] === 'string') names.add(c['context']);
-    }
+    for (const c of (((rule['parameters'] as Obj | undefined)?.['required_status_checks'] as Obj[] | undefined) ?? [])) add(c['context'], boundApp(c['integration_id']));
   }
-  return [...names];
+  return [...out.values()];
 }
 
 /** Judges the contexts under the gate. Pure. */
-export function judgeCi(gate: CiGate, contexts: readonly CiContext[], requiredNames: readonly string[] = []): CiState {
+export function judgeCi(gate: CiGate, contexts: readonly CiContext[], required: readonly RequiredCheck[] = []): CiState {
   if (gate === 'off') return { gate, state: 'off', failing: [], pending: [], note: 'the CI gate is off' };
-  const judged = gate === 'all' ? [...contexts] : contexts.filter((c) => c.required || requiredNames.includes(c.name));
-  const reported = new Set(contexts.map((c) => c.name));
-  const missing = gate === 'all' ? [] : requiredNames.filter((n) => !reported.has(n));
+  const judged = gate === 'all' ? [...contexts] : contexts.filter((c) => c.required || required.some((r) => satisfies(r, c)));
+  const missing = gate === 'all' ? [] : required.filter((r) => !contexts.some((c) => satisfies(r, c)));
   const failing = [...new Set(judged.filter((c) => c.result === 'red').map((c) => c.name))];
-  const pending = [...new Set([...judged.filter((c) => c.result === 'pending').map((c) => c.name), ...missing.map((n) => `${n} (expected, not reported)`)])];
+  const pending = [
+    ...new Set([
+      ...judged.filter((c) => c.result === 'pending').map((c) => c.name),
+      ...missing.map((r) => (r.appId === null ? `${r.name} (expected, not reported)` : `${r.name} (expected from app ${r.appId}, not reported)`)),
+    ]),
+  ];
   const state = failing.length > 0 ? 'red' : pending.length > 0 ? 'pending' : 'green';
   const note =
     judged.length === 0 && missing.length === 0 ? (gate === 'all' ? 'no checks on this head' : 'no required checks on this head') : `${judged.length + missing.length} check(s) judged`;
@@ -139,7 +166,7 @@ export function readCi(api: GitHubApi, ref: PrRef, head: string, baseRef: string
   if (gate === 'off') return judgeCi('off', []);
   try {
     const contexts = readCiContexts(api, ref, head);
-    const required = gate === 'required-checks' ? readRequiredNames(api, ref, baseRef) : [];
+    const required = gate === 'required-checks' ? readRequiredChecks(api, ref, baseRef) : [];
     return judgeCi(gate, contexts, required);
   } catch (error) {
     return { gate, state: 'unknown', failing: [], pending: [], note: `CI could not be read: ${error instanceof Error ? error.message : String(error)}` };
