@@ -44,35 +44,42 @@ function tables(store: Store): string[] {
   return rows.map((r) => r.name);
 }
 
-/** A migrations dir holding the shipped 001 plus extra files. */
+/** The shipped migrations, by file name. */
+const SHIPPED = ['001_initial.sql', '002_pr_rounds.sql'];
+const LATEST = SHIPPED.length;
+
+/** A migrations dir holding the shipped migrations plus extra files. */
 function migrationsWith(extra: Record<string, string>): string {
   const target = join(dir, `migrations-${Object.keys(extra).join('-').replace(/[^a-z0-9]/gi, '')}`);
   mkdirSync(target);
-  copyFileSync(join(DEFAULT_MIGRATIONS_DIR, '001_initial.sql'), join(target, '001_initial.sql'));
+  for (const f of SHIPPED) copyFileSync(join(DEFAULT_MIGRATIONS_DIR, f), join(target, f));
   for (const [file, sql] of Object.entries(extra)) writeFileSync(join(target, file), sql);
   return target;
 }
 
 describe('store: migrations', () => {
-  it('migrates a fresh database: every table of plan 8.1, version 1, foreign keys on', () => {
+  it('migrates a fresh database: every table of plan 8.1, every shipped version, foreign keys on', () => {
     const store = openTemp('nested/dirs/council.db');
     expect(existsSync(join(dir, 'nested/dirs/council.db'))).toBe(true);
-    expect(store.migration).toEqual({ applied: [1], version: 1 });
+    expect(store.migration).toEqual({ applied: [1, 2], version: LATEST });
     expect(tables(store)).toEqual([...CORE_TABLES, 'schema_version'].sort());
     const versions = store.db.prepare('SELECT version, name FROM schema_version').all();
-    expect(versions.map((r) => ({ ...r }))).toEqual([{ version: 1, name: 'initial' }]);
+    expect(versions.map((r) => ({ ...r }))).toEqual([
+      { version: 1, name: 'initial' },
+      { version: 2, name: 'pr_rounds' },
+    ]);
     expect({ ...store.db.prepare('PRAGMA foreign_keys').get() }).toEqual({ foreign_keys: 1 });
   });
 
   it('re-running migrations is a no-op, in the same connection and after reopening', () => {
     const first = openTemp();
     const before = first.db.prepare('SELECT version, applied_at FROM schema_version').all().map((r) => ({ ...r }));
-    expect(migrate(first.db)).toEqual({ applied: [], version: 1 });
+    expect(migrate(first.db)).toEqual({ applied: [], version: LATEST });
     first.close();
     open.splice(open.indexOf(first), 1);
 
     const again = openTemp();
-    expect(again.migration).toEqual({ applied: [], version: 1 });
+    expect(again.migration).toEqual({ applied: [], version: LATEST });
     expect(again.db.prepare('SELECT version, applied_at FROM schema_version').all().map((r) => ({ ...r }))).toEqual(before);
     expect(tables(again)).toEqual([...CORE_TABLES, 'schema_version'].sort());
   });
@@ -80,24 +87,24 @@ describe('store: migrations', () => {
   it('applies only the new migration to an existing store', () => {
     openTemp().close();
     open.pop();
-    const migrations = migrationsWith({ '002_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
+    const migrations = migrationsWith({ '003_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
     const store = openTemp('council.db', migrations);
-    expect(store.migration).toEqual({ applied: [2], version: 2 });
+    expect(store.migration).toEqual({ applied: [3], version: 3 });
   });
 
   it('rolls back a failing migration and leaves the store at its old version', () => {
     openTemp().close();
     open.pop();
-    const migrations = migrationsWith({ '002_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' });
+    const migrations = migrationsWith({ '003_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' });
     expect(() => openTemp('council.db', migrations)).toThrow();
     const store = openTemp();
-    expect(store.migration).toEqual({ applied: [], version: 1 });
+    expect(store.migration).toEqual({ applied: [], version: LATEST });
     expect(tables(store)).not.toContain('half');
   });
 
   it('leaves the connection outside a transaction after a failed migration', () => {
     const store = openTemp();
-    const broken = readMigrations(migrationsWith({ '002_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' }));
+    const broken = readMigrations(migrationsWith({ '003_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' }));
     expect(() => migrate(store.db, broken)).toThrow();
     expect(tables(store)).not.toContain('half');
     // BEGIN fails inside an open transaction, so this proves the failed migration was rolled back.
@@ -114,15 +121,15 @@ describe('store: migrations', () => {
   });
 
   it('refuses a store written by a newer build', () => {
-    const migrations = migrationsWith({ '002_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
+    const migrations = migrationsWith({ '003_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
     openTemp('council.db', migrations).close();
     open.pop();
-    expect(() => openTemp()).toThrow(/schema version 2, which this build does not know/);
+    expect(() => openTemp()).toThrow(/schema version 3, which this build does not know/);
   });
 
   it('rejects badly named or non-contiguous migration files', () => {
     expect(() => readMigrations(migrationsWith({ 'two.sql': 'SELECT 1;' }))).toThrow(/not named NNN_name\.sql/);
-    expect(() => readMigrations(migrationsWith({ '003_gap.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
+    expect(() => readMigrations(migrationsWith({ '004_gap.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
     expect(() => readMigrations(migrationsWith({ '001_again.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
   });
 });
@@ -160,6 +167,12 @@ describe('store: schema', () => {
         adjudicator_cost_usd: 0.42,
         adjudicator_turns: 12,
         adjudicator_ms: 61_000,
+        kind: 'council',
+        marker: 'sabotage-council round 2 on org/repo#42 at aaaaaaa',
+        dry_run: 0,
+        posted_commit_id: 'a'.repeat(40),
+        posted_at: '2026-11-12T10:21:00.000Z',
+        posted_body_sha256: 'e'.repeat(64),
       },
     ],
     [
@@ -345,5 +358,70 @@ describe('store: schema', () => {
     insert(store, 'targets', { kind: 'plan', repo: null, path: 'docs/PLAN.md' });
     expect(() => insert(store, 'targets', { kind: 'plan', repo: null, path: 'docs/PLAN.md' })).toThrow(/UNIQUE/);
     expect(() => insert(store, 'targets', { kind: 'pr', repo: 'org/repo' })).toThrow(/CHECK constraint failed/);
+  });
+});
+
+describe('store: migration 002 (P6 pr rounds)', () => {
+  /** A migrations dir holding only the shipped 001: a store written by the P5 build. */
+  function p5Migrations(): string {
+    const target = join(dir, 'migrations-p5');
+    mkdirSync(target);
+    copyFileSync(join(DEFAULT_MIGRATIONS_DIR, '001_initial.sql'), join(target, '001_initial.sql'));
+    return target;
+  }
+
+  it('upgrades a P5 store: existing rounds become council rounds, not dry runs, never posted; a pr round round-trips', () => {
+    const old = openTemp('council.db', p5Migrations());
+    old.db.prepare("INSERT INTO targets (id, kind, repo, number) VALUES (1, 'pr', 'github.com/o/r', 7)").run();
+    old.db
+      .prepare("INSERT INTO rounds (id, target_id, round_no, mode, head_sha, roster_json, started_at, status) VALUES (1, 1, 1, 'diff', ?, '{}', '2026-11-12T00:00:00Z', 'adjudicated')")
+      .run('a'.repeat(40));
+    old.close();
+    open.pop();
+
+    const store = openTemp();
+    expect(store.migration).toEqual({ applied: [2], version: 2 });
+    const before = store.db.prepare('SELECT kind, marker, dry_run, posted_commit_id, posted_at, posted_body_sha256 FROM rounds WHERE id = 1').get();
+    expect({ ...before }).toEqual({ kind: 'council', marker: null, dry_run: 0, posted_commit_id: null, posted_at: null, posted_body_sha256: null });
+
+    const row = {
+      id: 2,
+      target_id: 1,
+      round_no: 3,
+      mode: 'pr',
+      head_sha: 'b'.repeat(40),
+      roster_json: '{}',
+      started_at: '2026-11-13T00:00:00Z',
+      status: 'adjudicated',
+      kind: 'identity',
+      marker: 'sabotage-council identity approval on o/r#7 at bbbbbbb',
+      dry_run: 1,
+      event_posted: 'APPROVE',
+      review_id: 9_876_543_210,
+      posted_commit_id: 'b'.repeat(40),
+      posted_at: '2026-11-13T00:01:00Z',
+      posted_body_sha256: 'f'.repeat(64),
+    };
+    const cols = Object.keys(row);
+    store.db.prepare(`INSERT INTO rounds (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...Object.values(row));
+    const back = store.db.prepare(`SELECT ${cols.join(', ')} FROM rounds WHERE id = 2`).get();
+    expect({ ...back }).toEqual(row);
+    expect(store.db.prepare('SELECT id FROM rounds WHERE review_id = ?').get(9_876_543_210)).toMatchObject({ id: 2 });
+  });
+
+  it('enforces the new columns: kind, dry_run, the posted commit and body hash', () => {
+    const store = openTemp();
+    store.db.prepare("INSERT INTO targets (id, kind, repo, number) VALUES (1, 'pr', 'github.com/o/r', 7)").run();
+    const ins = (extra: string, value: string | number): void => {
+      store.db
+        .prepare(`INSERT INTO rounds (target_id, round_no, mode, head_sha, roster_json, started_at, status, ${extra}) VALUES (1, 1, 'pr', ?, '{}', 'x', 'running', ?)`)
+        .run('a'.repeat(40), value);
+    };
+    expect(() => ins('kind', 'solo')).toThrow(/CHECK constraint failed/);
+    expect(() => ins('dry_run', 2)).toThrow(/CHECK constraint failed/);
+    expect(() => ins('posted_commit_id', 'abc1234')).toThrow(/CHECK constraint failed/);
+    expect(() => ins('posted_commit_id', 'G'.repeat(40))).toThrow(/CHECK constraint failed/);
+    expect(() => ins('posted_body_sha256', 'e'.repeat(63))).toThrow(/CHECK constraint failed/);
+    expect(() => ins('kind', 'identity')).not.toThrow();
   });
 });
