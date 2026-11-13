@@ -1160,7 +1160,7 @@ Finding ids:
 | `targets` | id, kind (`pr`, `plan`, `diff`), repo, number, path, branch |
 | `rounds` | id, target_id, round_no, mode, head_sha, base_sha, baseline_sha, full_round_reason, nonce, roster_json (snapshot), started_at, finished_at, verdict, owed_count, approve, needs_ruling, event_posted, review_id, status, adjudicator_model_observed, adjudicator_tools_json, adjudicator_denials_json, adjudicator_cost_usd, adjudicator_turns, adjudicator_ms |
 | `occupants` | id, backend, model, effort, transport (one row per distinct occupant ever seated) |
-| `legs` | id, round_id, seat_id, occupant_id, attempt, role (`primary`, `fallback`), enforcement_label, cli_version, status (`PASS`, `FAIL`, `REFUSED`, `CONTAMINATED`, `PREFLIGHT_FAIL`), failure_class, verdict_raw, verdict_effective, model_observed, effort_observed, cwd_ok, tools_used_json, tools_offered_json, root_mutated, nonce_seen, started_at, finished_at, duration_ms, tokens_in, tokens_out, cost_usd, credits, quota_used_pct (numeric, from the CLI's own rate-limit record where it has one), quota_note, record_path |
+| `legs` | id, round_id, seat_id, occupant_id, attempt, role (`primary`, `fallback`), enforcement_label, cli_version, status (`PASS`, `FAIL`, `REFUSED`, `CONTAMINATED`, `PREFLIGHT_FAIL`; `RUNNING` while the leg is out), failure_class, verdict_raw, verdict_effective, model_observed, effort_observed, cwd_ok, tools_used_json, tools_offered_json, root_mutated, nonce_seen, started_at, finished_at, duration_ms, tokens_in, tokens_out, cost_usd, credits, quota_used_pct (numeric, from the CLI's own rate-limit record where it has one), quota_note, record_path |
 | `leg_findings` | id, leg_id, local_id (`F1`), severity_raw, severity, path, line, title, extracted_by (`leg`, `adjudicator`), mapped_round_id, mapped_finding_id (null when unmapped), unmapped_reason |
 | `findings` | PK (round_id, id); kind (`finding`, `human_ask`), title, path, line, severity, outcome, owner, proof_ref, same_as, closes_item, ruling_result (`upheld`, `overturned`, null), ruled_by, ruled_at |
 | `finding_sources` | round_id, finding_id, leg_finding_id: every seat that raised the finding, duplicates included, at its own severity |
@@ -1215,8 +1215,10 @@ evidence rows behind the flag. It never swaps a seat by itself.
 ### 9.2 `diff [<base>..<head>]`
 
 - **Default range:** merge-base with the default branch .. `HEAD`.
-- **Uncommitted changes:** the working tree is snapshotted to a commit object (`git stash create`, with a
-  `write-tree` fallback), never touching the user's index or branches.
+- **Uncommitted changes:** the working tree is snapshotted to a commit object through a private index
+  (`GIT_INDEX_FILE` set to a temp file: `read-tree HEAD`, `git add --all`, `write-tree`, `commit-tree -p HEAD`), so
+  untracked, non-ignored files are included and the user's index and branches are never touched. (`git stash
+  create`, the first design, leaves untracked files out; P5 round 1 owed row.)
 - **Target:** keyed by repo + branch. Round 2+ reviews from the last reviewed head.
 - This is the "council runs against git diffs while building" loop.
 
