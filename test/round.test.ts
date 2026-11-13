@@ -303,11 +303,21 @@ describe('round runner end to end through the fake CLIs', () => {
 });
 
 describe('round numbering, delta rounds and round 4+ (plan 3.5, 3.6, D5)', () => {
-  it('runs round 2 as a delta on FOLD.diff, carrying round 1 owed rows as earlier items', async () => {
+  it('runs round 2 as a delta on FOLD.diff, carrying round 1 owed rows (not its follow-ups) as earlier items', async () => {
     const h = harness();
     const { repo } = fixtureRepo();
     const r1 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
-    expect(adjudicate(h.store, h.layout, r1.prepared.inputs.roundId, adjudicationFor(h, r1.prepared.inputs.roundId)).outcome.ok).toBe(true);
+    // Round 1: the claude legs' finding is owed; codex's extracted item is a separate follow-up, which is not carried.
+    const r1ok = adjudicate(h.store, h.layout, r1.prepared.inputs.roundId, adjudicationFor(h, r1.prepared.inputs.roundId, (a, c) => {
+      const owed = (a['findings'] as Array<Record<string, unknown>>)[0]!;
+      const raised = owed['raised_by'] as Array<{ seat: string }>;
+      owed['raised_by'] = raised.filter((r) => r.seat !== 'a');
+      const title = 'range_sum has no test for an empty range';
+      const id = findingIdOf(c.inputs.targetKey, c.path, title);
+      (a['findings'] as unknown[]).push({ ...owed, id, title, severity: 'LOW', outcome: 'follow-up', raised_by: raised.filter((r) => r.seat === 'a') });
+      a['followups'] = [id];
+    }));
+    expect(r1ok.outcome.ok, JSON.stringify(r1ok.outcome)).toBe(true);
     commitChange(repo, 'calc/rangesum.py', 'def range_sum(values, start, end):\n    return sum(values[start:end + 1])\n', 'calc: fix the bound');
     const r2 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
     const i2 = r2.prepared.inputs;
@@ -351,6 +361,17 @@ describe('round numbering, delta rounds and round 4+ (plan 3.5, 3.6, D5)', () =>
     expect(r3.prepared.inputs.earlierItems.map((i) => [i.id, i.closedContext])).toEqual([[owedId, true]]);
     expect(readFileSync(r3.prepared.inputs.briefFile, 'utf8')).toContain(`Closed context (closed earlier, unchanged; no row needed): ${owedId}.`);
   }, 120_000);
+
+  it('counts a head only once a round on it is adjudicated', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const r1 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    expect(r1.prepared.inputs.roundNo).toBe(1);
+    // Settled but never adjudicated: the next head is still round 1, with no baseline.
+    commitChange(repo, 'calc/notes.md', 'notes\n', 'notes');
+    const r2 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    expect(r2.prepared.inputs).toMatchObject({ roundNo: 1, baseline: null, scope: 'full' });
+  }, 60_000);
 
   it('keeps the round number on a re-run at the same head, and falls back to a full review after a rebase (D17)', async () => {
     const h = harness();
