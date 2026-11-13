@@ -1,0 +1,44 @@
+{
+  "command": "muse",
+  "args": [
+    "exec",
+    "--provider",
+    "echo",
+    "--json",
+    "--session-id",
+    "22596b2f-c287-4e45-bbb6-f3001d8e5db8",
+    "--workspace",
+    "__SC_ROOT__",
+    "--permission-profile",
+    ":read-only",
+    "--disable-write",
+    "--disable-shell",
+    "--disable-web-tools",
+    "--disable-request-user-input",
+    "--disable-reminders",
+    "--no-foreign-personal-context",
+    "--contributor-mode",
+    "off",
+    "--max-model-steps",
+    "10",
+    "-c",
+    "agents.execution_capacity=1",
+    "--prompt-file",
+    "__SC_TMP__/runs/muse-echo2/leg/brief.txt"
+  ],
+  "cwd": "__SC_ROOT__",
+  "env_names": [
+    "HOME",
+    "MUSE_CONTRIBUTOR_MODE",
+    "MUSE_LOGIN",
+    "MUSE_NO_AUTO_UPDATE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME"
+  ],
+  "exit": {
+    "exitCode": 0,
+    "timedOut": false,
+    "doneBy": "exit",
+    "durationMs": 1150
+  }
+}

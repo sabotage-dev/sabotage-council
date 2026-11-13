@@ -1,0 +1,71 @@
+{
+  "export_schema_version": 1,
+  "exporter_version": {
+    "display": "Muse Code 1.4.15 (c7a95b745e)",
+    "sha": "c7a95b745e",
+    "semver": "1.4.15"
+  },
+  "session_build": {
+    "display": "Muse Code 1.4.15 (c7a95b745e)",
+    "sha": "c7a95b745e",
+    "semver": "1.4.15"
+  },
+  "session_terminated_abnormally": false,
+  "sessions": [
+    {
+      "session_id": "0ba01586-515a-42db-9fe5-4a27422b5818",
+      "trajectory_id": "trajectory_0ba01586-515a-42db-9fe5-4a27422b5818",
+      "root_session_id": "0ba01586-515a-42db-9fe5-4a27422b5818",
+      "turn_count": 1,
+      "step_count": 55,
+      "is_copied_context": false,
+      "saw_history_gap": false,
+      "accepted_spawns": [],
+      "session_end": {
+        "exit_reason": "clean",
+        "uptime_ms": 354
+      }
+    }
+  ],
+  "diagnostics": {
+    "unparseable_lines": 0,
+    "unknown_payload_kinds": 0,
+    "gaps": 0,
+    "omitted_live_only": 0,
+    "duplicate_records": 0
+  },
+  "first_events": [
+    {
+      "kind": "retained_frame",
+      "recorded_at": null,
+      "derived": {
+        "decoded": true
+      },
+      "payload_type": null
+    },
+    {
+      "kind": "record",
+      "recorded_at": 1794497560622627,
+      "derived": {
+        "session_id": "0ba01586-515a-42db-9fe5-4a27422b5818",
+        "trajectory_id": "trajectory_0ba01586-515a-42db-9fe5-4a27422b5818",
+        "step_id": 3,
+        "turn_count": 0,
+        "decoded": true
+      },
+      "payload_type": "runtime.session.metadata"
+    },
+    {
+      "kind": "record",
+      "recorded_at": 1794497560627430,
+      "derived": {
+        "session_id": "0ba01586-515a-42db-9fe5-4a27422b5818",
+        "trajectory_id": "trajectory_0ba01586-515a-42db-9fe5-4a27422b5818",
+        "step_id": 4,
+        "turn_count": 0,
+        "decoded": true
+      },
+      "payload_type": "runtime.session.route_facts"
+    }
+  ]
+}

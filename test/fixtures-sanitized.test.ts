@@ -29,7 +29,7 @@ describe('fixtures are sanitized', () => {
 
   it('scans the recorded fixtures of every adapter', () => {
     const rel = files.map((f) => relative(FIXTURES, f));
-    for (const kind of ['codex/', 'claude/', 'antigravity/', 'kiro/', 'grok/', 'opencode/']) expect(rel.some((f) => f.startsWith(kind))).toBe(true);
+    for (const kind of ['codex/', 'claude/', 'antigravity/', 'kiro/', 'grok/', 'opencode/', 'muse/']) expect(rel.some((f) => f.startsWith(kind))).toBe(true);
   });
 
   it.each(FORBIDDEN)('no fixture contains %s', (_what, pattern) => {

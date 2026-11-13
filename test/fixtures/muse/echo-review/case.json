@@ -1,0 +1,17 @@
+{
+  "nonce": "f6b6663b50de",
+  "model": "muse-spark-1.3",
+  "effort": "high",
+  "sessionId": "0ba01586-515a-42db-9fe5-4a27422b5818",
+  "cliVersion": "1.4.15",
+  "rootMutated": false,
+  "expect": {
+    "status": "FAIL",
+    "failureClass": "model",
+    "failed": [
+      "model",
+      "nonce"
+    ]
+  },
+  "note": "Recorded offline probe run (muse 1.4.15, --provider echo: no model call, not logged in), sanitized. The echo provider records no model id and echoes the brief, so model and nonce fail. export.json is the recorded export summary; the session log is the stream session envelopes (the stream is the session-log envelope stream). The flags are the probe run, which added --provider echo."
+}
