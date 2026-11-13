@@ -22,7 +22,7 @@ export class TargetError extends Error {
   }
 }
 
-export type RoundMode = 'plan' | 'diff';
+export type RoundMode = 'plan' | 'diff' | 'pr';
 
 export interface ResolvedTarget {
   mode: RoundMode;
@@ -42,6 +42,8 @@ export interface ResolvedTarget {
   branch: string | null;
   /** plan only: the plan's path inside the repository. */
   planPath: string | null;
+  /** pr only: the pull request's number (the target is keyed by repo + number, plan 3.6). */
+  prNumber: number | null;
   /** What the brief names as the target: the plan path, or `<repo>@<series>`. */
   label: string;
   /** The finding-id namespace (plan 7.3): `plan:<repoKey>:<path>` or `diff:<repoKey>:<series key>`. */
@@ -104,7 +106,7 @@ export function repoIdentity(top: string): { repoKey: string; repoName: string }
 }
 
 /** A root directory name (build.ts NAME): letters, digits, `.`, `_`, `-`, not starting with `.` or `-`. */
-function safeName(name: string): string {
+export function safeName(name: string): string {
   const cleaned = name.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^[.-]+/, '').slice(0, 100);
   return cleaned === '' ? 'repo' : cleaned;
 }
@@ -321,6 +323,7 @@ export function resolvePlanTarget(cwd: string, file: string, contexts: readonly 
     base: null,
     branch: null,
     planPath: rel,
+    prNumber: null,
     label: rel,
     targetKey: `plan:${repoKey}:${rel}`,
     context,
@@ -467,6 +470,7 @@ export function resolveDiffTarget(cwd: string, range?: string, options: DiffOpti
     base,
     branch,
     planPath: null,
+    prNumber: null,
     label: `${repoName}@${series.display}`,
     targetKey: `diff:${repoKey}:${branch}`,
     context: [],

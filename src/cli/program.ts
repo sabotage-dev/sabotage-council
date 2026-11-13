@@ -5,7 +5,10 @@ import type { AdapterRegistry } from '../config/index.js';
 import { CONFIG_ENV, DB_ENV, resolveConfigPath, resolveDbPath, resolveRootsPath, ROOTS_ENV } from '../paths.js';
 import { packageInfo } from '../version.js';
 import { runDoctor } from './doctor.js';
-import { adjudicateCommand, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
+import type { MirrorSource } from '../forge/mirror.js';
+import type { PrRef } from '../forge/pr.js';
+import { creditCommand, postCommand, roundStartPr } from './pr.js';
+import { adjudicateCommand, defaultStartWorker, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
 
 export interface ProgramIo {
   /** Command output, one line per call. */
@@ -23,6 +26,10 @@ export interface ProgramIo {
   startWorker?: ((roundId: number, paths: StorePaths) => void) | undefined;
   /** `round wait` poll interval (tests). Default 2000 ms. */
   waitPollMs?: number | undefined;
+  /** pr mode: the `gh` binary (tests: a stub replaying recorded JSON). Default `gh` on PATH. */
+  ghBin?: string | undefined;
+  /** pr mode: where the mirror fetches from (tests: a local repository). Default the GitHub https URL. */
+  mirrorSource?: ((ref: PrRef) => MirrorSource) | undefined;
 }
 
 const defaultIo: ProgramIo = {
@@ -72,6 +79,7 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     };
   };
   const roundIo = { write: io.write, env: io.env, setExitCode: io.setExitCode, adapters: io.adapters, registry: io.registry, cwd: io.cwd, startWorker: io.startWorker };
+  const prIo = { ...roundIo, ghBin: io.ghBin, mirrorSource: io.mirrorSource };
   const collect = (value: string, previous: string[]): string[] => [...previous, value];
   type StartOpts = { config?: string; db?: string; roots?: string; json?: boolean; fact: string[]; question: string[] };
 
@@ -113,6 +121,26 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       uncommitted: opts.uncommitted === true,
       series: opts.series,
     });
+  });
+
+  storeOptions(
+    start
+      .command('pr')
+      .argument('<target>', 'owner/repo#num, or https://github.com/owner/repo/pull/num')
+      .description('the council reviews a GitHub pull request (plan 9.3); post its review afterwards with `post`')
+      .option('--dry-run', 'the round can render its review but never post it (a closed PR takes only this)')
+      .option('--no-identity', 'run a council round even when the identity path (plan 3.10) would apply')
+      .option('--fact <text>', 'an established fact the seats must not refile (repeatable)', collect, [])
+      .option('--question <text>', 'a question for the seats, at most 3 (repeatable)', collect, [])
+      .option('--json', 'print the round as JSON instead of the bare id'),
+  ).action(async (target: string, opts: StartOpts & { dryRun?: boolean; identity?: boolean }) => {
+    const paths = pathsOf(opts);
+    await roundStartPr(
+      prIo,
+      paths,
+      { target, dryRun: opts.dryRun === true, identity: opts.identity !== false, facts: opts.fact, questions: opts.question, json: opts.json === true },
+      io.startWorker ?? defaultStartWorker(io.env),
+    );
   });
 
   const roundId = (value: string): number => {
@@ -162,6 +190,38 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .option('--json', 'print the result as JSON'),
   ).action((id: number, file: string, opts: { config?: string; db?: string; roots?: string; json?: boolean; check?: boolean }) => {
     adjudicateCommand(roundIo, pathsOf(opts), id, file, opts.json === true, opts.check === true);
+  });
+
+  storeOptions(
+    program
+      .command('post')
+      .argument('<id>', 'the round id of an adjudicated pr round (or an identity round)', roundId)
+      .description("render the round's GitHub review (--dry-run) or post it (--post): one review on the reviewed head (plan 3.7)")
+      .option('--dry-run', 'print the exact body and event that would be posted; post nothing')
+      .option('--post', 'post the review; refused if the head moved, the round was started with --dry-run, or the body fails validation')
+      .option('--json', 'print the result as JSON'),
+  ).action(async (id: number, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; post?: boolean; json?: boolean }) => {
+    if ((opts.dryRun === true) === (opts.post === true)) {
+      io.write('error: give exactly one of --dry-run or --post');
+      io.setExitCode(1);
+      return;
+    }
+    await postCommand(prIo, pathsOf(opts), id, opts.post === true ? 'post' : 'dry-run', opts.json === true);
+  });
+
+  const reviewId = (value: string): number => {
+    if (!/^[1-9][0-9]{0,15}$/.test(value)) throw new InvalidArgumentError('a review id is a positive integer');
+    return Number(value);
+  };
+  storeOptions(
+    program
+      .command('credit')
+      .argument('<pr>', 'owner/repo#num')
+      .argument('<review-id>', 'the review to credit as a council round', reviewId)
+      .description('count an unmarked review you vouch for as a council round on its own head (plan 3.6 step 4)')
+      .option('--note <text>', 'why the review is credited'),
+  ).action(async (pr: string, id: number, opts: { config?: string; db?: string; roots?: string; note?: string }) => {
+    await creditCommand(prIo, pathsOf(opts), pr, id, opts.note);
   });
 
   return program;

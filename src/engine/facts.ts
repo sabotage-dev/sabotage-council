@@ -30,6 +30,39 @@ export interface PreparedDetail {
   earlier_items: CarriedItem[];
   human_asks: string[];
   root_inputs: RootInputs;
+  /** pr rounds (P6): what the round read from GitHub and decided from it. */
+  pr?: PrDetail | undefined;
+}
+
+/** What a pr round recorded at its start (P6): the read, the count and the holds, for `post` and the audit. */
+export interface PrDetail {
+  owner: string;
+  repo: string;
+  number: number;
+  author: string;
+  base_ref: string;
+  base_sha: string;
+  default_branch: string;
+  head_sha: string;
+  state: 'open' | 'closed';
+  merged: boolean;
+  /** The author's permission, and whether that is write access (plan 6.3). */
+  author_permission: string | null;
+  trusted: boolean;
+  /** Plan 3.6: the counted events, the reviews passed over and why, the count and the baseline. */
+  count: { round_no: number; count: number; baseline: string | null; head_counted: boolean; events: unknown[]; ignored: unknown[] };
+  /** The user's own change request: its review id, and whether it stands on this head (a hold, 3.8). */
+  user_change_request: { review_id: number; on_head: boolean } | null;
+  /** The earlier reviews carried as items (R ids). */
+  review_items: string[];
+  /** Every review id the round saw, so `post` can tell what landed after it. */
+  reviews_seen: number[];
+  /** A missing baseline: whether the exact fetch found it (plan 3.6). */
+  baseline_fetch: 'present' | 'fetched' | 'unavailable' | null;
+  /** The PR's participants (lower case): the only logins a posted body may mention (plan 3.7). */
+  participants: string[];
+  /** The seats' untrusted-PR policy as applied (plan 5.2), when the author lacks write access. */
+  untrusted: { policy: string; interactive_adjudication: string } | null;
 }
 
 export interface RoundFacts {
@@ -68,11 +101,12 @@ export function preparedDetail(store: Store, roundId: number): PreparedDetail {
 }
 
 export function targetKeyOf(store: Store, targetId: number): string {
-  const t = store.db.prepare('SELECT kind, repo, path, branch FROM targets WHERE id = ?').get(targetId) as
-    | { kind: string; repo: string | null; path: string | null; branch: string | null }
+  const t = store.db.prepare('SELECT kind, repo, number, path, branch FROM targets WHERE id = ?').get(targetId) as
+    | { kind: string; repo: string | null; number: number | null; path: string | null; branch: string | null }
     | undefined;
   if (!t) throw new FactsError(`no target ${targetId} in the store`);
-  return `${t.kind}:${t.repo ?? ''}:${(t.kind === 'plan' ? t.path : t.branch) ?? ''}`;
+  const key = t.kind === 'plan' ? t.path : t.kind === 'pr' ? (t.number === null ? null : String(t.number)) : t.branch;
+  return `${t.kind}:${t.repo ?? ''}:${key ?? ''}`;
 }
 
 export function roundFacts(store: Store, layout: RootsLayout, roundId: number): RoundFacts {

@@ -3,9 +3,9 @@ import { join } from 'node:path';
 import type { Ratification } from '../adapters/types.js';
 import type { LegReply } from '../parse/index.js';
 import type { Store } from '../store/open.js';
-import { roundFacts } from './facts.js';
+import { roundFacts, targetKeyOf, type PrDetail } from './facts.js';
 import { readRoundInputs, roundDirOf, type DataLayout } from './prepare.js';
-import { getEvents, getLegs, getRound, type LegRow } from './records.js';
+import { getEvents, getLegs, getRound, type LegRow, type RosterSnapshot, type RoundRow } from './records.js';
 import { quorumOf, type QuorumLabel } from './run.js';
 
 /*
@@ -84,6 +84,93 @@ export interface RoundSummary {
   wall_ms: number | null;
   cost: { usd: number; credits: number; legs_with_cost: number };
   events: Array<{ ts: string; kind: string; detail: unknown }>;
+  /** pr rounds (P6): the marker, the kind, the dry-run flag, what was posted, and what the round read. */
+  pr?: PrSummary | undefined;
+}
+
+export interface PrSummary {
+  kind: 'council' | 'identity';
+  marker: string | null;
+  dry_run: boolean;
+  event_posted: string | null;
+  review_id: number | null;
+  posted_at: string | null;
+  author: string | null;
+  trusted: boolean | null;
+  /** Plan 3.6: the count, the baseline, the counted events and the reviews passed over. */
+  count: unknown;
+  user_change_request: unknown;
+  review_items: string[];
+  /** The identity path's match (plan 3.10). */
+  identity: unknown;
+  next: string;
+}
+
+function prSummary(store: Store, round: RoundRow, detail: PrDetail | undefined, identity: Record<string, unknown> | null): PrSummary {
+  const posted = round.event_posted !== null;
+  const ready = round.status === 'adjudicated' || round.status === 'identity';
+  return {
+    kind: round.kind,
+    marker: round.marker,
+    dry_run: round.dry_run === 1,
+    event_posted: round.event_posted,
+    review_id: round.review_id,
+    posted_at: round.posted_at,
+    author: detail?.author ?? ((identity?.['pr'] as { author?: string } | undefined)?.author ?? null),
+    trusted: detail?.trusted ?? null,
+    count: detail?.count ?? identity?.['round_count'] ?? null,
+    user_change_request: detail?.user_change_request ?? identity?.['user_change_request'] ?? null,
+    review_items: detail?.review_items ?? [],
+    identity: identity?.['match'] ?? null,
+    next: posted
+      ? 'posted'
+      : !ready
+        ? round.status === 'running'
+          ? `sabotage-council round wait ${round.id}`
+          : round.status === 'awaiting-adjudication'
+            ? `sabotage-council adjudicate ${round.id} <ADJUDICATION.json>`
+            : 'nothing: the round did not settle'
+        : round.dry_run === 1
+          ? `sabotage-council post ${round.id} --dry-run`
+          : `sabotage-council post ${round.id} --dry-run, then --post after the user's go`,
+  };
+}
+
+function identitySummary(store: Store, layout: DataLayout, round: RoundRow): RoundSummary {
+  const events = getEvents(store.db, round.id);
+  const prepared = events.find((e) => e.kind === 'identity-prepared')?.detail as Record<string, unknown> | undefined;
+  const p = (prepared?.['pr'] ?? {}) as { owner?: string; repo?: string; number?: number };
+  const roundDir = roundDirOf(layout, round.id);
+  return {
+    round_id: round.id,
+    round_no: round.round_no,
+    mode: round.mode,
+    target: `${p.owner ?? '?'}/${p.repo ?? '?'}#${String(p.number ?? '?')}`,
+    target_key: targetKeyOf(store, round.target_id),
+    head_sha: round.head_sha,
+    base_sha: round.base_sha,
+    baseline_sha: null,
+    scope: 'identity',
+    full_round_reason: null,
+    rule: 'identity',
+    nonce: null,
+    snapshot: null,
+    status: round.status,
+    quorum: { label: 'none', ratified: 0, seats: (JSON.parse(round.roster_json) as RosterSnapshot).seats.length, note: 'identity approval: no seats ran (plan 3.10)' },
+    round_dir: roundDir,
+    root: '',
+    brief_path: '',
+    earlier_items: [],
+    legs: [],
+    adjudication: null,
+    started_at: round.started_at,
+    finished_at: round.finished_at,
+    settled_at: null,
+    wall_ms: null,
+    cost: { usd: 0, credits: 0, legs_with_cost: 0 },
+    events,
+    pr: prSummary(store, round, undefined, prepared ?? null),
+  };
 }
 
 function readJson<T>(file: string): T | null {
@@ -148,6 +235,7 @@ export function quorumNote(label: QuorumLabel, ratified: number): string {
 export function roundSummary(store: Store, layout: DataLayout, roundId: number): RoundSummary {
   const round = getRound(store.db, roundId);
   if (!round) throw new Error(`no round ${roundId} in the store`);
+  if (round.kind === 'identity') return identitySummary(store, layout, round);
   const roundDir = roundDirOf(layout, roundId);
   // Display fields come from round.json; everything a decision rests on comes from the store (fold row 3).
   const inputs = readRoundInputs(roundDir);
@@ -208,5 +296,6 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
       legs_with_cost: costed.length,
     },
     events,
+    pr: round.mode === 'pr' ? prSummary(store, round, facts.detail.pr, null) : undefined,
   };
 }

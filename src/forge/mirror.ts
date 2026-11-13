@@ -80,7 +80,8 @@ export function fetchPr(mirror: ShadowRepo, source: MirrorSource, ref: PrRef, ba
   if (!FULL_SHA.test(head) || !FULL_SHA.test(base)) throw new ForgeError('head and base must be full shas');
   if (baseRef.startsWith('-') || /[\s\0-\x1f\x7f~^:?*[\\]|\.\.|@\{/.test(baseRef)) throw new ForgeError(`unsafe base branch name "${baseRef}"`);
   const refs = pullRefs(ref.number);
-  const first = fetchInto(mirror, source, [`+refs/pull/${ref.number}/head:${refs.head}`, `+refs/heads/${baseRef}:${refs.base}`]);
+  // One fetch per ref: git fails a whole fetch when any one refspec names a ref the remote lacks.
+  const fetched = [fetchInto(mirror, source, [`+refs/pull/${ref.number}/head:${refs.head}`]), fetchInto(mirror, source, [`+refs/heads/${baseRef}:${refs.base}`])];
   for (const [sha, what] of [
     [head, 'head'],
     [base, 'base'],
@@ -88,7 +89,8 @@ export function fetchPr(mirror: ShadowRepo, source: MirrorSource, ref: PrRef, ba
     if (commitExists(mirror, sha)) continue;
     fetchExact(mirror, source, sha, `refs/sabotage-council/pull/${ref.number}/${what}-${sha}`);
     if (!commitExists(mirror, sha)) {
-      throw new ForgeError(`the ${what} ${sha.slice(0, 7)} of ${ref.owner}/${ref.repo}#${ref.number} could not be fetched${first.ok ? '' : ` (${first.error})`}`);
+      const why = fetched.filter((f) => !f.ok).map((f) => f.error).join('; ');
+      throw new ForgeError(`the ${what} ${sha.slice(0, 7)} of ${ref.owner}/${ref.repo}#${ref.number} could not be fetched${why === '' ? '' : ` (${why})`}`);
     }
   }
 }

@@ -383,12 +383,41 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
     return { ...base, legId, status, failureClass: cls, reply, finishedAt, endedAtMs, rootMutated: r?.rootMutated === true };
   };
 
+  // A PR from an author without write access (plan 5.2, P6): a seat whose enforcement label is not `strong` follows
+  // `council.untrusted_seat_policy`. The label is the preflight's, so the decision is made per seat before launch.
+  const untrusted = inputs.detail.pr?.untrusted ?? null;
+  const strong = (p: Preflight | undefined): boolean => p?.ok === true && p.enforcement === 'strong';
+
+  /** Where a seat starts under the untrusted policy: its primary, its strong fallback, or nowhere. */
+  const untrustedStart = (seat: SeatConfig, firstPre: Preflight | undefined, fallbackPre: Preflight | undefined): 'primary' | 'fallback' | null => {
+    if (untrusted === null || untrusted.policy === 'allow' || strong(firstPre)) {
+      if (untrusted !== null && !strong(firstPre)) {
+        insertEvent(db, 'untrusted-allow', inputs.roundId, { seat: seat.id, enforcement: firstPre?.enforcement ?? null, why: 'council.untrusted_seat_policy = "allow": acknowledged for this leg' });
+      }
+      return 'primary';
+    }
+    const label = firstPre?.enforcement ?? 'unknown';
+    if (untrusted.policy === 'fallback' && seat.fallback !== undefined && strong(fallbackPre)) {
+      insertEvent(db, 'untrusted-fallback', inputs.roundId, { seat: seat.id, enforcement: label, why: 'untrusted PR: the primary is not strong, its fallback is' });
+      return 'fallback';
+    }
+    insertEvent(db, 'seat-out', inputs.roundId, {
+      seat: seat.id,
+      role: 'primary',
+      attempt: 1,
+      why: `untrusted PR: the seat's label is ${label}, not strong, and council.untrusted_seat_policy = "${untrusted.policy}"${untrusted.policy === 'fallback' ? ' found no strong fallback' : ''}`,
+    });
+    return null;
+  };
+
   /** A seat's chain: its primary, then a relaunch or its fallback as plan 4.4 allows. */
   const runSeat = async (seat: SeatConfig, firstPre: Preflight | undefined, fallbackPre: Preflight | undefined): Promise<void> => {
-    let role: 'primary' | 'fallback' = 'primary';
-    let o = occupantOf(seat);
+    const start = untrustedStart(seat, firstPre, fallbackPre);
+    if (start === null) return;
+    let role: 'primary' | 'fallback' = start;
+    let o = start === 'fallback' && seat.fallback !== undefined ? occupantOf(seat.fallback) : occupantOf(seat);
     let attempt = 1;
-    let pre = firstPre;
+    let pre = start === 'fallback' ? fallbackPre : firstPre;
     for (;;) {
       if (options.signal?.aborted === true) return;
       if (Date.now() + minLegMs > deadline) {
@@ -422,6 +451,10 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
         return;
       }
       if (step.kind === 'fallback' && seat.fallback !== undefined) {
+        if (untrusted !== null && untrusted.policy !== 'allow' && !strong(fallbackPre)) {
+          insertEvent(db, 'seat-out', inputs.roundId, { seat: seat.id, role, attempt, failure_class: cls, why: `untrusted PR: the fallback is not strong (council.untrusted_seat_policy = "${untrusted.policy}")` });
+          return;
+        }
         insertEvent(db, 'fallback', inputs.roundId, { seat: seat.id, failure_class: cls, from: o, to: occupantOf(seat.fallback), preflight: leg.status === 'PREFLIGHT_FAIL' });
         role = 'fallback';
         o = occupantOf(seat.fallback);

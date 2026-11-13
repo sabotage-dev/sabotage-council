@@ -65,7 +65,7 @@ function formatIssue(issue: ConfigIssue): string {
 
 const CLI_ENTRY = fileURLToPath(new URL('./index.js', import.meta.url));
 
-function defaultStartWorker(env: NodeJS.ProcessEnv) {
+export function defaultStartWorker(env: NodeJS.ProcessEnv) {
   return (roundId: number, paths: StorePaths): void => {
     const layout = layoutOf(paths);
     spawnWorker(CLI_ENTRY, ['round', 'run', String(roundId), '--db', paths.dbPath, '--roots', paths.rootsPath], join(layout.roundsDir, String(roundId)), env);
