@@ -24,7 +24,7 @@ import {
   readOpencodeRecord,
 } from '../src/adapters/opencode/index.js';
 import type { LegHandle, Occupant, Ratification, RoundCtx } from '../src/adapters/types.js';
-import { sanitizeTrees, workspaceConfigIn } from '../src/root/index.js';
+import { sanitizeTrees, skillDefinitionsIn, workspaceConfigIn } from '../src/root/index.js';
 import { sqlite } from '../src/store/sqlite.js';
 import type { CommandResult, CommandRunner } from '../src/transport/headless.js';
 import { FAKE_ACP, recordedSession } from './helpers/acp.js';
@@ -466,8 +466,8 @@ describe('opencode preflight (4.3), no model call', () => {
     expect(pre.checks.find((c) => c.name === 'offer')?.detail).toContain(target);
   });
 
-  it('refuses a root holding a skill directory at any depth (condition b), and the sanitizer strips it', async () => {
-    for (const rel of ['.opencode/skills/planted/SKILL.md', 'pkg/.claude/skills/planted/SKILL.md', 'pkg/deep/.agents/skills/planted/SKILL.md']) {
+  it('refuses a root holding a skill directory at any depth (condition b); the sanitizer quarantines it and neutralizes its skill files', async () => {
+    for (const rel of ['.opencode/skills/planted/SKILL.md', 'pkg/.claude/skills/planted/SKILL.md', 'pkg/deep/.agents/skills/planted/notes.md']) {
       const { pre, root } = await preflight({}, {}, { plantRoot: (r) => {
         mkdirSync(dirname(join(r, 'repo', rel)), { recursive: true });
         writeFileSync(join(r, 'repo', rel), 'x');
@@ -476,10 +476,30 @@ describe('opencode preflight (4.3), no model call', () => {
       expect(pre.reason).toBe('root not sanitized');
       sanitizeTrees(root, ['repo']);
       expect(workspaceConfigIn(root, OPENCODE_SKILL_ROOTS), rel).toEqual([]);
+      // Quarantined, and renamed so no skill discovery matches it (round 2, codex F1).
+      expect(existsSync(join(root, '_repo-agent-config', 'repo', `${rel}.council-data`)), rel).toBe(true);
+      expect(existsSync(join(root, '_repo-agent-config', 'repo', rel)), rel).toBe(false);
+      expect(skillDefinitionsIn(root), rel).toEqual([]);
       const again = await opencodePreflight({ backend: 'opencode', model: 'opencode/big-pickle' }, { bin: 'opencode', runner: scriptedRunner({ agents: councilAgents([], TAIL_227) }).run, env: { PATH: '/bin', HOME: '/u' }, root, legDir: scratch('sc-oc-leg-') });
       expect(again.ok, `${rel} after the sanitizer: ${again.reason ?? ''}`).toBe(true);
       expect(again.data['skillsEmpty']).toBe(true);
     }
+  });
+
+  it.each([
+    ['a live SKILL.md in the quarantine', '_repo-agent-config/repo/.claude/skills/x/SKILL.md'],
+    ['a live file in a quarantined skills dir', '_repo-agent-config/repo/.agents/skills/notes.md'],
+    ['a live file in a quarantined skill dir', '_repo-agent-config/repo/pkg/.opencode/skill/x/helper.md'],
+    ['a SKILL.md anywhere in the tree', 'repo/tools/pack/SKILL.md'],
+    ['a SKILL.md in another letter case', 'repo/docs/Skill.MD'],
+  ])('refuses the offered skill tool when the root holds %s (un-neutralized)', async (_what, rel) => {
+    const root = scratch('sc-oc-root-');
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    writeFileSync(join(root, rel), 'x');
+    const pre = await opencodePreflight({ backend: 'opencode', model: 'opencode/big-pickle' }, { bin: 'opencode', runner: scriptedRunner({ agents: councilAgents([], TAIL_227) }).run, env: { PATH: '/bin', HOME: '/u' }, root, legDir: scratch('sc-oc-leg-') });
+    expect(pre.ok).toBe(false);
+    expect(pre.data['skillsEmpty']).toBe(false);
+    expect(pre.checks.find((c) => c.name === 'offer')?.detail).toContain(`${rel} in the root`);
   });
 
   it('separates a missing credential (auth) from a missing model (model)', async () => {

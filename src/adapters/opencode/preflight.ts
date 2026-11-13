@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 import type { FailureClass } from '../../config/vocab.js';
-import { workspaceConfigIn } from '../../root/sanitize.js';
+import { skillDefinitionsIn, workspaceConfigIn } from '../../root/sanitize.js';
 import type { CommandRunner } from '../../transport/headless.js';
 import { isObject, str } from '../codex/records.js';
 import { rootAliases, underRoot } from '../paths.js';
@@ -235,7 +235,9 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
   // (2026-11-12): the offered skill tool is allowed only when provably empty: (a) no skill definition in the leg's
   // skill locations, (b) none in the root, at any depth; (c), no skill call or skill message, is ratification's.
   const legSkills = opencodeSkillDefinitions(files);
-  const rootSkills = workspaceConfigIn(options.root, OPENCODE_SKILL_ROOTS);
+  // (b) covers the whole root, the quarantine included: a skill file the sanitizer moved but did not neutralize
+  // still counts (round 2, codex F1).
+  const rootSkills = skillDefinitionsIn(options.root);
   skillsEmpty = legSkills.length === 0 && rootSkills.length === 0;
   const allowed: readonly string[] = [...OPENCODE_READ_TOOLS, ...(skillsEmpty ? ['skill'] : [])];
   const extra = offer.filter((t) => !allowed.includes(t));

@@ -8,6 +8,8 @@ import {
   agentConfigFile,
   sanitizedPathMap,
   sanitizeTrees,
+  skillDefinitionRule,
+  skillDefinitionsIn,
   workspaceConfigIn,
 } from '../src/root/index.js';
 import { CURSOR_WORKSPACE_CONFIG } from '../src/adapters/cursor/preflight.js';
@@ -219,5 +221,51 @@ describe('cursor and muse workspace entries (round 1 row 9)', () => {
   it('the global list holds .cursorrules and every directory the two backends load', () => {
     expect(AGENT_CONFIG_FILES).toContain('.cursorrules');
     for (const d of ['.cursor', '.claude', '.agents', '.muse', '.codex']) expect(AGENT_CONFIG_DIRS).toContain(d);
+  });
+});
+
+describe('skill definitions (round 2, codex F1)', () => {
+  it.each([
+    ['repo/tools/SKILL.md', 'SKILL.md'],
+    ['repo/x/skill.MD', 'SKILL.md'],
+    ['_repo-agent-config/repo/.claude/skills/a/SKILL.md', 'SKILL.md'],
+    ['_repo-agent-config/repo/.claude/skills/a/run.sh', 'skill dir'],
+    ['_repo-agent-config/repo/.opencode/skill/notes.md', 'skill dir'],
+    ['repo/.agents/Skills/notes.md', 'skill dir'],
+    ['_repo-agent-config/repo/.claude/skills/a/SKILL.md.council-data', null],
+    ['repo/skills/helper.md', null],
+    ['repo/docs/SKILL.md.txt', null],
+    ['_repo-agent-config/repo/.claude/settings.json', null],
+  ])('%s matches %s', (rel, rule) => {
+    expect(skillDefinitionRule(rel)).toBe(rule);
+  });
+
+  it('neutralizes skill files as they are quarantined, and SKILL.md anywhere; leaves other skills/ dirs alone', () => {
+    put('repo/.claude/skills/review/SKILL.md');
+    put('repo/.claude/skills/review/scripts/run.sh');
+    put('repo/pkg/.opencode/skills/x/notes.md');
+    put('repo/pkg/.agents/skills/y/SKILL.md');
+    put('repo/tools/pack/SKILL.md');
+    put('repo/skills/helper.md');
+    expect(skillDefinitionsIn(root).length).toBe(5);
+    sanitizeTrees(root, ['repo']);
+    expect(skillDefinitionsIn(root)).toEqual([]);
+    for (const rel of [
+      '_repo-agent-config/repo/.claude/skills/review/SKILL.md.council-data',
+      '_repo-agent-config/repo/.claude/skills/review/scripts/run.sh.council-data',
+      '_repo-agent-config/repo/pkg/.opencode/skills/x/notes.md.council-data',
+      '_repo-agent-config/repo/pkg/.agents/skills/y/SKILL.md.council-data',
+      'repo/tools/pack/SKILL.md.council-data',
+      'repo/skills/helper.md',
+    ]) {
+      expect(existsSync(join(root, rel)), rel).toBe(true);
+    }
+  });
+
+  it('scans the quarantine too: a live skill file left there is found', () => {
+    put('_repo-agent-config/repo/.claude/skills/x/SKILL.md');
+    put('_repo-agent-config/repo/.agents/skills/notes.md');
+    expect(skillDefinitionsIn(root)).toEqual(['_repo-agent-config/repo/.agents/skills/notes.md', '_repo-agent-config/repo/.claude/skills/x/SKILL.md']);
+    expect(skillDefinitionsIn(join(root, 'missing'))).toEqual([]);
   });
 });

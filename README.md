@@ -86,8 +86,9 @@ check failed), `2` nothing loaded but some seat is unproven by `--deep`.
   2.2.7 the council agent is still offered the `skill` tool: opencode appends its own `skill` rule after the
   council's, so no council rule removes it. The tool is accepted only while it is provably empty: preflight
   refuses a leg whose own skill locations (its XDG config, data and cache dirs, its `~/.agents` and `~/.claude`)
-  or whose root (any `.opencode/`, `.claude/` or `.agents/`, at any depth) hold a skill, and any skill call
-  (refused or not), skill message or user message naming a skill fails the leg.
+  hold any file, or whose root holds a live skill file anywhere, the quarantine included (the sanitizer renames
+  every `SKILL.md`, and every file in a quarantined skill dir, with `.council-data`); any skill call (refused or
+  not), skill message or user message naming a skill fails the leg.
 - **Cursor (`cursor-agent`).** Seats call the newest release under `~/.local/share/cursor-agent/versions/` by
   path, never `agent` on PATH (the Cursor installer repoints that name). Print mode needs `--trust`; the council
   config and its deny-all-but-reads hook live in a per-leg `CURSOR_CONFIG_DIR` and in the leg's own `HOME`.
