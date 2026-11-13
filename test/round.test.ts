@@ -1114,6 +1114,20 @@ describe('round 2 row 4: a plan round snapshots its in-repository context with t
     expect(git(repo, ['diff', '--cached', '--name-only'])).toBe('');
   }, 120_000);
 
+  it('refuses a local context path that is the repository top or contains it (round 3 row 1)', () => {
+    const { repo } = fixtureRepo();
+    writeFileSync(join(repo, '.gitignore'), '.env\n');
+    writeFileSync(join(repo, '.env'), 'TOKEN=secret\n');
+    const parent = join(repo, '..');
+    for (const ctx of [repo, '.', join(repo, 'calc', '..'), parent]) {
+      expect(() => resolvePlanTarget(repo, 'docs/PLAN.md', [ctx]), ctx).toThrow(/is the repository top or contains it.*<repo>@<ref>/);
+    }
+    // The committed tree is still available as a pinned archive, which holds no ignored file.
+    expect(() => resolvePlanTarget(repo, 'docs/PLAN.md', [`${repo}@HEAD`])).not.toThrow();
+    // An in-repository directory is unchanged.
+    expect(() => resolvePlanTarget(repo, 'docs/PLAN.md', [join(repo, 'calc')])).not.toThrow();
+  });
+
   it('refuses an in-repo context directory the snapshot can hold nothing of', () => {
     const { repo } = fixtureRepo();
     writeFileSync(join(repo, '.gitignore'), 'build/\n');

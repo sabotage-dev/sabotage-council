@@ -282,6 +282,17 @@ export function resolvePlanTarget(cwd: string, file: string, contexts: readonly 
   if (rel === null) throw new TargetError(`${file} is not inside the repository at ${top}`);
   const headCommit = resolveSha(top, 'HEAD');
   const parsed = contexts.map((c) => parseContext(c, cwd));
+  // A local path that is the repository top, or an ancestor of it, would be copied live with the repository's ignored
+  // and secret-named files (P5 round 3 row 1). The committed tree is available as `<repo>@<ref>`.
+  parsed.forEach((c, i) => {
+    if (!('path' in c)) return;
+    const up = relative(realpathSync(c.path), top);
+    if (up === '' || (up !== '..' && !up.startsWith(`..${sep}`) && !isAbsolute(up))) {
+      throw new TargetError(
+        `context ${contexts[i] ?? c.path} is the repository top or contains it, so it would copy ignored files: give paths inside the repository, or <repo>@<ref> for the committed tree`,
+      );
+    }
+  });
   const inRepoOf = (c: ContextSource): string | null => ('path' in c ? insideTop(top, realpathSync(c.path)) : null);
   const inRepo = parsed.map(inRepoOf).filter((p): p is string => p !== null);
   const foldPaths = [rel, ...inRepo];

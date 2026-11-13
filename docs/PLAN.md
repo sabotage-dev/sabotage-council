@@ -1222,7 +1222,9 @@ evidence rows behind the flag. It never swaps a seat by itself.
 - **Root:** the plan at its repo-relative path plus the named context, each pinned at a ref. A `--context` path
   inside the repository is read from the round's head (the snapshot below), so its copy in the root, the revision
   and `FOLD.diff` all hold the same content (P5 round 2 row 4). A `repo@ref` is pinned; a local path outside the
-  repository is copied as it is when the root is built.
+  repository is copied as it is when the root is built. A local path that is the repository top, or contains it, is
+  refused, since its live copy would carry the repository's ignored files; `<repo>@<ref>` gives the committed tree
+  (P5 round 3 row 1).
 - **Brief questions:** what is infeasible, what is missing (failure modes, migrations, rollbacks), what
   contradicts itself, which assumptions are unverified.
 - **Later rounds:** round 2+ reviews the plan's diff since the last reviewed revision.
