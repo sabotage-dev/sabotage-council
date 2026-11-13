@@ -872,7 +872,7 @@ It warns (and `doctor` repeats the warning) when:
 
 | Label | Meaning | Backends now |
 |---|---|---|
-| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | claude 2.1.322 with the P2 leg flags (`--tools`, `--restricted`, `--setting-sources ""`): its P2 canary, with a planted user allow rule, had every outside read (by path, through a symlink, Glob and Grep) denied before execution, and write, command and fetch tools not offered. grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
+| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | claude 2.1.322 and 2.1.323 with the P2 leg flags (`--tools`, `--restricted`, `--setting-sources ""`): the promotion canary on each version, with a planted user allow rule, had every outside read (by path, through a symlink, Glob and Grep) denied before execution, and write, command and fetch tools not offered. grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
 | `sandboxed-exec` | Commands run inside a write- and network-denied sandbox, but reads are not confined to the root. | codex |
 | `pending` | The mechanism exists but its denial has not been measured (14). | claude on an untested version; antigravity 1.5.7 and kiro 3.2.1 (their P3 canaries ran and did not prove every action, 14); opencode 2.2.7 (its P4 canary ran; the read through a symlink inside the root ran, 14); grok with its sandbox running and no MCP server started, until a pre-execution read boundary is measured (N1). Each backend leaves `pending` only through its own canary, including a planted user allow rule |
 | `weak` | Enforcement depends on config the agent may not honour, or is unmeasured. | cursor (no live run in v1, D14); muse (no logged-in run in P4); grok with `--sandbox off` (a leg that starts an MCP server fails outright, owner ruling) |
@@ -1444,7 +1444,12 @@ Settled by P4 (grok 1.0.70 on the owner's grok.com login; opencode 2.2.7 on its 
   Result: `pending`. The review root replaces such symlinks with text files (5.3), but the canary is the bar.
 - **doctor --deep** on the owner's machine (no model call): grok fails (its `inspect` lists the planted project
   `.grok/config.toml`), opencode refuses the planted root at preflight, claude 2.1.323 is unchecked (its preflight
-  refuses on a clean root too: an untested version with installed plugins).
+  refuses on a clean root too: an untested version with installed plugins). Round 1 fold: 2.1.323 is declared
+  from its own zero-cost runs and its canary (`strong`); opencode's config dump now runs before its root scan,
+  so its verdict is `isolated` from that dump, and a filename refusal no longer passes `--deep`.
+- **claude 2.1.323 promotion canary** (round 1 fold, once, exactly as P2, claude-haiku-5-5 effort low, $0.0017):
+  offered only Glob, Grep, Read; every outside read (path, symlink, Grep, Glob) denied before execution; no
+  write, command or fetch tool; no secret in the stream or transcript; root unchanged. `strong`.
 
 Settled by P2: `claude --restricted` confines Glob and Grep as well as Read (the canary, 5.2), and
 `--setting-sources ""` drops installed-plugin tools while keeping the user's own login (4.2).

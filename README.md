@@ -34,9 +34,9 @@ parsers, the headless transport with the codex, claude, grok, cursor and muse se
 the antigravity, kiro and opencode seats. There are no review rounds yet. The v1 build plan is
 [docs/PLAN.md](docs/PLAN.md).
 
-Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on the version its canary ran on)
-and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their promotion canaries ran and did
-not prove every action was refused before it ran (plan 14). grok is `weak` with `--sandbox off` (it would be
+Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322 and 2.1.323, the
+versions its canary ran on) and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their
+promotion canaries ran and did not prove every action was refused before it ran (plan 14). grok is `weak` with `--sandbox off` (it would be
 `pending` with its sandbox running, a label no recorded run backs: no sandbox-on leg has run). cursor and muse
 are `weak`: no live canary runs for them in v1. With the default `untrusted_seat_policy = "fallback"`, a round on
 a PR from an author without write access needs `strong` fallbacks for those seats, or it fails below quorum,
