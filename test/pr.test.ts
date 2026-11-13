@@ -6,6 +6,8 @@ import { getEvents, getLegs, getRound, roundSummary, runLegs, type RoundSummary 
 import { postRound } from '../src/engine/post.js';
 import { preparePrRound, type PrRoundOptions } from '../src/engine/pr.js';
 import { ghApi } from '../src/forge/github.js';
+import { checkPrFiles } from '../src/forge/mirror.js';
+import { PR_FILES_MAX } from '../src/forge/pr.js';
 import { parseConfigText, type CouncilConfig } from '../src/config/index.js';
 import { cleanScratchAfterAll } from './helpers/fixtures.js';
 import { FAKE_GH, fakeGh, filesFor, pr2Routes, pushCommit, sourceRepo, type FakeGh, type Routes, type SourceRepo } from './helpers/github.js';
@@ -466,4 +468,22 @@ describe('pr rounds: a superseded round', () => {
     expect(next.prepared.inputs.roundNo).toBe(4);
     expect(next.prepared.inputs.earlierItems.map((i) => i.id)).toEqual([owedId, 'R5880199419']);
   }, 60_000);
+});
+
+describe("the changed-file cross-check (GitHub's list against the fetched commits)", () => {
+  it('counts a rename as its old and new paths, and skips a list at GitHub\'s 3,000-file limit', () => {
+    const src = sourceRepo();
+    git(src.repo, ['checkout', '--quiet', '--detach', src.shas['C7']!]);
+    // LICENSE is in the base: renaming it shows on GitHub as one renamed entry, and in git (no renames) as two paths.
+    git(src.repo, ['mv', 'LICENSE', 'LICENSE.txt']);
+    git(src.repo, ['commit', '--quiet', '-m', 'rename']);
+    const head = git(src.repo, ['rev-parse', 'HEAD']);
+    git(src.repo, ['checkout', '--quiet', 'main']);
+    const mirror = { gitDir: join(src.repo, '.git'), source: src.repo };
+    const listed = filesFor(src, src.shas['C7']!).map((f) => ({ path: f.filename, previous: null as string | null }));
+    expect(checkPrFiles(mirror, src.shas['BASE']!, head, [...listed, { path: 'LICENSE.txt', previous: 'LICENSE' }])).toMatchObject({ checked: true });
+    expect(() => checkPrFiles(mirror, src.shas['BASE']!, head, [...listed, { path: 'LICENSE.txt', previous: null }])).toThrow(/the fetched commits also change "LICENSE"/);
+    const many = Array.from({ length: PR_FILES_MAX }, (_, i) => ({ path: `f${i}`, previous: null }));
+    expect(checkPrFiles(mirror, src.shas['BASE']!, head, many)).toEqual({ checked: false, note: `GitHub lists ${PR_FILES_MAX} files, its limit: the list was not cross-checked` });
+  });
 });
