@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SeatAdapter, SeatAdapters } from '../adapters/index.js';
 import type { FailureClass, LegHandle, LegText, Occupant, Preflight, Ratification, RoundCtx } from '../adapters/types.js';
+import { sameOccupant } from '../config/rules.js';
 import type { FallbackConfig, SeatConfig } from '../config/schema.js';
 import { parseLegReply, type LegReply } from '../parse/index.js';
 import { hashManifest, manifestOf } from '../root/hash.js';
@@ -96,6 +97,8 @@ export interface LegResult {
   endedAtMs: number;
   /** The leg's own ratification saw the root changed. */
   rootMutated: boolean;
+  /** Who ran the leg: quorum counts distinct occupants (fold row 5). */
+  occupant: Occupant;
 }
 
 export interface RunResult {
@@ -259,7 +262,7 @@ export async function runLegs(store: Store, layout: DataLayout, roundId: number,
     const adapter = options.adapters(o.backend);
     const legDir = legDirFor(seat.id, role, attempt);
     const startedAt = now();
-    const base = { seat: seat.id, role, attempt, legDir, startedAt, endedAtMs: Date.now(), rootMutated: false };
+    const base = { seat: seat.id, role, attempt, legDir, startedAt, endedAtMs: Date.now(), rootMutated: false, occupant: o };
     if (!adapter) {
       const legId = insertLeg(seat.id, role, attempt, undefined, o, 'PREFLIGHT_FAIL', legDir);
       const finishedAt = finishLeg(legId, { status: 'PREFLIGHT_FAIL', failureClass: 'setup' });
@@ -450,9 +453,37 @@ function safeClassify(adapter: SeatAdapter, handle: LegHandle): FailureClass | n
 }
 
 /** Records the parsed findings of every ratified leg and settles the round's quorum and status. */
+/**
+ * The ratified legs that count: one per distinct occupant (fold row 5). Config validation already refuses a fallback
+ * that is another seat's occupant; this is the second line, for a roster that got past it. A later leg of an occupant
+ * already counted is REFUSED.
+ */
+export function distinctOccupants<T extends Pick<LegResult, 'status' | 'occupant'>>(legs: readonly T[]): { counted: T[]; duplicates: T[] } {
+  const counted: T[] = [];
+  const duplicates: T[] = [];
+  const key = (o: Occupant): { backend: Occupant['backend']; model: string; effort?: string | undefined; auth_home?: string | undefined } => ({
+    backend: o.backend,
+    model: o.model,
+    effort: o.effort,
+    auth_home: o.authHome,
+  });
+  for (const leg of legs) {
+    if (leg.status !== 'PASS') continue;
+    if (counted.some((c) => sameOccupant(key(c.occupant), key(leg.occupant)))) duplicates.push(leg);
+    else counted.push(leg);
+  }
+  return { counted, duplicates };
+}
+
 function settle(store: Store, inputs: RoundFacts, results: LegResult[], aborted: boolean): RunResult {
   const { db } = store;
-  const ratified = results.filter((l) => l.status === 'PASS');
+  const { counted: ratified, duplicates } = distinctOccupants(results);
+  for (const leg of duplicates) {
+    db.prepare("UPDATE legs SET status = 'REFUSED', failure_class = 'setup' WHERE id = ?").run(leg.legId);
+    leg.status = 'REFUSED';
+    leg.failureClass = 'setup';
+    insertEvent(db, 'duplicate-occupant', inputs.roundId, { leg: leg.legId, seat: leg.seat, occupant: leg.occupant, why: 'this occupant already counts in this round' });
+  }
   const insert = db.prepare(
     `INSERT INTO leg_findings (leg_id, local_id, severity_raw, severity, path, line, title, extracted_by)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'leg')`,

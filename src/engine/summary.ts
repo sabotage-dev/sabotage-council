@@ -68,7 +68,8 @@ export interface RoundSummary {
   nonce: string | null;
   snapshot: string | null;
   status: string;
-  quorum: { label: QuorumLabel; ratified: number; seats: number; note: string };
+  /** `pending` while the round runs; `none` for a failed round, whatever passed before it failed (fold row 6). */
+  quorum: { label: QuorumLabel | 'pending'; ratified: number; seats: number; note: string };
   round_dir: string;
   root: string;
   brief_path: string;
@@ -87,7 +88,7 @@ function readJson<T>(file: string): T | null {
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as T) : null;
 }
 
-function legSummary(roundDir: string, l: LegRow): LegSummary {
+function legSummary(roundDir: string, l: LegRow, settled: boolean): LegSummary {
   const legDir = join(roundDir, 'legs', `${l.seat_id}-${l.role}-${l.attempt}`);
   const reply = readJson<LegReply>(join(legDir, 'reply.json'));
   const r = readJson<Ratification>(join(legDir, 'ratification.json'));
@@ -103,15 +104,15 @@ function legSummary(roundDir: string, l: LegRow): LegSummary {
     effort: l.effort,
     transport: l.transport,
     status: l.status,
-    counted: l.status === 'PASS',
+    counted: settled && l.status === 'PASS',
     failure_class: l.failure_class,
     enforcement: l.enforcement_label,
     cli_version: l.cli_version,
     verdict_raw: l.verdict_raw,
     verdict_reason: reply?.verdict.reason ?? null,
     verdict_effective: l.verdict_effective,
-    findings: l.status === 'PASS' && f ? f.findings : [],
-    findings_extracted_by: l.status === 'PASS' && f ? f.extracted_by : null,
+    findings: settled && l.status === 'PASS' && f ? f.findings : [],
+    findings_extracted_by: settled && l.status === 'PASS' && f ? f.extracted_by : null,
     findings_problem: f && f.extracted_by === 'adjudicator-needed' ? f.reason : null,
     answer_path: existsSync(answer) ? answer : null,
     leg_dir: legDir,
@@ -148,9 +149,12 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
   // Display fields come from round.json; everything a decision rests on comes from the store (fold row 3).
   const inputs = readRoundInputs(roundDir);
   const facts = roundFacts(store, layout, roundId);
-  const legs = getLegs(store.db, roundId).map((l) => legSummary(roundDir, l));
+  // Labels follow the round's status (fold row 6): only a settled round has counted legs or a council.
+  const settledRound = round.status === 'awaiting-adjudication' || round.status === 'adjudicated';
+  const legs = getLegs(store.db, roundId).map((l) => legSummary(roundDir, l, settledRound));
+  const passed = legs.filter((l) => l.status === 'PASS').length;
   const ratified = legs.filter((l) => l.counted).length;
-  const label = quorumOf(ratified);
+  const label: QuorumLabel | 'pending' = round.status === 'running' ? 'pending' : settledRound ? quorumOf(ratified) : 'none';
   const events = getEvents(store.db, roundId);
   const settled = events.find((e) => e.kind === 'legs-settled')?.ts ?? null;
   // Wall time to settlement (the legs); a failed round without a settlement event ends at finished_at.
@@ -175,7 +179,12 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
       label,
       ratified,
       seats: facts.roster.seats.length,
-      note: round.status === 'running' ? `running: ${ratified} leg(s) ratified so far` : quorumNote(label, ratified),
+      note:
+        round.status === 'running'
+          ? `running: ${passed} leg(s) ratified so far`
+          : settledRound
+            ? quorumNote(quorumOf(ratified), ratified)
+            : `the round failed: no council verdict${passed > 0 ? ` (${passed} leg(s) had ratified before it failed; they do not count)` : ''}`,
     },
     round_dir: roundDir,
     root: facts.root,

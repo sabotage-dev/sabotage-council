@@ -178,18 +178,26 @@ export interface RoundNumbering {
 }
 
 /**
- * Plan 3.6 for plan and diff targets: a head counts once a round on it is adjudicated. The round number is the
- * number of distinct counted heads, plus 1 when this head has none. The baseline is the newest counted head other
- * than this one.
+ * Plan 3.6 for plan and diff targets: a head counts once a council round on it (two or more counted legs) is
+ * adjudicated. The round number is the number of distinct counted heads, plus 1 when this head has none. The
+ * baseline is the newest counted head other than this one.
  */
 export function numberRound(db: DatabaseSync, targetId: number, head: string): RoundNumbering {
   const rounds = all(db, "SELECT id, head_sha, round_no FROM rounds WHERE target_id = ? AND status = 'adjudicated' ORDER BY id", targetId);
-  const heads = new Set(rounds.map((r) => String(r['head_sha'])));
+  // Only a head reviewed at council quorum counts (fold row 7): a solo review is never a reviewed baseline.
+  const council = all(db, COUNCIL_ROUNDS, targetId);
+  const heads = new Set(council.map((r) => String(r['head_sha'])));
   const roundNo = heads.size + (heads.has(head) ? 0 : 1);
-  const other = [...rounds].reverse().find((r) => String(r['head_sha']) !== head);
+  const other = [...council].reverse().find((r) => String(r['head_sha']) !== head);
   const baseline = other === undefined ? null : String(other['head_sha']);
   return { roundNo, baseline, items: roundNo > 1 ? carriedItems(db, rounds.map((r) => Number(r['id']))) : [] };
 }
+
+/** Adjudicated rounds of a target that settled with two or more counted legs: council rounds. */
+const COUNCIL_ROUNDS = `SELECT id, head_sha, round_no FROM rounds
+  WHERE target_id = ? AND status = 'adjudicated'
+    AND (SELECT count(*) FROM legs WHERE legs.round_id = rounds.id AND legs.status = 'PASS') >= 2
+  ORDER BY id`;
 
 /** The text an earlier finding carries into PREVIOUS-REVIEWS.md. Deterministic, so its hash tracks the item. */
 export function itemText(f: Row, roundNo: number): string {

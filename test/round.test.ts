@@ -22,7 +22,8 @@ import {
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 import { git } from './helpers/git-fixture.js';
 import { openStore } from '../src/store/index.js';
-import { claudeCase, codexCase, commitChange, fakeAdapters, fakeHome, fixtureRepo, harness, OCC, rosterConfig, runRound, type Harness } from './helpers/round.js';
+import { claudeCase, codexCase, commitChange, fakeAdapters, fakeHome, fixtureRepo, harness, OCC, ROSTER_TOML, rosterConfig, runRound, type Harness } from './helpers/round.js';
+import { parseConfigText } from '../src/config/index.js';
 
 cleanScratchAfterAll();
 
@@ -700,5 +701,60 @@ describe('fold row 4: one adjudication per round, the store is the source of tru
     expect(doc.document.reason).toBe('the second adjudicator');
     expect(JSON.parse(readFileSync(join(r.prepared.roundDir, 'ADJUDICATION.json'), 'utf8'))).toMatchObject({ reason: 'the second adjudicator' });
     expect(readdirSync(r.prepared.roundDir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  }, 60_000);
+});
+
+describe('fold rows 5-7: quorum counts distinct occupants, follows the status, and a solo head is no baseline', () => {
+  it('refuses at config load a fallback that is another seat occupant, or another seat fallback', async () => {
+    const same = await parseConfigText(ROSTER_TOML.replace('fallback = { backend = "claude", model = "claude-sonnet-5-5"', 'fallback = { backend = "claude", model = "claude-haiku-5-5"'));
+    expect(same.ok).toBe(false);
+    if (!same.ok) expect(same.errors.map((e) => e.message).join('\n')).toContain('seat "a"\'s fallback is the same occupant as seat "b"');
+    const twice = await parseConfigText(
+      ROSTER_TOML.replace('model = "claude-opus-5-5"\neffort = "low"', 'model = "claude-opus-5-5"\neffort = "low"\nfallback = { backend = "claude", model = "claude-sonnet-5-5", effort = "low", on = ["usage_limit"] }'),
+    );
+    expect(twice.ok).toBe(false);
+    if (!twice.ok) expect(twice.errors.map((e) => e.message).join('\n')).toContain('have the same fallback occupant');
+  });
+
+  it('counts one occupant once even when a fallback repeats another seat (a roster that got past the config check)', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const config = await rosterConfig();
+    config.seats[0]!.fallback = { backend: 'claude', model: 'claude-haiku-5-5', effort: 'low', on: ['usage_limit', 'auth'] };
+    const { prepared, result } = await runRound(
+      h,
+      resolveDiffTarget(repo, 'main..feature'),
+      { codex: { [OCC.a]: [codexCase('usage-limit')] }, claude: { [OCC.c]: [claudeCase('model-not-found')] } },
+      { config },
+    );
+    expect(result).toMatchObject({ quorum: 'solo', ratified: 1 });
+    const legs = getLegs(h.store.db, prepared.inputs.roundId);
+    expect(legs.filter((l) => l.model === 'claude-haiku-5-5').map((l) => l.status).sort()).toEqual(['PASS', 'REFUSED']);
+    expect(getEvents(h.store.db, prepared.inputs.roundId).some((e) => e.kind === 'duplicate-occupant')).toBe(true);
+    expect(roundSummary(h.store, h.layout, prepared.inputs.roundId).quorum.label).toBe('solo');
+  }, 60_000);
+
+  it('labels a failed round none, whatever passed, and counts none of its legs', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const { prepared } = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    h.store.db.prepare("UPDATE rounds SET status = 'failed' WHERE id = ?").run(prepared.inputs.roundId);
+    const s = roundSummary(h.store, h.layout, prepared.inputs.roundId);
+    expect(s.quorum).toMatchObject({ label: 'none', ratified: 0 });
+    expect(s.quorum.note).toContain('3 leg(s) had ratified before it failed; they do not count');
+    expect(s.legs.every((l) => !l.counted)).toBe(true);
+  }, 60_000);
+
+  it('never takes a solo-reviewed head as a baseline: the next head is still round 1', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const solo = await runRound(h, resolveDiffTarget(repo, 'main..feature'), {
+      claude: { [OCC.b]: [claudeCase('contaminated-used')], [OCC.c]: [claudeCase('model-not-found')] },
+    });
+    expect(solo.result.quorum).toBe('solo');
+    expect(adjudicate(h.store, h.layout, solo.prepared.inputs.roundId, adjudicationFor(h, solo.prepared.inputs.roundId)).outcome.ok).toBe(true);
+    commitChange(repo, 'calc/notes.md', 'notes\n', 'notes');
+    const next = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    expect(next.prepared.inputs).toMatchObject({ roundNo: 1, baseline: null, scope: 'full' });
   }, 60_000);
 });
