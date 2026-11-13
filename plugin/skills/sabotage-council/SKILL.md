@@ -100,10 +100,12 @@ Check the engine is installed: `sabotage-council --version`. If it is not on PAT
    It posts only that review, that event with that body: when anything changed since the dry run (CI turned green, a
    review landed, the event changed with the same body), it refuses and prints the new render. Show that to the user
    and wait for a new go; never post the new render on the old go.
-   It also refuses when the head moved (the round is superseded), when the round was started with `--dry-run`, or
-   when the body fails validation; after an approval it withdraws it if a review landed meanwhile, and after a
-   comment with nothing owed it dismisses the council's own earlier change request (never a human's). A guard that
-   could not run stays pending and `post` exits 1: run the same `--post` again to resume it. Report what it printed.
+   It also refuses when the head moved (the round is superseded), when the PR closed or an identity round's base left
+   the default branch since the dry run (run a new dry run and show it), when the round was started with
+   `--dry-run`, or when the body fails validation; after an approval it withdraws it if a review landed meanwhile,
+   and after a comment with nothing owed it dismisses the council's own earlier change request (never a human's). A
+   guard that could not run stays pending and `post` exits 1: run the same `--post` again to resume it. Report what
+   it printed.
 
 7. **Identity rounds (pr only).** `kind: identity` has no legs and no adjudication: go straight to step 6.
 

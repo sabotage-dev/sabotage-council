@@ -65,7 +65,7 @@ sabotage-council round start plan docs/PLAN.md --json   # or: round start diff [
 sabotage-council round wait <id>                         # blocks until the legs settle; prints JSON
 sabotage-council round show <id>                         # a readable summary, any time
 sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, print the effective verdict
-sabotage-council post <id> --dry-run                     # pr: the exact review that would post, and its sha256
+sabotage-council post <id> --dry-run                     # pr: the exact review that would post, and its review sha256
 sabotage-council post <id> --post --expect <sha256>      # pr: post that review, one review on the reviewed head
 ```
 
@@ -107,20 +107,24 @@ sabotage-council post <id> --post --expect <sha256>      # pr: post that review,
   `council.untrusted_seat_policy` applies to every seat below `strong`). A head whose tree you already approved on
   another PR takes the identity path: no seats (`--no-identity` runs a council round instead). It needs a
   `[github]` table with your `login`.
-- `post <id> --dry-run | --post [--expect <sha256>]` (pr rounds, after `adjudicate`): maps the round to APPROVE,
-  REQUEST_CHANGES or COMMENT by plan 3.7's table (your own PR always gets a COMMENT; CI, with each required check
-  bound to its app, the hold list, `auto.approve` and any human change request the round never adjudicated gate an
-  approval), renders the body (the marker line first; every value from the adjudication, the PR or CI neutralized,
+- `post <id> --dry-run | --post [--expect <review sha256>]` (pr rounds, after `adjudicate`): maps the round to
+  APPROVE, REQUEST_CHANGES or COMMENT by plan 3.7's table (your own PR always gets a COMMENT; CI, with each required
+  check bound to its app, the hold list, `auto.approve` and any human change request the round never adjudicated gate
+  an approval), renders the body (the marker line first; every value from the adjudication, the PR or CI neutralized,
   paths and names as one escaped line), and validates it: no nonce, no mention of anyone outside the PR, no
   auto-close phrase, no credential shape, the body's own sections in order, at most 60,000 bytes. `--dry-run`
-  prints the event, the body and its sha256, and posts nothing. `--post` sends only the review a dry run showed:
-  the one `--expect` names, or else the latest; if anything changed since (CI turned green, a review landed), it
-  refuses and prints the new one. It claims the round so two posts never both send, re-checks the head right
-  before posting (moved: the round is superseded, nothing posts), posts one review bound to the reviewed head, and
-  then runs its guards: it withdraws an approval if a review other than a council's landed meanwhile, and after a
-  comment that owes nothing dismisses the council's own earlier change request (never a human's). A guard that
-  fails stays pending and `post` exits 1; run the same `--post` again to resume it (after a crash too). A round
-  started with `--dry-run` never posts.
+  prints the event, the body, the body's sha256 and the review sha256 (one hash of the event and the body), and
+  posts nothing. `--post` sends only the review a dry run showed: the one whose review sha256 `--expect` names (so
+  a go for one event never sends another with the same body), or else the latest; if anything changed since (CI
+  turned green, a review landed), it refuses and prints the new one. It claims the round so two posts never both
+  send (a post whose claim was taken over after an hour posts nothing), re-checks the pull request right before
+  posting (head moved: the round is superseded; closed, or an identity round's base moved off the default branch:
+  nothing posts, and a new dry run shows what applies now), posts one review bound to the reviewed head, and then
+  runs its guards: it withdraws an approval if a review other than a council's landed meanwhile, withdraws any
+  review GitHub bound to another commit, and after a comment that owes nothing dismisses the council's own earlier
+  change request (never a human's). A guard that fails stays pending and `post` exits 1; run the same `--post` again
+  to resume it. After a crash, the next `--post` first adopts the review that landed (even when the head moved or
+  the PR closed since) and runs its guards. A round started with `--dry-run` never posts.
 - `credit <owner/repo#num> <review-id> [--note <text>]` counts an unmarked review you vouch for as a council round
   at its own head and time (plan 3.6 step 4). A review that starts with a council or identity marker is refused:
   the marker rules decide those.
@@ -138,8 +142,8 @@ sabotage-council post <id> --post --expect <sha256>      # pr: post that review,
 The Claude Code plugin in [plugin/](plugin/) runs this loop from a session: `/sabotage-council:council plan
 <file>`, `diff` or `pr <owner/repo#num>`, then the session adjudicates by
 [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md). For a PR it then shows you the review `post --dry-run` renders, and
-posts only when you say so in your next message, with `--expect` set to that review's hash: a review that changed
-since waits for a new go. The plugin pre-approves only the read-only commands and
+posts only when you say so in your next message, with `--expect` set to that review's hash (its event and its
+body): a review that changed since waits for a new go. The plugin pre-approves only the read-only commands and
 `adjudicate`: Claude Code asks you to approve every `round start` and every `post`, since a round costs money, a
 review is public, and the session reads the legs' untrusted answers.
 

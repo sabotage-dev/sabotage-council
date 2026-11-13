@@ -361,9 +361,13 @@ commit status (which names no app), leaves it pending (P6 round 1 row 11).
 
 **Guards:**
 - **Head moved.** Re-check the head before posting, and again right before the POST, after the CI and identity
-  reads (P6 round 1 row 5). If it moved, the round is `superseded` and nothing posts. A review GitHub binds to
-  another commit than the reviewed head is withdrawn whatever its event (a comment cannot be dismissed on GitHub and
-  sets no standing, so that guard notes it).
+  reads (P6 round 1 row 5). If it moved, the round is `superseded` and nothing posts. That last read keeps the whole
+  pull request (P6 round 2 row 2): a PR closed since the post began posts nothing, and an identity round rendered on
+  the default branch whose base has moved off it posts nothing, with a refusal that points to a new dry run (which
+  renders the held review that applies on the new base). A review GitHub binds to another commit than the reviewed
+  head is withdrawn whatever its event (a comment cannot be dismissed on GitHub and sets no standing, so that guard
+  notes it); the posted state and that withdrawal are recorded in one transaction, so a crash cannot keep one
+  without the other (P6 round 2 row 1).
 - **Approval race.** After an APPROVE, re-read the PR. If the head moved during the call, or any submitted review the
   pre-post read did not see landed and it is not a counted council review of this PR by 3.6's rules (an allowlisted
   login, a marker naming this PR, no sha that disagrees with its `commit_id`), dismiss our approval; a failed
@@ -375,12 +379,18 @@ commit status (which names no app), leaves it pending (P6 round 1 row 11).
   and the stale change request keeps the PR blocked until the user rules (N11, decided stricter than "owed is 0").
 - **One review per round.** `post --post` claims the round in the store, in one IMMEDIATE transaction, before any
   network call; a second `post` on a claimed round is refused, and a claim whose process is gone (or that is older
-  than an hour) is taken over (P6 round 1 row 9). A round that posted refuses a second post. A post records its
-  intent (event, body, body hash, the reviews it saw) before the POST; if that POST was interrupted, the next `post`
-  first looks for a review of ours with this round's marker on this head, with the body and event the intent
-  recorded, that no other round of the store has stored, and adopts it; more than one such review refuses; else it
-  re-posts only the same body (9.4, P6 round 1 row 4). A marker review on the head without that intent is another
-  council's (the same round number, 3.6), not ours.
+  than an hour) is taken over (P6 round 1 row 9). The transaction that records the intent checks that the claim is
+  still this process's: a post whose claim was taken over while it ran records nothing and posts nothing (P6 round 2
+  row 4). A round that posted refuses a second post. A post records its intent (event, body, body hash, the reviews
+  it saw) before the POST; if that POST was interrupted, the next `post` first looks for a review of ours with this
+  round's marker, with the body and event the intent recorded, that no other round of the store has stored, and
+  adopts it, wherever GitHub bound it (one bound to another commit than the reviewed head is adopted with its
+  withdrawal owed); more than one such review refuses; else it re-posts only the same body (9.4, P6 round 1 row 4).
+  A dismissed review's event is unknown, so only its body is matched, and only for an APPROVE or REQUEST_CHANGES
+  intent: GitHub dismisses no comment (P6 round 2 row 5). This reconciliation runs before the head and the state are
+  judged: an interrupted post is adopted, and its guards run, even when the head has moved or the PR has closed
+  since; only then does a moved head supersede the round or a closed PR end the call (P6 round 2 row 1). A marker
+  review without that intent is another council's (the same round number, 3.6), not ours.
 - **Guards survive a crash or a failed call.** The guards a post owes (the approval race for an APPROVE, the
   dismissal of each stale change request of ours) are recorded as pending with the intent, before the POST; each is
   marked done once it ran, and a failed call leaves it pending with why. The next `post` resumes the pending ones,
@@ -409,13 +419,16 @@ the first line, the body's own sections exactly and in order (with "Ruling neede
 other line that opens a heading, an underline or a fence, the owed count on the verdict line and in the fix table,
 and the size; a body that fails is not posted. Long lists are cut, with a count of the rest, until the body fits.
 
-The post step is `sabotage-council post <round> --dry-run | --post [--expect <sha256>]` (7.1 step 5). Both first
-check that `gh` is logged in as `github.login` (row 10). `--dry-run` re-reads the PR, maps the event, renders and
-validates the body, prints both with the body's sha256, and posts nothing. `--post` does the same, then posts only
-what a dry run showed the user: the fresh render's event and body hash must equal those of the round's dry run that
-`--expect` names, or else its latest; otherwise it refuses, records why and prints the new render, which posts only
-after a new dry run and a new go (P6 round 1 row 8). It then posts one review with `commit_id` = the reviewed head,
-and runs the guards. A round started with `round start pr --dry-run` can never post.
+The post step is `sabotage-council post <round> --dry-run | --post [--expect <review sha256>]` (7.1 step 5). Both
+first check that `gh` is logged in as `github.login` (row 10). `--dry-run` re-reads the PR, maps the event, renders
+and validates the body, prints both with the body's sha256 and the review sha256 (the sha256 of the event, a newline
+and the body), and posts nothing. `--post` does the same, then posts only what a dry run showed the user: with
+`--expect`, the fresh render's review sha256 must equal it and a dry run of the round must have printed it, so one
+go never sends another event with the same body (a CI-red REQUEST_CHANGES and its COMMENT twin share a body; P6
+round 2 row 3); without it, the fresh event and body hash must equal the latest dry run's. Otherwise it refuses,
+records why and prints the new render, which posts only after a new dry run and a new go (P6 round 1 row 8). It then
+posts one review with `commit_id` = the reviewed head, and runs the guards. A round started with
+`round start pr --dry-run` can never post.
 
 ### 3.8 Needs-ruling and holds
 
@@ -1378,12 +1391,15 @@ evidence rows behind the flag. It never swaps a seat by itself.
 Built in P6 as two commands, since the post comes after the adjudication: `round start pr <target> [--dry-run]
 [--no-identity]` prepares the round (or takes the identity path), and `post <round> --dry-run | --post` renders or
 posts its review (3.7). A round started with `--dry-run` never posts, and a closed or merged PR takes only
-`--dry-run`. `post --post` sends only the review a dry run of the round showed the user (`--expect <sha256>` names
-it; P6 round 1 row 8). `round start pr` reads the PR through the user's `gh` login, which must be the `github.login`
-account (`gh api user`, checked before a round is prepared and before a post; P6 round 1 row 10). The engine never
-reads, stores or logs the token: the mirror's fetch runs `gh auth git-credential` as git's only credential helper in
-the same environment as the API calls, so a setup that authenticates `gh` only by `GH_TOKEN` can fetch a private
-repository, and the token reaches git's environment only for that helper (P6 round 1 row 7). It fails
+`--dry-run`. `post --post` sends only the review a dry run of the round showed the user (`--expect <review sha256>`
+names it, one hash of its event and its body; P6 round 1 row 8, round 2 row 3); the PR closing, or an identity
+round's base leaving the default branch, between the CI read and the POST posts nothing (round 2 row 2), and an
+interrupted post is reconciled before a moved head or a close ends the call (round 2 row 1). `round start pr` reads
+the PR through the user's `gh` login, which must be the `github.login` account (`gh api user`, checked before a
+round is prepared and before a post; P6 round 1 row 10). The engine never reads, stores or logs the token: the
+mirror's fetch runs `gh auth git-credential` as git's only credential helper in the same environment as the API
+calls, so a setup that authenticates `gh` only by `GH_TOKEN` can fetch a private repository, and the token reaches
+git's environment only for that helper (P6 round 1 row 7). It fails
 closed on any read that fails, stops when GitHub's changed-file list differs from the files the fetched base and head
 change (the root would not hold the change GitHub shows; a list at GitHub's 3,000-file limit is not checked), and
 refuses an author without write access unless `pr.interactive_adjudication =
