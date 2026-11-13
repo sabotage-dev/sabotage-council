@@ -1,0 +1,16 @@
+{
+  "name": "sabotage-council",
+  "owner": {
+    "name": "Sabotage Development LLC"
+  },
+  "metadata": {
+    "description": "The sabotage-council Claude Code plugin: a three-seat review council for plans and diffs."
+  },
+  "plugins": [
+    {
+      "name": "sabotage-council",
+      "source": "./plugin",
+      "description": "Run a three-seat review council on a plan or a diff from Claude Code, and adjudicate it in your session."
+    }
+  ]
+}
