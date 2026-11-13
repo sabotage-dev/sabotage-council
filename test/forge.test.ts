@@ -381,7 +381,10 @@ describe('the review body (plan 3.7)', () => {
     const many = Array.from({ length: 400 }, (_, i) => `item ${i} ${'y'.repeat(380)}`);
     const body = renderBody(councilBody({ adjudication: adjudication({ not_verified: many }) }), RULES);
     expect(Buffer.byteLength(body)).toBeLessThanOrEqual(BODY_MAX_BYTES);
-    expect(body).toMatch(/- \(\d+ more in the round record\)/);
+    // Cut as little as fits: 50 of 400 fit, so the first 50 stay and the rest are counted.
+    expect(body).toContain('- item 49 ');
+    expect(body).not.toContain('- item 50 ');
+    expect(body).toContain('- (350 more in the round record)');
     expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1 })).toEqual([]);
   });
 });
