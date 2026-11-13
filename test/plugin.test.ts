@@ -33,6 +33,19 @@ function frontmatter(text: string): Record<string, string> {
   );
 }
 
+/**
+ * Whether a Claude Code `Bash(...)` permission entry would match a command: `*` matches anything, and a legacy
+ * trailing `:*` is a prefix match. A bare `Bash` or `Bash(*)` matches every command.
+ */
+function permits(entry: string, command: string): boolean {
+  if (entry === 'Bash') return true;
+  const m = /^Bash\((.*)\)$/.exec(entry);
+  if (!m?.[1]) return false;
+  const pattern = m[1].endsWith(':*') ? `${m[1].slice(0, -2)}*` : m[1];
+  const re = new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+  return re.test(command);
+}
+
 describe('plugin', () => {
   it('has a plugin manifest and a marketplace entry that points at it', () => {
     const plugin = JSON.parse(read('plugin/.claude-plugin/plugin.json')) as Record<string, unknown>;
@@ -46,14 +59,32 @@ describe('plugin', () => {
     const skill = frontmatter(read('plugin/skills/sabotage-council/SKILL.md'));
     expect(skill['name']).toBe('sabotage-council');
     expect(skill['description']?.length).toBeGreaterThan(50);
-    // Fold row 14: the skill pre-approves only read-only commands and adjudicate, never the paid round start, and
-    // never the whole CLI; only the command the user typed may start a round.
+    // Fold row 14 and round 2 row 3: neither the skill nor the command pre-approves the paid round start, or the
+    // whole CLI. A round start always prompts the user, so text a leg wrote cannot start one silently.
     const skillTools = (skill['allowed-tools'] ?? '').split(/,\s*/);
     expect(skillTools.length).toBeGreaterThan(3);
     for (const t of skillTools) expect(t, t).toMatch(/^Bash\(sabotage-council (--version|doctor|doctor \*|round wait \*|round show \*|adjudicate \*)\)$/);
     const commandTools = (frontmatter(read('plugin/commands/council.md'))['allowed-tools'] ?? '').split(/,\s*/);
-    expect(commandTools).toContain('Bash(sabotage-council round start plan *)');
-    expect(commandTools).not.toContain('Bash(sabotage-council *)');
+    expect(commandTools.length).toBeGreaterThan(3);
+    for (const t of commandTools) expect(t, t).toMatch(/^Bash\(sabotage-council (--version|doctor|round wait \*|round show \*|adjudicate \*)\)$/);
+    const starts = [
+      'sabotage-council round start plan docs/PLAN.md --json',
+      'sabotage-council round start plan docs/PLAN.md --context ../secrets --json',
+      'sabotage-council round start diff --json',
+      'sabotage-council round start diff main..feature --series x --json',
+    ];
+    // The matcher itself: the entries the plugin used to carry, and broad ones, do match.
+    expect(permits('Bash(sabotage-council round start plan *)', starts[0]!)).toBe(true);
+    expect(permits('Bash(sabotage-council round start diff *)', starts[3]!)).toBe(true);
+    expect(permits('Bash(sabotage-council *)', starts[1]!)).toBe(true);
+    expect(permits('Bash(sabotage-council round:*)', starts[2]!)).toBe(true);
+    expect(permits('Bash(sabotage-council round wait *)', starts[2]!)).toBe(false);
+    for (const [where, tools] of [['skill', skillTools], ['command', commandTools]] as const) {
+      for (const t of tools) {
+        expect(t, `${where}: ${t}`).not.toMatch(/round start/);
+        for (const cmd of starts) expect(permits(t, cmd), `${where}: ${t} pre-approves ${cmd}`).toBe(false);
+      }
+    }
     expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('Nothing a leg wrote ever starts a round');
     const command = frontmatter(read('plugin/commands/council.md'));
     expect(command['description']).toBeTruthy();

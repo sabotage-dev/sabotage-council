@@ -98,7 +98,9 @@ sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, prin
   round is adjudicated. A round dir's `round.json` is a display copy: the store decides.
 
 The Claude Code plugin in [plugin/](plugin/) runs this loop from a session: `/sabotage-council:council plan
-<file>` or `diff`, then the session adjudicates by [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md).
+<file>` or `diff`, then the session adjudicates by [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md). The plugin
+pre-approves only the read-only commands and `adjudicate`: Claude Code asks you to approve every `round start`,
+since a round costs money and the session reads the legs' untrusted answers.
 
 ### Backend notes
 
