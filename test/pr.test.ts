@@ -829,6 +829,47 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
     const held = post(w, id, 'dry-run');
     expect([held.event, held.row]).toEqual(['COMMENT', 8]);
     expect(held.body).toContain('a change request by alice (review 7302) came after this round was prepared, so its asks were never adjudicated: re-run the round');
+    // That comment owes nothing, but the round's view is not final: our own stale change request is not dismissed.
+    jsonList(routes, `GET ${API_PULL}/reviews`).push({ id: 7303, user: { login: 'repo-owner' }, state: 'CHANGES_REQUESTED', commit_id: w.src.shas['C7'], submitted_at: '2026-11-12T19:00:00Z', body: `sabotage-council round 3 on sabotage-dev/sabotage-council#2 at ${w.src.shas['C7']!.slice(0, 7)}` });
+    w.gh.setRoutes(routes);
+    expect(post(w, id, 'dry-run').guards).toEqual([]);
+  }, 60_000);
+
+  it('row 12: an identity round is held only by a change request it never saw, not by one that stood when it was prepared', async () => {
+    const w = await world((r, src) => {
+      reopen(r);
+      Object.assign(json(r, `GET ${API_PULL}`), { user: { login: 'someone' } });
+      r['GET repos/sabotage-dev/sabotage-council/collaborators/someone/permission'] = { json: { permission: 'write' } };
+      r['GET search/issues'] = { json: { items: [{ number: 9 }] } };
+      r['GET repos/sabotage-dev/sabotage-council/pulls/9/reviews'] = { json: [{ id: 9101, user: { login: 'repo-owner' }, state: 'APPROVED', commit_id: src.shas['C6'], submitted_at: 'x', body: 'ok' }] };
+      const tree = git(src.repo, ['rev-parse', `${src.shas['C7']!}^{tree}`]);
+      r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C6']!}`] = { json: { tree: { sha: tree } } };
+      r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C7']!}`] = { json: { tree: { sha: tree } } };
+      // Alice's change request stands when the identity round is prepared: plan 3.10 does not hold on it.
+      jsonList(r, `GET ${API_PULL}/reviews`).push({ id: 9301, user: { login: 'alice' }, state: 'CHANGES_REQUESTED', commit_id: src.shas['C6'], submitted_at: '2026-11-12T19:00:00Z', body: 'Hm.' });
+    });
+    const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
+    if (r.kind !== 'identity') throw new Error('expected the identity path');
+    const p = post(w, r.roundId, 'dry-run');
+    expect([p.event, p.row]).toEqual(['APPROVE', 3]);
+  }, 60_000);
+
+  it('row 8: an event that changed with the same body (auto.ci_red_event) is refused too', async () => {
+    const w = await world((r, src) => {
+      approvable(r, src);
+      const pr = ((json(r, 'graphql')['data'] as Json)['repository'] as Json)['pullRequest'] as Json;
+      const rollup = (((pr['commits'] as Json)['nodes'] as Json[])[0]!['commit'] as Json)['statusCheckRollup'] as Json;
+      (((rollup['contexts'] as Json)['nodes'] as Json[])[0] as Json)['conclusion'] = 'FAILURE';
+    }, await config('[github]\nlogin = "repo-owner"\n[auto]\nci_gate = "all"\n'));
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    const shown = post(w, id, 'dry-run');
+    expect([shown.event, shown.row]).toEqual(['REQUEST_CHANGES', 7]);
+    const asComment = await config('[github]\nlogin = "repo-owner"\n[auto]\nci_gate = "all"\nci_red_event = "COMMENT"\n');
+    for (const expect_ of [undefined, shown.bodySha256!]) {
+      const p = postRound(w.h.store, { ...postOptions(w, id, 'post'), config: asComment, expect: expect_ });
+      expect([p.outcome, p.event, p.bodySha256]).toEqual(['refused', 'COMMENT', shown.bodySha256]);
+    }
+    expect(postsSent(w)).toEqual([]);
   }, 60_000);
 
   it("row 3: a stranger's marker-shaped review and our own pending draft submitted meanwhile both withdraw the approval; a counted council review does not", async () => {
