@@ -149,10 +149,10 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       }
       if (options.deep === true) {
         const deep = await deepCheck(occupantsOf(seats), cleanOk, options, legDir, tmp);
-        for (const { name, result } of deep) {
-          const status: Status = result.verdict === 'loads' ? 'fail' : result.verdict === 'refused' || result.verdict === 'isolated' ? 'ok' : 'warn';
-          line(status, `${name}: ${result.verdict}: ${result.detail}`);
-        }
+        // Only a load dump that lists nothing from the planted root passes; every other verdict fails the exit.
+        for (const { name, result } of deep) line(result.verdict === 'isolated' ? 'ok' : 'fail', `${name}: ${result.verdict}: ${result.detail}`);
+        const proven = deep.filter((d) => d.result.verdict === 'isolated').length;
+        options.write(`        ${proven} of ${deep.length} occupant(s) proven isolated by their own load dump`);
       }
     } finally {
       rmSync(tmp, { recursive: true, force: true });
@@ -185,18 +185,19 @@ async function deepCheck(
   legDir: () => string,
   tmp: string,
 ): Promise<Array<{ name: string; result: DeepResult }>> {
-  options.write('deep (canary root with planted hooks, rules and MCP config for every backend, top level and nested):');
-  const root = join(tmp, 'canary-root');
-  const markers = join(tmp, 'canary-markers');
-  mkdirSync(root);
-  mkdirSync(markers);
-  const planted = plantCanaryRoot(root, markers);
-  options.write(`        planted ${planted.length} files; markers in ${markers}`);
+  options.write('deep (a fresh canary root per occupant with planted hooks, rules and MCP config for every backend, top level and nested):');
   const out: Array<{ name: string; result: DeepResult }> = [];
   for (const [i, { label, o }] of occupants.entries()) {
     const adapter = options.adapters?.(o.backend);
     const name = `${label}  ${o.backend}`;
     if (!adapter) continue;
+    // Its own root and markers dir: no marker another occupant left can hide a repeat execution.
+    const base = join(tmp, `canary-${i}`);
+    const root = join(base, 'canary-root');
+    const markers = join(base, 'canary-markers');
+    mkdirSync(root, { recursive: true });
+    const planted = plantCanaryRoot(root, markers, `${label}-${o.backend}`.replace(/[^\w.-]/g, '_'));
+    if (i === 0) options.write(`        planted ${planted.length} files per occupant`);
     const before = new Set(markersIn(markers));
     let pre: Preflight | null = null;
     let error: string | null = null;

@@ -121,7 +121,8 @@ export function parseGrokInspect(text: string, root: string): GrokInspect {
     return out;
   }
   const aliases = rootAliases(root);
-  const inRoot = (p: string | null): boolean => p !== null && p.startsWith('/') && underRoot(p.replace(/\/+$/, ''), aliases);
+  // A relative path is relative to the cwd, which is the root (round 1 row 7, grok F7).
+  const inRoot = (p: string | null): boolean => p !== null && p !== '' && underRoot(resolve(root, p).replace(/\/+$/, ''), aliases);
   out.instructions = (list('projectInstructions') ?? []).map(label);
   out.hooks = (list('hooks') ?? []).map((h) => (isObject(h) ? `${str(h['event']) ?? '?'} ${label(h['source'])}` : String(h)));
   out.plugins = (list('plugins') ?? []).map(label);
@@ -152,6 +153,7 @@ export async function grokPreflight(o: Occupant, options: GrokPreflightOptions):
   const files = grokLegFiles(options.legDir);
   const { grokHome, route } = legGrokHome(options.env, files, o.authHome);
   let loaded: string[] = [];
+  let dumped: string | null = null;
   let mcpListed = false;
   const result = (ok: boolean, failureClass: FailureClass | null, reason: string | null, cliVersion: string | null, data: Record<string, unknown> = {}): Preflight => ({
     ok,
@@ -162,7 +164,7 @@ export async function grokPreflight(o: Occupant, options: GrokPreflightOptions):
     userOwned,
     failureClass,
     reason,
-    data: { sandbox, route, grokHome, loaded, ...data },
+    data: { sandbox, route, grokHome, loaded, dumped, ...data },
   });
   const fail = (name: string, detail: string): void => {
     checks.push({ name, status: 'fail', detail });
@@ -258,6 +260,7 @@ export async function grokPreflight(o: Occupant, options: GrokPreflightOptions):
     return result(false, 'setup', inspect.problem, cliVersion);
   }
   loaded = inspect.fromRoot;
+  dumped = 'grok inspect --json: instructions, hooks, plugins, permission sources, MCP servers and config layers';
   mcpListed = inspect.mcpServers.length > 0;
   const problems = [
     ...(inspect.instructions.length > 0 ? [`instructions ${inspect.instructions.join(', ')}`] : []),

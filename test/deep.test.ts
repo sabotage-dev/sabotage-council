@@ -107,20 +107,37 @@ describe('the canary root', () => {
       '.cursor/cli.json',
       '.muse/hooks.json',
       '.agents/memory/MEMORY.md',
+      '.cursorrules',
     ]) {
       expect(planted, rel).toContain(rel);
       expect(planted, `sub/${rel}`).toContain(`sub/${rel}`);
     }
-    // Every planted hook writes its own marker outside the root when something runs it.
-    const settings = JSON.parse(readFileSync(join(root, '.claude', 'settings.json'), 'utf8')) as { hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> } };
-    execFileSync('/bin/sh', ['-c', settings.hooks.SessionStart[0]?.hooks[0]?.command ?? '']);
-    expect(readdirSync(markers)).toEqual(['claude-hook-top']);
+    // Every planted hook event writes its own marker outside the root when something runs it (codex F3).
+    const settings = JSON.parse(readFileSync(join(root, '.claude', 'settings.json'), 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'PreToolUse']) execFileSync('/bin/sh', ['-c', settings.hooks[event]?.[0]?.hooks[0]?.command ?? '']);
+    expect(readdirSync(markers)).toEqual(['canary.claude-settings.PreToolUse.top', 'canary.claude-settings.SessionStart.top', 'canary.claude-settings.UserPromptSubmit.top']);
+  });
+
+  it('names every marker uniquely, per file, entry, level and owner', () => {
+    const root = join(dir, 'root2');
+    const markers = join(dir, 'markers2');
+    plantCanaryRoot(root, markers, 'a-grok');
+    const names: string[] = [];
+    for (const rel of execFileSync('find', [root, '-type', 'f']).toString().trim().split('\n')) {
+      for (const m of readFileSync(rel, 'utf8').matchAll(/markers2\/([\w.-]+)/g)) names.push(m[1] ?? '');
+    }
+    expect(names.length).toBeGreaterThan(30);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names.every((n) => n.startsWith('a-grok.'))).toBe(true);
   });
 
   it.each([
-    ['a marker that appeared', okPre('claude'), ['claude-hook-top'], 'loads'],
-    ['a planted file in its own dump', okPre('grok', { ok: false, failureClass: 'setup', reason: 'grok would load x', data: { loaded: ['MCP server planted'] } }), [], 'loads'],
-    ['a refusal of the unsanitized root', okPre('kiro', { ok: false, failureClass: 'setup', reason: 'root not sanitized' }), [], 'refused'],
+    ['a marker that appeared', okPre('claude'), ['a-claude.claude-settings.SessionStart.top'], 'loads'],
+    ['a planted file in its own dump', okPre('grok', { ok: false, failureClass: 'setup', reason: 'grok would load x', data: { loaded: ['MCP server planted'], dumped: 'grok inspect' } }), [], 'loads'],
+    ['a refusal of the unsanitized root by filename', okPre('kiro', { ok: false, failureClass: 'setup', reason: 'root not sanitized' }), [], 'refused'],
+    ['a dump that lists nothing from the root, then a filename refusal', okPre('opencode', { ok: false, failureClass: 'setup', reason: 'root not sanitized', data: { loaded: [], dumped: 'opencode debug config' } }), [], 'isolated'],
+    ['a pass with a dump that lists nothing', okPre('codex', { data: { dumped: 'codex debug prompt-input' } }), [], 'isolated'],
+    ['a dump that lists nothing, but a marker appeared', okPre('codex', { data: { dumped: 'codex debug prompt-input' } }), ['b-codex.codex-config.mcp.top'], 'loads'],
     ['a pass with no dump', okPre('claude'), [], 'unproven'],
     ['a sign-in failure', okPre('kiro', { ok: false, failureClass: 'auth', reason: 'kiro is not signed in' }), [], 'unchecked'],
   ])('judges %s', (_what, pre, markers, verdict) => {
@@ -151,24 +168,45 @@ describe('doctor --deep: fails any backend that loads a planted hook', () => {
     const { code, lines } = await doctor(adapters);
     expect(code).toBe(1);
     const deep = lines.slice(lines.findIndex((l) => l.startsWith('deep (')));
-    expect(deep.find((l) => l.includes('a  claude'))).toMatch(/^fail .*loads: executed planted code during preflight: claude-hook-top/);
+    expect(deep.find((l) => l.includes('a  claude'))).toMatch(/^fail .*loads: executed planted code during preflight: a-claude\.claude-settings\.SessionStart\.top/);
     expect(deep.find((l) => l.includes('b  codex'))).toMatch(/^fail .*loads: its own isolation dump lists planted files: repository AGENTS.md instructions/);
-    expect(deep.find((l) => l.includes('c  kiro'))).toMatch(/^ok .*refused: refused the planted root at preflight: root not sanitized/);
+    // A refusal by filename is not a proof of isolation (claude F8): it fails the exit.
+    expect(deep.find((l) => l.includes('c  kiro'))).toMatch(/^fail .*refused: refused the planted root at preflight \(root not sanitized\), by a check that is not a load dump/);
   });
 
-  it('passes when every backend refuses or isolates, warning on the unproven ones', async () => {
+  it('a repeated execution cannot hide behind a marker another occupant left (codex F3)', async () => {
+    config([
+      ['a', 'claude', 'claude-sonnet-5-5'],
+      ['b', 'claude', 'claude-opus-5'],
+      ['c', 'kiro', 'claude-sonnet-4.5'],
+    ]);
+    const { lines } = await doctor((backend) => (backend === 'claude' ? stub('claude', runsPlantedHook) : stub(backend, () => okPre(backend, { data: { dumped: 'a dump' } }))));
+    const deep = lines.slice(lines.findIndex((l) => l.startsWith('deep (')));
+    expect(deep.find((l) => l.includes('a  claude'))).toMatch(/^fail .*loads: .*a-claude\.claude-settings\.SessionStart\.top/);
+    expect(deep.find((l) => l.includes('b  claude'))).toMatch(/^fail .*loads: .*b-claude\.claude-settings\.SessionStart\.top/);
+  });
+
+  it('exits 0 only when every occupant is proven isolated by its own load dump', async () => {
     config([
       ['a', 'claude', 'claude-sonnet-5-5'],
       ['b', 'kiro', 'claude-sonnet-4.5'],
       ['c', 'muse', 'muse-spark-1.3'],
     ]);
-    const adapters: SeatAdapters = (backend) => (backend === 'kiro' ? stub('kiro', () => okPre('kiro', { ok: false, failureClass: 'setup', reason: 'root not sanitized' })) : stub(backend, () => okPre(backend)));
-    const plain = await doctor(adapters, false);
+    const dumps: SeatAdapters = (backend) => stub(backend, () => okPre(backend, { data: { loaded: [], dumped: `${backend} dump` } }));
+    const plain = await doctor(dumps, false);
     expect(plain.lines.some((l) => l.startsWith('deep ('))).toBe(false);
+    const proven = await doctor(dumps);
+    expect(proven.code).toBe(0);
+    expect(proven.lines.filter((l) => l.includes(': isolated: ')).every((l) => l.startsWith('ok '))).toBe(true);
+    expect(proven.lines).toContain('        3 of 3 occupant(s) proven isolated by their own load dump');
+    const adapters: SeatAdapters = (backend) =>
+      backend === 'kiro' ? stub('kiro', (ctx) => (existsSync(join(ctx.root, 'AGENTS.md')) ? okPre('kiro', { ok: false, failureClass: 'setup', reason: 'root not sanitized' }) : okPre('kiro'))) : stub(backend, () => okPre(backend));
     const { code, lines } = await doctor(adapters);
-    expect(code).toBe(0);
+    expect(code).toBe(1);
     expect(lines.filter((l) => / (?:loads):/.test(l))).toEqual([]);
-    expect(lines.find((l) => l.includes('a  claude: unproven'))).toMatch(/^warn /);
+    expect(lines.find((l) => l.includes('a  claude: unproven'))).toMatch(/^fail /);
+    expect(lines.find((l) => l.includes('b  kiro: refused'))).toMatch(/^fail /);
+    expect(lines).toContain('        0 of 3 occupant(s) proven isolated by their own load dump');
   });
 
   it('runs the real grok preflight on the canary root: grok inspect lists the planted MCP config, so grok fails', async () => {
@@ -195,7 +233,7 @@ describe('doctor --deep: fails any backend that loads a planted hook', () => {
     expect(line).toContain('project config');
   });
 
-  it('runs the real opencode preflight on the canary root: it refuses the unsanitized root before starting a server', async () => {
+  it('runs the real opencode preflight on the canary root: its config dump lists nothing from it, then it refuses the root', async () => {
     config([
       ['a', 'opencode', 'opencode/big-pickle'],
       ['b', 'claude', 'claude-sonnet-5-5'],
@@ -210,7 +248,6 @@ describe('doctor --deep: fails any backend that loads a planted hook', () => {
       'mcp list --standalone': () => 'No MCP servers configured\n',
       'plugin list --standalone': () => 'No plugins found\n',
       'models --standalone': () => 'opencode/big-pickle\n',
-      'auth list --format json': () => '[]',
     };
     const runner: CommandRunner = async (_b, args, o) => {
       calls.push({ cwd: o.cwd, args: [...args] });
@@ -218,10 +255,14 @@ describe('doctor --deep: fails any backend that loads a planted hook', () => {
     };
     const adapters: SeatAdapters = (backend) => (backend === 'opencode' ? createOpencodeAdapter({ runner, bin: 'opencode' }) : stub(backend, () => okPre(backend)));
     const { lines } = await doctor(adapters);
-    expect(lines.find((l) => l.includes('a  opencode: refused'))).toMatch(/^ok .*root not sanitized/);
-    // On the canary root only --version ran: no opencode server ever saw the planted plugin or config.
-    expect(calls.filter((c) => c.cwd.endsWith('canary-root')).map((c) => c.args.join(' '))).toEqual(['--version']);
-    expect(calls.some((c) => c.args.includes('--standalone'))).toBe(true);
+    // The load dump runs before the filename scan, so the verdict is opencode's own: nothing from the root loads.
+    expect(lines.find((l) => l.includes('a  opencode: isolated'))).toMatch(/^ok .*opencode debug config/);
+    expect(calls.filter((c) => c.cwd.endsWith('canary-root')).map((c) => c.args.join(' '))).toEqual(['--version', 'debug config --standalone']);
+    // A config source the dump names by a relative path is resolved against the root (grok F7).
+    outputs['debug config --standalone'] = (env) => JSON.stringify([{ type: 'directory', path: `${env['XDG_CONFIG_HOME'] ?? ''}/opencode` }, { type: 'document', info: opencodeConfig() }, { type: 'file', path: 'opencode.json' }]);
+    const again = await doctor(adapters);
+    expect(again.code).toBe(1);
+    expect(again.lines.find((l) => l.includes('a  opencode: loads'))).toMatch(/^fail .*config opencode\.json/);
   });
 });
 

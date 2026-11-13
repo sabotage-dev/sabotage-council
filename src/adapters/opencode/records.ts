@@ -17,6 +17,8 @@ import { isObject, num, str } from '../acp/policy.js';
 type Json = Record<string, unknown>;
 
 export interface OpencodeTool {
+  /** The call id, the same id the ACP log carries. */
+  id: string | null;
   name: string;
   status: string | null;
   input: Json;
@@ -57,6 +59,7 @@ function toolOf(v: unknown, source: OpencodeTool['source']): OpencodeTool | null
   if (!isObject(v) || str(v['type']) !== 'tool') return null;
   const state = isObject(v['state']) ? v['state'] : {};
   return {
+    id: str(v['id']) ?? str(v['callID']),
     name: str(v['name']) ?? str(v['tool']) ?? '',
     status: str(state['status']),
     input: isObject(state['input']) ? state['input'] : {},

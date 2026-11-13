@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 import type { FailureClass } from '../../config/vocab.js';
 import type { CommandRunner } from '../../transport/headless.js';
@@ -15,6 +16,7 @@ import {
   opencodeConfig,
   opencodeDecl,
   splitModel,
+  offeredTools,
   type Rule,
 } from './known.js';
 import { opencodeEnv, opencodeLegFiles, prepareOpencodeDirs } from './launch.js';
@@ -100,22 +102,23 @@ export function judgeConfigSources(text: string, configDir: string, root: string
     }
     const name = path ?? `${String(type)} ${JSON.stringify(isObject(s) ? (s['info'] ?? s) : s).slice(0, 160)}`;
     out.extra.push(`${String(type)} ${name}`);
-    if (path !== null && path.startsWith('/') && underRoot(path.replace(/\/+$/, ''), aliases)) out.fromRoot.push(`config ${path}`);
+    // A relative path is relative to the cwd, which is the root (round 1 row 7).
+    if (path !== null && path !== '' && underRoot(resolve(root, path).replace(/\/+$/, ''), aliases)) out.fromRoot.push(`config ${path}`);
   }
   return out;
 }
 
-/** The council agent's rules from `debug agents`, judged action by action. */
-export function judgeCouncilAgent(text: string): { found: boolean; problems: string[]; problem: string | null } {
+/** The council agent's rules from `debug agents`, judged action by action, and the tools it is offered. */
+export function judgeCouncilAgent(text: string): { found: boolean; problems: string[]; problem: string | null; offered: string[] } {
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch {
-    return { found: false, problems: [], problem: 'debug agents did not print JSON' };
+    return { found: false, problems: [], problem: 'debug agents did not print JSON', offered: [] };
   }
   const agents = Array.isArray(raw) ? raw : [];
   const council = agents.find((a) => isObject(a) && str(a['id']) === OPENCODE_AGENT);
-  if (!isObject(council)) return { found: false, problems: [], problem: `no ${OPENCODE_AGENT} agent in debug agents` };
+  if (!isObject(council)) return { found: false, problems: [], problem: `no ${OPENCODE_AGENT} agent in debug agents`, offered: [] };
   const rules: Rule[] = Array.isArray(council['permissions'])
     ? council['permissions'].filter(isObject).map((r) => ({ action: String(r['action']), resource: String(r['resource']), effect: String(r['effect']) }))
     : [];
@@ -128,7 +131,7 @@ export function judgeCouncilAgent(text: string): { found: boolean; problems: str
     const effect = evaluateRules(rules, action, '*');
     if (effect !== 'allow') problems.push(`${action} is ${effect}, not allow`);
   }
-  return { found: true, problems, problem: null };
+  return { found: true, problems, problem: null, offered: offeredTools(rules) };
 }
 
 const ROOT_AGENT_CONFIG = /^(?:\.opencode|opencode\.jsonc?|AGENTS.*\.md|CONTEXT\.md|\.claude)$/i;
@@ -139,6 +142,9 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
   const timeoutMs = options.timeoutMs ?? 60_000;
   const files = opencodeLegFiles(options.legDir);
   let loaded: string[] = [];
+  let offer: string[] | null = null;
+  let mcpServers: string[] | null = null;
+  let dumped: string | null = null;
   const result = (ok: boolean, failureClass: FailureClass | null, reason: string | null, cliVersion: string | null, data: Record<string, unknown> = {}): Preflight => ({
     ok,
     backend: 'opencode',
@@ -148,7 +154,7 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
     userOwned,
     failureClass,
     reason,
-    data: { db: files.db, loaded, ...data },
+    data: { db: files.db, loaded, offer, mcp: mcpServers, dumped, ...data },
   });
   const fail = (name: string, detail: string): void => {
     checks.push({ name, status: 'fail', detail });
@@ -188,15 +194,17 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
     fail('isolation', `a planted config is passed in OPENCODE_CONFIG (${files.planted}); a leg passes none`);
     return result(false, 'setup', 'planted config', cliVersion);
   }
-  const planted = existsSync(options.root) ? readdirSync(options.root).filter((n) => ROOT_AGENT_CONFIG.test(n)) : [];
-  if (planted.length > 0) {
-    fail('isolation', `the root holds agent config the sanitizer should have moved: ${planted.join(', ')}`);
-    return result(false, 'setup', 'root not sanitized', cliVersion);
-  }
-
+  // The load dump runs before the filename scan, so `doctor --deep` sees what opencode itself loads from a planted
+  // root (a planted plugin that runs leaves a marker) rather than a refusal by filename (round 1 row 7).
   const config = await run(['debug', 'config', '--standalone']);
   const sources = judgeConfigSources(config.stdout, files.config, options.root);
   loaded = sources.fromRoot;
+  if (sources.problem === null) dumped = 'opencode debug config: its config sources (instructions files are checked per leg from its database)';
+  const planted = existsSync(options.root) ? readdirSync(options.root).filter((n) => ROOT_AGENT_CONFIG.test(n)) : [];
+  if (planted.length > 0) {
+    fail('isolation', `the root holds agent config the sanitizer should have moved: ${planted.join(', ')}`);
+    return result(false, 'setup', 'root not sanitized', cliVersion, { refusedBy: 'root-scan' });
+  }
   if (sources.problem !== null || !sources.councilDocument || sources.extra.length > 0) {
     const why = sources.problem ?? (!sources.councilDocument ? 'the council config document is not among the sources' : `configuration sources beyond the council config: ${sources.extra.join('; ')}`);
     fail('isolation', `${why} (exit ${String(config.exitCode)})`);
@@ -209,11 +217,21 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
     fail('isolation', why);
     return result(false, 'setup', why, cliVersion);
   }
+  offer = agent.offered;
+  // The leg must be offered only the read set (plan 4.2, grok F6). On 2.2.7 the skill tool always is: opencode
+  // appends `skill browser deny` after the council's rules, so no council rule can remove the tool.
+  const extra = offer.filter((t) => !(OPENCODE_READ_TOOLS as readonly string[]).includes(t));
+  if (extra.length > 0) {
+    fail('offer', `the council agent is offered ${extra.join(', ')} beside the read set (computed from its effective rules${extra.includes('skill') ? '; opencode appends `skill browser deny` after the council rules, so the skill tool stays offered' : ''})`);
+    return result(false, 'setup', `offered beyond the read set: ${extra.join(', ')}`, cliVersion);
+  }
   const mcp = await run(['mcp', 'list', '--standalone']);
   if (!/No MCP servers configured/i.test(mcp.stdout)) {
+    mcpServers = mcp.stdout.split('\n').map((l) => l.trim()).filter((l) => l !== '');
     fail('mcp', `opencode lists MCP servers: ${mcp.stdout.trim().slice(0, 300) || `exit ${String(mcp.exitCode)}`}`);
     return result(false, 'setup', 'MCP servers configured', cliVersion);
   }
+  mcpServers = [];
   const plugins = await run(['plugin', 'list', '--standalone']);
   if (!/No plugins found/i.test(plugins.stdout)) {
     fail('plugins', `opencode lists plugins: ${plugins.stdout.trim().slice(0, 300) || `exit ${String(plugins.exitCode)}`}`);
@@ -233,8 +251,8 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
     return result(false, 'model', `model ${o.model} not offered`, cliVersion);
   }
   checks.push({ name: 'model', status: 'ok', detail: `${o.model} offered${o.effort !== undefined ? `; effort ${o.effort} is set over ACP and refused there if the model has no such variant` : ''}` });
-  const auth = await run(['auth', 'list', '--format', 'json']);
-  checks.push({ name: 'auth', status: 'note', detail: `saved accounts in the leg database: ${auth.stdout.trim().slice(0, 120) || 'none'}; credentials come from provider environment variables` });
+  // No `auth list`: it takes no --standalone and starts a detached background service (measured on 2.2.7).
+  checks.push({ name: 'auth', status: 'note', detail: 'credentials come from provider environment variables (the leg database holds no saved account)' });
   userOwned.push('provider credentials from the environment');
   return result(true, null, null, cliVersion);
 }

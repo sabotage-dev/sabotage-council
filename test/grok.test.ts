@@ -260,15 +260,23 @@ describe('grok helpers', () => {
     expect(grokEffortMenu(cache, 'grok-4.5')).toBeNull();
   });
 
+  /** A recorded inspect output with its placeholders back to absolute paths, as grok prints them. */
+  const inspectFixture = (name: string, root: string): string =>
+    readFileSync(join(fixtureDir('grok', 'inspect'), name), 'utf8').split('__SC_ROOT__').join(root).split('__SC_GROK_HOME__').join('/home/user/.grok');
+
   it('reads the recorded inspect outputs: a user MCP server, and the planted root items', () => {
     const root = '/sc/root';
-    const clean = parseGrokInspect(readFileSync(join(fixtureDir('grok', 'inspect'), 'clean.json'), 'utf8').split('__SC_ROOT__').join(root), root);
+    const clean = parseGrokInspect(inspectFixture('clean.json', root), root);
     expect(clean.mcpServers.map((m) => m.name)).toEqual(['context7']);
     expect(clean.fromRoot).toEqual([]);
-    const planted = parseGrokInspect(readFileSync(join(fixtureDir('grok', 'inspect'), 'planted.json'), 'utf8').split('__SC_ROOT__').join(root), root);
+    const planted = parseGrokInspect(inspectFixture('planted.json', root), root);
     expect(planted.mcpServers.map((m) => m.name).sort()).toEqual(['context7', 'planted', 'plantedgrok']);
     expect(planted.fromRoot).toEqual([`MCP server planted (${root}/.mcp.json)`, `project config ${root}/.grok/config.toml`]);
     expect(parseGrokInspect('not json', root).problem).toContain('did not print JSON');
+    // A path printed relative is relative to the cwd, the root (grok F7): it counts as loaded from the root.
+    const relative = JSON.parse(inspectFixture('planted.json', root)) as { mcpServers: Array<{ source: { path: string } }> };
+    for (const m of relative.mcpServers) if (m.source.path.startsWith(root)) m.source.path = m.source.path.slice(root.length + 1);
+    expect(parseGrokInspect(JSON.stringify(relative), root).fromRoot).toContain('MCP server planted (.mcp.json)');
   });
 });
 
@@ -383,10 +391,11 @@ describe('grok preflight (4.3), no model call', () => {
 
   it('refuses a planted root and reports what grok would load from it (doctor --deep)', async () => {
     const root = scratch('sc-grok-planted-');
-    const { p } = preflightFor({}, { inspect: readFileSync(join(fixtureDir('grok', 'inspect'), 'planted.json'), 'utf8').split('__SC_ROOT__').join(root), root });
+    const { p } = preflightFor({}, { inspect: readFileSync(join(fixtureDir('grok', 'inspect'), 'planted.json'), 'utf8').split('__SC_ROOT__').join(root).split('__SC_GROK_HOME__').join('/home/user/.grok'), root });
     const pre = await p;
     expect(pre.ok).toBe(false);
     expect(pre.data['loaded']).toEqual([`MCP server planted (${root}/.mcp.json)`, `project config ${root}/.grok/config.toml`]);
+    expect(String(pre.data['dumped'])).toContain('grok inspect --json');
   });
 
   it('refuses read-only beside a Docker Desktop socket symlink, naming the fix', async () => {

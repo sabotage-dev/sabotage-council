@@ -41,8 +41,15 @@ not prove every action was refused before it ran (plan 14). grok is `weak` with 
 default `untrusted_seat_policy = "fallback"`, a round on a PR from an author without write access needs `strong`
 fallbacks for those seats, or it fails below quorum, visibly.
 
-`doctor --deep` runs every seat's preflight against a canary root of planted hooks, rules and MCP config for
-every backend, and fails a backend that loads one.
+`doctor --deep` runs every seat's preflight, with no model call, against its own canary root of planted hooks,
+rules and MCP config for every backend (top level and nested). Every planted hook event, MCP server and plugin
+writes its own marker if anything runs it. What it proves: no planted code ran during preflight, and, for a
+backend with an offline load dump (codex `debug prompt-input`, grok `inspect --json`, opencode `debug config`),
+that the dump lists nothing from the root. It proves only what that dump covers (opencode's covers config
+sources, not instruction files, which ratification checks per leg) and nothing about a model turn. A seat whose
+backend has no load dump (claude, kiro, antigravity, cursor, muse) is reported `unproven` or, when its preflight
+refuses the planted root by a filename scan, `refused`; neither counts as a pass. `doctor --deep` exits non-zero
+unless every seat is proven `isolated`.
 
 ### Backend notes
 

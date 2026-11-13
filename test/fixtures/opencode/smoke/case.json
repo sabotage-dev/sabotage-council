@@ -6,9 +6,11 @@
   "rootMutated": false,
   "plantSymlink": false,
   "expect": {
-    "status": "PASS",
-    "failureClass": null,
-    "failed": []
+    "status": "FAIL",
+    "failureClass": "setup",
+    "failed": [
+      "offer"
+    ]
   },
-  "note": "Recorded live smoke (P4, opencode 2.2.7 over ACP, free model opencode/big-pickle, no account or key, per-leg XDG dirs and database) on the planted-defect root, sanitized. In-root reads ran with no permission request (the council rules allow them); found the planted defect (HIGH rangesum.py:11), NONCE first line."
+  "note": "Recorded live smoke (P4, opencode 2.2.7 over ACP, free model opencode/big-pickle, no account or key, per-leg XDG dirs and database) on the planted-defect root, sanitized. In-root reads ran with no permission request (the council rules allow them); found the planted defect (HIGH rangesum.py:11), NONCE first line. Round 1: the offer is computed from agents.json (the council agent's recorded effective rules on 2.2.7), which offers the skill tool, so every leg fails offer; the database reads are now path-audited too."
 }

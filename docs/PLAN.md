@@ -655,10 +655,13 @@ listed by `doctor`) from **repository-controlled** context (never allowed).
 
 **Canary root:** `doctor --deep` runs the isolation checks against a canary root that contains planted hook,
 MCP and instruction files for every backend, at the top level and nested. Any backend that loads one fails.
-Built in P4: every planted hook, MCP server and plugin writes a marker outside the root if anything runs it; a
-backend fails when a marker appears during its preflight, or when its own load dump (grok `inspect`, codex
-`prompt-input`) lists a planted file. A refusal of the planted root counts only when the same preflight passed on
-a clean root; a pass with no load dump (claude, cursor, muse) is shown as unproven, not as a pass.
+Built in P4 (round 1 fold): each occupant gets its own fresh canary root and markers dir; every planted hook
+event, MCP server and plugin writes its own marker, named for the occupant, file, entry and level, outside the
+root if anything runs it. A backend fails (`loads`) when a marker appears during its preflight, or when its own
+load dump (codex `prompt-input`, grok `inspect`, opencode `debug config`, a relative path resolved against the
+root) lists a planted file. The only pass is `isolated`: the backend's load dump ran on the planted root and
+listed nothing from it. A refusal by a filename scan (`refused`), a pass with no load dump (`unproven`) and a
+preflight that fails on a clean root too (`unchecked`) all fail the exit.
 
 **Auth refresh:** run once, serially, before parallel launch. Parallel legs racing a token refresh was a measured
 failure.

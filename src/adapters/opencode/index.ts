@@ -5,7 +5,8 @@ import type { ModelInfo } from '../../config/registry.js';
 import type { FailureClass } from '../../config/vocab.js';
 import { runCommand, type CommandRunner } from '../../transport/headless.js';
 import { createAcpAdapter, type AcpRecordResult } from '../acp/adapter.js';
-import { isObject, str, type ReadSet } from '../acp/policy.js';
+import { collectPaths, isObject, judgePath, str, type ReadSet } from '../acp/policy.js';
+import { rootAliases } from '../paths.js';
 import { isRoot, type AcpCommonResult } from '../acp/ratify.js';
 import type { LegHandle, Occupant, Preflight, RatificationCheck, RoundCtx, SeatAdapter } from '../types.js';
 import { OPENCODE_AGENT, OPENCODE_FLOOR, OPENCODE_FREE_MODELS, OPENCODE_READ_TOOLS, OPENCODE_TESTED_VERSIONS, modelInfos, opencodeDecl, splitModel } from './known.js';
@@ -13,7 +14,7 @@ import { defaultOpencodeBin, opencodeEnv, opencodeLegFiles, prepareOpencodeDirs 
 import { opencodePreflight, parseOpencodeModels } from './preflight.js';
 import { modelRef, num, readOpencodeRecord } from './records.js';
 
-export { OPENCODE_AGENT, OPENCODE_DECLARED, OPENCODE_DENIED_ACTIONS, OPENCODE_FREE_MODELS, evaluateRules, familyOf, opencodeConfig, opencodeDecl, splitModel } from './known.js';
+export { OPENCODE_AGENT, OPENCODE_DECLARED, OPENCODE_DENIED_ACTIONS, OPENCODE_FREE_MODELS, OPENCODE_TOOL_ACTIONS, evaluateRules, familyOf, offeredTools, opencodeConfig, opencodeDecl, splitModel, whollyDisabled } from './known.js';
 export { OPENCODE_ENV_ALLOW, OPENCODE_ENV_SET, defaultOpencodeBin, opencodeEnv, opencodeLegFiles } from './launch.js';
 export { canonical, judgeConfigSources, judgeCouncilAgent, opencodePreflight, parseOpencodeModels, parseOpencodeVersion } from './preflight.js';
 export { readOpencodeRecord } from './records.js';
@@ -77,6 +78,9 @@ const RECORD_CLASS: Readonly<Record<string, FailureClass>> = {
   'record-model': 'model',
   'record-effort': 'model',
   'record-tools': 'contaminated',
+  'record-paths': 'contaminated',
+  'record-calls': 'setup',
+  offer: 'setup',
   'record-messages': 'contaminated',
   'record-children': 'contaminated',
   'record-instructions': 'contaminated',
@@ -128,6 +132,40 @@ export function opencodeRecords(h: LegHandle, common: AcpCommonResult): AcpRecor
   const denied = (t: { status: string | null; error: string | null }) => t.status === 'error' && t.error !== null && OPENCODE_DENIAL.test(t.error.trim());
   const badTools = rec.tools.filter((t) => !(OPENCODE_READ_TOOLS as readonly string[]).includes(t.name) && !denied(t));
   check('record-tools', badTools.length === 0, badTools.length === 0 ? `${rec.tools.length} tool part(s), all reads or denied before running` : `tools beyond the read set: ${[...new Set(badTools.map((t) => `${t.name} (${String(t.status)})`))].join(', ')}`);
+  // Every read the database records ran is path-audited by realpath, as the ACP log is (codex F1), and every
+  // database call must be one the ACP log reported: the two records must tell the same story.
+  const aliases = rootAliases(h.root);
+  const outside: string[] = [];
+  const unjudged: string[] = [];
+  for (const t of rec.tools.filter((x) => !denied(x) && (OPENCODE_READ_TOOLS as readonly string[]).includes(x.name))) {
+    const found = collectPaths([{ name: t.name, rawInput: t.input }], [], OPENCODE_READS, [t.name]);
+    const paths = found.paths.length === 0 && found.problems.length === 0 && (OPENCODE_READS.cwdDefault ?? []).includes(t.name) ? ['.'] : found.paths;
+    if (paths.length === 0 || found.problems.length > 0) unjudged.push(`${t.name} ${String(t.id)}`);
+    for (const p of paths) {
+      const j = judgePath(p, h.root, aliases);
+      if (!j.inside) outside.push(`${t.name} ${p} (${j.why})`);
+    }
+  }
+  check('record-paths', outside.length === 0 && unjudged.length === 0, outside.length > 0 ? `database reads outside the root: ${[...new Set(outside)].join('; ')}` : unjudged.length > 0 ? `database reads with no path the ratifier can judge: ${unjudged.join(', ')}` : 'every database read named paths inside the root');
+  const acpIds = new Set(common.log.toolCalls.keys());
+  const orphans = rec.tools.filter((t) => t.id === null || !acpIds.has(t.id));
+  check('record-calls', orphans.length === 0, orphans.length === 0 ? `every database tool call is in the ACP log (${rec.tools.length})` : `database tool calls the ACP log never reported: ${orphans.map((t) => `${t.name} ${String(t.id)}`).join(', ')}`);
+  // The offer, computed at preflight from the council agent's effective rules, must be the read set; and no MCP
+  // server may be configured in the leg (grok F6).
+  const offer = Array.isArray(h.data['offer']) ? (h.data['offer'] as unknown[]).map(String) : null;
+  const mcp = Array.isArray(h.data['mcp']) ? (h.data['mcp'] as unknown[]).map(String) : null;
+  const extraOffer = offer === null ? [] : offer.filter((t) => !(OPENCODE_READ_TOOLS as readonly string[]).includes(t));
+  check(
+    'offer',
+    offer !== null && extraOffer.length === 0 && mcp !== null && mcp.length === 0,
+    offer === null
+      ? 'no offer was computed at preflight for this leg'
+      : extraOffer.length > 0
+        ? `offered beyond the read set: ${extraOffer.join(', ')}`
+        : mcp === null || mcp.length > 0
+          ? `MCP servers configured in the leg: ${mcp === null ? 'not checked' : mcp.join(', ')}`
+          : `offered ${offer.join(', ')}; no MCP server`,
+  );
   const userTools = rec.messages.filter((m) => m.type === 'shell' || m.type === 'skill');
   check('record-messages', userTools.length === 0, userTools.length === 0 ? 'no shell or skill message' : `shell or skill messages: ${userTools.map((m) => `${m.type}@${m.seq}`).join(', ')}`);
   check('record-children', rec.children.length === 0, rec.children.length === 0 ? 'no child session' : `child sessions (subagents): ${rec.children.join(', ')}`);
@@ -190,7 +228,7 @@ export function createOpencodeAdapter(options: OpencodeAdapterOptions = {}): Sea
       const env = ctx.env ?? process.env;
       return opencodePreflight(o, { bin: binFor(env), runner, env, root: ctx.root, legDir: ctx.legDir, planted: options.planted });
     },
-    plan(o, ctx) {
+    plan(o, ctx, pre) {
       const files = opencodeLegFiles(ctx.legDir);
       prepareOpencodeDirs(files, options.planted);
       const sourceEnv = ctx.env ?? process.env;
@@ -211,7 +249,7 @@ export function createOpencodeAdapter(options: OpencodeAdapterOptions = {}): Sea
           ...(o.effort !== undefined ? [{ id: 'effort', value: o.effort, check: 'effort' as const }] : []),
         ],
         files: { log: files.log, stderr: files.stderr, process: files.process, db: files.db },
-        data: { db: files.db },
+        data: { db: files.db, offer: pre.data['offer'] ?? null, mcp: pre.data['mcp'] ?? null },
       };
     },
     reads: OPENCODE_READS,

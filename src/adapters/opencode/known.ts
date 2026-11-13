@@ -113,6 +113,61 @@ export function evaluateRules(rules: readonly Rule[], action: string, resource: 
   return 'ask';
 }
 
+/**
+ * The tool permission actions opencode 2.2.7 registers (its `tool/plugin/*` sources, plus Code Mode's `execute`).
+ * A tool is offered to the model unless the last rule matching its action is a deny on resource `*` (2.2.7
+ * `whollyDisabled`), so the offer can be computed offline from the agent's effective rules (`debug agents`).
+ */
+export const OPENCODE_TOOL_ACTIONS = [
+  'read',
+  'glob',
+  'grep',
+  'edit',
+  'write',
+  'patch',
+  'shell',
+  'webfetch',
+  'websearch',
+  'skill',
+  'subagent',
+  'todowrite',
+  'question',
+  'experimental_image_generate',
+  'list_mcp_resources',
+  'read_mcp_resource',
+  'artifact_create',
+  'artifact_read',
+  'artifact_update',
+  'artifact_delete',
+  'opencode',
+  'session_rename',
+  'session_move',
+  'worktree_create',
+  'schedule_create',
+  'schedule_list',
+  'schedule_pause',
+  'schedule_resume',
+  'execute',
+] as const;
+
+/** 2.2.7's `whollyDisabled`: the last rule matching the action denies resource `*`. */
+export function whollyDisabled(action: string, rules: readonly Rule[]): boolean {
+  for (let i = rules.length - 1; i >= 0; i--) {
+    const r = rules[i] as Rule;
+    if (wildcard(action, r.action)) return r.resource === '*' && r.effect === 'deny';
+  }
+  return false;
+}
+
+/**
+ * The tools an agent with these effective rules is offered. Measured with the council config on 2.2.7: opencode
+ * appends `skill browser deny` after the agent's own rules, so `skill` is the last match for the skill tool with a
+ * resource other than `*`, and the skill tool stays offered whatever the council config says.
+ */
+export function offeredTools(rules: readonly Rule[]): string[] {
+  return OPENCODE_TOOL_ACTIONS.filter((a) => !whollyDisabled(a, rules));
+}
+
 /** Splits a `provider/model` pin. */
 export function splitModel(pin: string): { providerID: string; id: string } | null {
   const at = pin.indexOf('/');
