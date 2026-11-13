@@ -59,17 +59,22 @@ Check the engine is installed: `sabotage-council --version`. If it is not on PAT
    council verdict.
 
 4. **Adjudicate** by the procedure in `${CLAUDE_PLUGIN_ROOT}/ADJUDICATE.md`. Read it in full before the first
-   adjudication of a session. Write the file into the round dir:
+   adjudication of a session. Write the file into the round dir and check it first; `--check` stores nothing:
+
+   ```sh
+   sabotage-council adjudicate <id> <round_dir>/ADJUDICATION.draft.json --check
+   ```
+
+   A rejection lists every broken rule with its class: fix the file and check again. A wrong finding id is rejected
+   with the id it must have. If the check lists a majority override, show the user each one with its proof and wait
+   for their go before the storing call. Then store it:
 
    ```sh
    sabotage-council adjudicate <id> <round_dir>/ADJUDICATION.draft.json
    ```
 
-   A rejection lists every broken rule with its class and stores nothing: fix the file and run it again. A wrong
-   finding id is rejected with the id it must have.
-
 5. **Report**: the verdict and owed count, each owed row (file:line, the fix), follow-ups, what was not verified,
-   and any majority you overrode (show the proof before acting on it).
+   and every majority you overrode, with its proof.
 
 6. **Next round.** After the owed rows are folded, start the same command again. It becomes round 2 (or later):
    the seats review only the delta since the last adjudicated head, and the owed rows come back as earlier items

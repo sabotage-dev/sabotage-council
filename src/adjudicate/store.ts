@@ -80,6 +80,8 @@ export interface AdjudicateResult {
 }
 
 export interface AdjudicateOptions {
+  /** Validate only (fold row 8): nothing is stored, not even a rejection event. */
+  check?: boolean | undefined;
   /**
    * Tests only: runs after the call decided to adjudicate and before its write transaction, standing in for another
    * process that adjudicates the same round at that moment (fold row 4).
@@ -105,6 +107,13 @@ function writeAtomic(path: string, text: string): void {
 export function adjudicate(store: Store, layout: DataLayout, roundId: number, text: string, options: AdjudicateOptions = {}): AdjudicateResult {
   const { db } = store;
   if (!getRound(db, roundId)) throw new AdjudicateError(`no round ${roundId} in the store`);
+  if (options.check === true) {
+    const round = getRound(db, roundId);
+    if (round?.status !== 'awaiting-adjudication') {
+      throw new AdjudicateError(`round ${roundId} is ${String(round?.status)}; only a round awaiting adjudication can be adjudicated`);
+    }
+    return { outcome: validateAdjudicationText(text, adjudicationContext(store, layout, roundId).ctx), roundId, stored: false };
+  }
   options.beforeTransaction?.();
   db.exec('BEGIN IMMEDIATE');
   let open = true;

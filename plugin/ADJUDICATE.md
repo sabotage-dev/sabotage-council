@@ -37,11 +37,15 @@ Read every counted leg's full answer (`answer_path`), not only its findings bloc
    duplicates, at the seat's own severity.
 4. **Set each canonical finding's final severity and outcome, with proof** (file:line, or command output).
 5. **Majority overrides need the user.** A finding raised by 2 or more seats that would be owed under this round's
-   rule, if true, may be refuted only with code-verified proof, and you must show the user that proof before
-   acting on it. If you cannot settle it, make it a `ruling` (and set `needs_ruling: true`).
+   rule at the severity the seats gave it is a majority. Refuting it, making it a follow-up, noted or nit, or
+   lowering its severity overrides that majority: it needs code-verified proof in `proof`, and you must show the user
+   that proof before the storing call (run `adjudicate --check` first: it lists every override with its proof). If
+   you cannot settle it, make it a `ruling` (and set `needs_ruling: true`).
 6. **An unverifiable HIGH is a ruling, not a pass.**
 7. **No padding.** "Barely any work" is a valid verdict. Say why the round is thin instead of inventing work.
-8. Write `ADJUDICATION.json`, run `sabotage-council adjudicate <id> <file>`, and fix whatever it rejects.
+8. Write `ADJUDICATION.json` and run `sabotage-council adjudicate <id> <file> --check`: it validates and stores
+   nothing. Fix whatever it rejects. If it lists a majority override, show the user each one with its proof and wait
+   for their go. Then run it again without `--check` to store it.
 
 ## Severity
 
@@ -140,8 +144,9 @@ Each rejection starts with its class in brackets.
 - `[human-asks]`: each ask of the user's own open change request (pr and auto rounds) has one finding row with
   `kind: "human_ask"` and one `human_asks` row pointing at it; an open ask's row is owed. Plan and diff rounds have
   none.
-- `[refutation]`: a refuted row carries proof. In `auto`, a finding raised by 2 or more seats that would be owed
-  is never refuted without a ruling; interactively, the engine warns and you show the user the proof first.
+- `[refutation]`: a refuted row carries proof. A majority override (a finding raised by 2 or more seats, owed at
+  the seats' severity, that is refuted, made a follow-up, noted or nit, or lowered) carries proof; in `auto` it is a
+  ruling; interactively, `--check` lists it and you show the user the proof before storing.
 - `[approval]`: approve only as above (no ruling, 0 owed, legs clear, not solo).
 - `[followups]`: `followups` lists every follow-up row, and only follow-up or nit rows.
 

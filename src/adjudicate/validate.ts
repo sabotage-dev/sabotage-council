@@ -74,13 +74,18 @@ export interface EffectiveResult {
   legsClear: boolean;
   /** Findings of legs whose block the adjudicator extracted (`extracted_by: adjudicator`, plan 3.9). */
   extracted: ExtractedLegFinding[];
-  /** Majority-raised owed-eligible findings refuted in an interactive round: shown to the user first (3.4 rule 3). */
-  majorityOverrides: string[];
+  /**
+   * Majority overrides (3.4 rule 3, fold row 8): findings raised by two or more seats, owed at the seats' severity,
+   * that the adjudication refutes, makes non-blocking, or lowers. Each carries its proof, to show the user first.
+   */
+  majorityOverrides: Array<{ id: string; seats: number; seatSeverity: Severity; outcome: string; severity: Severity; proof: string }>;
 }
 
 export type ValidationOutcome =
   | { ok: true; adjudication: Adjudication; effective: EffectiveResult; warnings: string[] }
   | { ok: false; errors: string[] };
+
+const RANK: Readonly<Record<Severity, number>> = { NIT: 0, LOW: 1, MEDIUM: 2, HIGH: 3 };
 
 /**
  * Whether a finding would be owed under the round's rule if true (plan 3.4 rule 3, 3.5): a human ask always; from
@@ -294,19 +299,31 @@ export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): Va
     if (n !== 1 && ctx.humanAsks.length > 0) err('human-asks', `human_ask row ${id} is named by ${n} asks, not exactly one`);
   }
 
-  // Refutations: proof, and a majority-raised owed-eligible finding refuted needs a human (plan 3.4 rule 3).
-  const majorityOverrides: string[] = [];
+  // Refutations need proof. And a majority override (plan 3.4 rule 3, fold row 8): a finding raised by two or more
+  // seats, owed under this round's rule at the severity the seats gave it, that the adjudicator does not keep as
+  // owed (refuted, follow-up, noted, nit) or keeps at a lower severity. It needs recorded proof; in auto it is a
+  // ruling; interactively the user sees the proof before the storing call (`adjudicate --check`).
+  const majorityOverrides: Array<{ id: string; seats: number; seatSeverity: Severity; outcome: string; severity: Severity; proof: string }> = [];
   for (const f of a.findings) {
-    if (f.outcome !== 'refuted') continue;
-    if (f.proof.trim().length < 10) err('refutation', `finding ${f.id} is refuted without proof (file:line or command output)`);
+    if (f.outcome === 'refuted' && f.proof.trim().length < 10) err('refutation', `finding ${f.id} is refuted without proof (file:line or command output)`);
     const seats = new Set(f.raised_by.map((r) => r.seat));
-    if (seats.size >= 2 && owedEligible(f, ctx.rule)) {
-      majorityOverrides.push(f.id);
-      if (ctx.mode === 'auto' && !a.needs_ruling) err('refutation', `finding ${f.id} was raised by ${seats.size} seats and is refuted: in auto that is a ruling (needs_ruling must be true)`);
+    if (seats.size < 2) continue;
+    const seatSeverity = f.raised_by.map((r) => r.severity).reduce((m, x) => (RANK[x] > RANK[m] ? x : m), 'NIT' as Severity);
+    if (!owedEligible({ severity: seatSeverity, kind: f.kind }, ctx.rule)) continue;
+    const kept = f.outcome === 'owed' || f.outcome === 'ruling';
+    if (kept && RANK[f.severity] >= RANK[seatSeverity]) continue;
+    majorityOverrides.push({ id: f.id, seats: seats.size, seatSeverity, outcome: f.outcome, severity: f.severity, proof: f.proof });
+    if (f.proof.trim().length < 10) {
+      err('refutation', `finding ${f.id} overrides a majority (${seats.size} seats, up to ${seatSeverity}) as ${f.outcome} at ${f.severity} with no recorded proof`);
+    }
+    if (ctx.mode === 'auto' && !a.needs_ruling) {
+      err('refutation', `finding ${f.id} was raised by ${seats.size} seats (up to ${seatSeverity}) and is ${f.outcome} at ${f.severity}: in auto that is a ruling (needs_ruling must be true)`);
     }
   }
   if (ctx.mode !== 'auto') {
-    for (const id of majorityOverrides) warnings.push(`finding ${id} overrides a 2-of-3 majority: show the user the proof before acting on it (plan 3.4 rule 3)`);
+    for (const o of majorityOverrides) {
+      warnings.push(`finding ${o.id} overrides a majority (${o.seats} seats, up to ${o.seatSeverity}) as ${o.outcome} at ${o.severity}: show the user the proof before storing (plan 3.4 rule 3)`);
+    }
   }
 
   // Approval guard.

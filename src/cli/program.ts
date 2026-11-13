@@ -139,9 +139,10 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .argument('<id>', 'the round id', roundId)
       .argument('<file>', 'ADJUDICATION.json (plan 7.3)')
       .description("validate the main loop's adjudication against the round, store it, and print the effective verdict")
+      .option('--check', 'validate only and print what would be stored, with every majority override and its proof; store nothing')
       .option('--json', 'print the result as JSON'),
-  ).action((id: number, file: string, opts: { config?: string; db?: string; roots?: string; json?: boolean }) => {
-    adjudicateCommand(roundIo, pathsOf(opts), id, file, opts.json === true);
+  ).action((id: number, file: string, opts: { config?: string; db?: string; roots?: string; json?: boolean; check?: boolean }) => {
+    adjudicateCommand(roundIo, pathsOf(opts), id, file, opts.json === true, opts.check === true);
   });
 
   return program;

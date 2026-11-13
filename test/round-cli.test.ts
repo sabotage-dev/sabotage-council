@@ -134,6 +134,12 @@ describe('CLI: round start / wait / show and adjudicate', () => {
     expect(rejected.lines[1]).toBe('  [verdict] SHIP with 1 owed row(s)');
 
     writeFileSync(file, JSON.stringify(adjudication));
+    // --check validates and stores nothing.
+    const checked = await c.run('adjudicate', String(start.round_id), file, '--check');
+    expect(checked.code).toBe(0);
+    expect(checked.lines[0]).toBe(`check passed (nothing stored): would store round ${start.round_id} verdict NEEDS-WORK, owed 1, approve no, needs ruling no`);
+    const still = await c.run('round', 'show', String(start.round_id), '--json');
+    expect(JSON.parse(still.lines.join('\n'))).toMatchObject({ status: 'awaiting-adjudication', adjudication: null });
     const stored = await c.run('adjudicate', String(start.round_id), file);
     expect(stored.code).toBe(0);
     expect(stored.lines[0]).toBe(`stored: round ${start.round_id} verdict NEEDS-WORK, owed 1, approve no, needs ruling no`);

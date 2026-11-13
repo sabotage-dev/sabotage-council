@@ -248,7 +248,7 @@ export function renderSummary(s: RoundSummary): string[] {
 }
 
 /** `adjudicate <id> <ADJUDICATION.json>` (plan 7.1 step 4): validate, store, print the effective verdict. */
-export function adjudicateCommand(io: RoundIo, paths: StorePaths, roundId: number, file: string, json: boolean): void {
+export function adjudicateCommand(io: RoundIo, paths: StorePaths, roundId: number, file: string, json: boolean, check = false): void {
   let text: string;
   try {
     text = readFileSync(file, 'utf8');
@@ -259,11 +259,11 @@ export function adjudicateCommand(io: RoundIo, paths: StorePaths, roundId: numbe
   }
   try {
     withStore(paths, (store) => {
-      const r = adjudicate(store, layoutOf(paths), roundId, text);
+      const r = adjudicate(store, layoutOf(paths), roundId, text, { check });
       if (!r.outcome.ok) {
         if (json) io.write(JSON.stringify({ ok: false, round_id: roundId, errors: r.outcome.errors }, null, 2));
         else {
-          io.write(`rejected: ${r.outcome.errors.length} problem(s); nothing was stored`);
+          io.write(`${check ? 'check failed' : 'rejected'}: ${r.outcome.errors.length} problem(s); nothing was stored`);
           for (const e of r.outcome.errors) io.write(`  ${e}`);
         }
         io.setExitCode(1);
@@ -276,6 +276,7 @@ export function adjudicateCommand(io: RoundIo, paths: StorePaths, roundId: numbe
           JSON.stringify(
             {
               ok: true,
+              stored: r.stored,
               round_id: roundId,
               verdict: e.verdict,
               verdict_given: a.verdict,
@@ -285,6 +286,7 @@ export function adjudicateCommand(io: RoundIo, paths: StorePaths, roundId: numbe
               quorum: solo ? 'solo' : 'council',
               legs_clear: e.legsClear,
               leg_verdicts: e.legVerdicts,
+              majority_overrides: e.majorityOverrides,
               warnings,
             },
             null,
@@ -292,10 +294,12 @@ export function adjudicateCommand(io: RoundIo, paths: StorePaths, roundId: numbe
           ),
         );
       } else {
-        io.write(`stored: round ${roundId} verdict ${e.verdict}${e.verdict !== a.verdict ? ` (given ${a.verdict}; 0 owed reads as SHIP)` : ''}, owed ${e.owed}, approve ${a.approve ? 'yes' : 'no'}, needs ruling ${a.needs_ruling ? 'yes' : 'no'}`);
+        io.write(`${check ? 'check passed (nothing stored): would store' : 'stored:'} round ${roundId} verdict ${e.verdict}${e.verdict !== a.verdict ? ` (given ${a.verdict}; 0 owed reads as SHIP)` : ''}, owed ${e.owed}, approve ${a.approve ? 'yes' : 'no'}, needs ruling ${a.needs_ruling ? 'yes' : 'no'}`);
         if (solo) io.write('SOLO REVIEW: one ratified leg; this is not a council verdict');
         io.write(`legs clear: ${e.legsClear ? 'yes' : 'no'}; leg verdicts: ${Object.entries(e.legVerdicts).map(([seat, v]) => `${seat} ${v}`).join(', ')}`);
         for (const w of warnings) io.write(`warn  ${w}`);
+        // The proof of every majority override, for the user to see before the storing call (plan 3.4 rule 3).
+        for (const o of e.majorityOverrides) io.write(`override ${o.id}: ${o.seats} seats up to ${o.seatSeverity} -> ${o.outcome} at ${o.severity}; proof: ${o.proof}`);
       }
     });
   } catch (error) {

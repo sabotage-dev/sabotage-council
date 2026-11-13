@@ -83,15 +83,12 @@ function valid(): Adj {
         owner: 'this',
         proof: 'widget/calc/rangesum.py:20',
         kind: 'finding',
-        raised_by: [
-          { seat: 'a', leg_finding: 'F2', severity: 'LOW' },
-          { seat: 'c', leg_finding: 'X1', severity: 'LOW' },
-        ],
+        raised_by: [{ seat: 'c', leg_finding: 'X1', severity: 'LOW' }],
         same_as: null,
         closes_item: null,
       },
     ],
-    unmapped: [],
+    unmapped: [{ seat: 'a', leg_finding: 'F2', reason: 'not a finding: restates the brief' }],
     earlier_items: [{ source: ITEM, status: 'closed', evidence: 'widget/calc/rangesum.py:3 now inclusive', fix_row: null }],
     human_asks: [],
     leg_verdicts: [
@@ -128,15 +125,12 @@ const CASES: Array<[string, string, (a: Adj) => void, Partial<AdjudicationContex
   ['ids', 'an id that is not the stable hash', (a) => (f(a, 0)['title'] = 'retitled'), null, `must have the stable id ${id('retitled')}`],
   ['ids', 'same_as to an unknown finding', (a) => (f(a, 0)['same_as'] = 'f_000000000000'), null, 'same_as f_000000000000 is not a finding of an earlier round'],
   ['ids', 'closes_item to an unknown item', (a) => (f(a, 0)['closes_item'] = 'R9'), null, 'closes_item R9 is not an earlier item'],
-  ['attribution', 'a leg finding left unmapped', (a) => (f(a, 1)['raised_by'] = [{ seat: 'c', leg_finding: 'X1', severity: 'LOW' }]), null, "seat a's finding F2 is not mapped"],
+  ['attribution', 'a leg finding left unmapped', (a) => (a['unmapped'] = []), null, "seat a's finding F2 is not mapped"],
   ['attribution', 'a leg finding mapped twice', (a) => (f(a, 1)['raised_by'] as unknown[]).push({ seat: 'a', leg_finding: 'F1', severity: 'HIGH' }), null, 'a F1 is mapped twice'],
-  ['attribution', 'a duplicate in unmapped', (a) => (a['unmapped'] = [{ seat: 'b', leg_finding: 'F1', reason: 'dup' }]), null, 'b F1 is mapped twice'],
+  ['attribution', 'a duplicate in unmapped', (a) => (a['unmapped'] as unknown[]).push({ seat: 'b', leg_finding: 'F1', reason: 'dup' }), null, 'b F1 is mapped twice'],
   ['attribution', 'a leg finding the seat never raised', (a) => (f(a, 0)['raised_by'] as unknown[]).push({ seat: 'b', leg_finding: 'F9', severity: 'LOW' }), null, 'seat b raised no finding F9'],
   ['attribution', 'a seat with no ratified leg', (a) => (f(a, 0)['raised_by'] as unknown[]).push({ seat: 'd', leg_finding: 'F1', severity: 'HIGH' }), null, 'seat d has no ratified leg'],
-  ['attribution', 'unmapped with no reason', (a) => {
-    f(a, 1)['raised_by'] = [{ seat: 'c', leg_finding: 'X1', severity: 'LOW' }];
-    a['unmapped'] = [{ seat: 'a', leg_finding: 'F2', reason: ' ' }];
-  }, null, 'unmapped a F2 has no reason'],
+  ['attribution', 'unmapped with no reason', (a) => (a['unmapped'] = [{ seat: 'a', leg_finding: 'F2', reason: ' ' }]), null, 'unmapped a F2 has no reason'],
   ['attribution', 'a finding raised by nobody', (a) => {
     a.findings.push({ ...f(a, 1), id: id('orphan'), title: 'orphan', outcome: 'noted', raised_by: [] });
   }, null, `finding ${id('orphan')} names no seat`],
@@ -237,6 +231,74 @@ describe('adjudicate: plan 7.3 validator', () => {
     expect([...classes].sort()).toEqual(['approval', 'attribution', 'coverage', 'effective', 'followups', 'human-asks', 'identity', 'ids', 'owner', 'refutation', 'round-rule', 'schema', 'severity', 'verdict'].sort());
   });
 
+  it('the majority-override gate covers every downgrade, judged at the seats\' own severity (fold row 8)', () => {
+    const over = (edit: (a: Adj) => void, c: Partial<AdjudicationContext> = {}) => {
+      const a = valid();
+      edit(a);
+      return validateAdjudication(a, ctx(c));
+    };
+    const twoSeatHigh = (a: Adj): void => {
+      ((f(a, 0)['raised_by'] as Array<Record<string, unknown>>)[1]!)['severity'] = 'MEDIUM';
+    };
+    // Moved to follow-up, noted or nit: an override, with proof required.
+    for (const outcome of ['follow-up', 'noted', 'nit']) {
+      const r = over((a) => {
+        twoSeatHigh(a);
+        f(a, 0)['outcome'] = outcome;
+        f(a, 0)['proof'] = '';
+        a['verdict'] = 'SHIP-WITH-FIXES';
+        a['followups'] = outcome === 'follow-up' ? [F1, F2] : [F2];
+        a['leg_verdicts'] = (a['leg_verdicts'] as Array<{ seat: string; raw: string }>).map((v) => ({ ...v, effective: v.raw === 'NEEDS-WORK' ? 'SHIP-WITH-FIXES' : v.raw }));
+      });
+      expect(r.ok, outcome).toBe(false);
+      if (!r.ok) expect(r.errors.join('\n')).toContain(`finding ${F1} overrides a majority (2 seats, up to HIGH) as ${outcome} at HIGH with no recorded proof`);
+    }
+    // Kept owed but lowered: an override too; interactively a warning with the proof, in auto a ruling.
+    const lowered = (a: Adj): void => {
+      f(a, 0)['severity'] = 'MEDIUM';
+    };
+    const r = over(lowered);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.effective.majorityOverrides).toEqual([expect.objectContaining({ id: F1, seatSeverity: 'HIGH', severity: 'MEDIUM', outcome: 'owed' })]);
+    const auto = over(lowered, { mode: 'auto' });
+    expect(auto.ok).toBe(false);
+    if (!auto.ok) expect(auto.errors.join('\n')).toContain('in auto that is a ruling');
+    // Rated NIT by the adjudicator, but HIGH by the seats: still an override.
+    const nit = over((a) => {
+      f(a, 0)['severity'] = 'NIT';
+      f(a, 0)['outcome'] = 'nit';
+      a['verdict'] = 'SHIP-WITH-FIXES';
+      a['leg_verdicts'] = (a['leg_verdicts'] as Array<{ seat: string; raw: string }>).map((v) => ({ ...v, effective: v.raw === 'NEEDS-WORK' ? 'SHIP-WITH-FIXES' : v.raw }));
+    });
+    expect(nit.ok && nit.effective.majorityOverrides.map((o) => o.id)).toEqual([F1]);
+    // From round 4 a majority at MEDIUM could not be owed: moving it to follow-up needs no override.
+    const r4 = over(
+      (a) => {
+        a['round'] = 4;
+        f(a, 0)['raised_by'] = [
+          { seat: 'a', leg_finding: 'F1', severity: 'MEDIUM' },
+          { seat: 'b', leg_finding: 'F1', severity: 'MEDIUM' },
+        ];
+        f(a, 0)['severity'] = 'MEDIUM';
+        f(a, 0)['outcome'] = 'follow-up';
+        a['followups'] = [F1, F2];
+        a['verdict'] = 'SHIP-WITH-FIXES';
+        a['leg_verdicts'] = (a['leg_verdicts'] as Array<{ seat: string; raw: string }>).map((v) => ({ ...v, effective: v.raw === 'NEEDS-WORK' ? 'SHIP-WITH-FIXES' : v.raw }));
+      },
+      {
+        roundNo: 4,
+        rule: 'high-only',
+        legs: [
+          { seat: 'a', verdictRaw: 'NEEDS-WORK', findings: [{ id: 'F1', severity: 'MEDIUM' }, { id: 'F2', severity: 'LOW' }] },
+          { seat: 'b', verdictRaw: 'SHIP-WITH-FIXES', findings: [{ id: 'F1', severity: 'MEDIUM' }] },
+          { seat: 'c', verdictRaw: 'SHIP', findings: null },
+        ],
+      },
+    );
+    expect(r4.ok, JSON.stringify(r4)).toBe(true);
+    if (r4.ok) expect(r4.effective.majorityOverrides).toEqual([]);
+  });
+
   it('asks no row for a closed-context item (plan 3.5)', () => {
     const a = valid();
     a['earlier_items'] = [];
@@ -300,8 +362,8 @@ describe('adjudicate: plan 7.3 validator', () => {
     const r = validateAdjudication(a, ctx());
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.effective.majorityOverrides).toEqual([F1]);
-      expect(r.warnings[0]).toContain('show the user the proof before acting on it');
+      expect(r.effective.majorityOverrides.map((o) => o.id)).toEqual([F1]);
+      expect(r.warnings[0]).toContain('show the user the proof before storing');
     }
   });
 
