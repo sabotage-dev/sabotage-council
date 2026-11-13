@@ -645,7 +645,7 @@ listed by `doctor`) from **repository-controlled** context (never allowed).
 | Backend | Proof (no model call unless marked) |
 |---|---|
 | codex | Run from the root, `codex debug prompt-input` with the leg's `-c`/`--disable` flags shows no MCP tool definitions and no repository instructions. This command accepts only `-c`, `--enable` and `--disable`. The user's global `~/.codex/AGENTS.md` is listed as user-owned; it loads even with `--ignore-user-config` (probe). `--ignore-user-config` and per-server `-c mcp_servers.<name>.enabled=false` must not be combined: together they fail config load with "invalid transport" (measured). The leg uses the per-server flags, so this preflight renders exactly the leg's config; the binding proof is the rollout's `top_level_tools` (4.2). |
-| grok | `grok inspect --json` under the leg env shows no project instructions, hooks or permission sources. Servers from `$GROK_HOME/config.toml` still list and start; they are user-owned and unreachable under the tool allowlist. The binding proof is `tool_definitions.json` after launch. |
+| grok | `grok inspect --json` under the leg env shows no project instructions, hooks or permission sources. Servers from `$GROK_HOME/config.toml` would start in the leg, so a seat with one is refused (owner ruling: a leg that starts MCP fails); the seat's `auth_home` gives it its own grok home with no MCP config. The binding proof is `tool_definitions.json` after launch. |
 | antigravity | No `agy -p` policy proof (D7). Preflight runs only the no-turn `/usage` and `agy models`, and checks the rules the leg will load: its own `--gemini-dir` settings (no allow rule, no auto mode, workspace-only access). Proof is per leg: the update log, the CLI log (the leg's own app data dir) and the conversation DB (every model call's label). Label `pending` (P3 canary below). |
 | claude | `system/init.tools` (stream-json, `--verbose`) ⊆ the leg's tool set, with no exception; `permissionMode` is `dontAsk`. P2 measured on 2.1.322 that `--setting-sources ""` (any set without `user`) drops plugin tools, user hooks and user allow rules while the login (Keychain) still works, so every Claude leg launches that way. On an untested version, a subscription user with an enabled plugin is refused at preflight and must use an API key; `doctor` says so. |
 | kiro | The HOME kiro-cli runs with (the seat's `auth_home`, else the user's), the token store's expiry and refresh-token presence (never a value), `chat --list-models` under a short cap, the agent profile hash, and a fresh `KIRO_HOME` (no steering, hooks, MCP config or other agents). Label `pending` (P3 canary below). |
@@ -805,7 +805,9 @@ model = "gpt-6.1-sol"
 effort = "high"
 fallback = { backend = "kiro", model = "gpt-5.6-sol", effort = "high", on = ["usage_limit", "auth"] }
 # kiro seats and fallbacks may add auth_home = "/abs/dir": kiro-cli then runs with HOME there, so a separate
-# Kiro login (its own token store) is used; the default is the user's HOME (P3).
+# Kiro login (its own token store) is used; the default is the user's HOME (P3). grok seats may add one too:
+# the leg's GROK_HOME is that dir, logged in once with `GROK_HOME=/abs/dir grok login`, holding its own config
+# and no MCP server (P4 round 1, owner ruling).
 
 [[seats]]
 id = "b"

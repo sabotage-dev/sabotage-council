@@ -37,9 +37,10 @@ the antigravity, kiro and opencode seats. There are no review rounds yet. The v1
 Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on the version its canary ran on)
 and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their promotion canaries ran and did
 not prove every action was refused before it ran (plan 14). grok is `weak` with `--sandbox off` (it would be
-`pending` with its sandbox running). cursor and muse are `weak`: no live canary runs for them in v1. With the
-default `untrusted_seat_policy = "fallback"`, a round on a PR from an author without write access needs `strong`
-fallbacks for those seats, or it fails below quorum, visibly.
+`pending` with its sandbox running, a label no recorded run backs: no sandbox-on leg has run). cursor and muse
+are `weak`: no live canary runs for them in v1. With the default `untrusted_seat_policy = "fallback"`, a round on
+a PR from an author without write access needs `strong` fallbacks for those seats, or it fails below quorum,
+visibly.
 
 `doctor --deep` runs every seat's preflight, with no model call, against its own canary root of planted hooks,
 rules and MCP config for every backend (top level and nested). Every planted hook event, MCP server and plugin
@@ -68,9 +69,13 @@ unless every seat is proven `isolated`.
   home in once with `HOME=/abs/dir kiro-cli login`.
 - **Grok (`grok`).** Seats run headless with a read-only tool allowlist, `dontAsk`, deny rules and `HOME`
   isolated per leg. `--sandbox read-only` refuses to start on a Mac whose Docker Desktop socket is a symlink, so
-  such a seat sets `sandbox = "off"` (label `weak`). An MCP server in your grok config would start inside the
-  leg, so a seat with one is refused at preflight, and a leg that started one fails: use `XAI_API_KEY` (the leg
-  then runs on its own empty grok home) or disable the server in your grok config yourself. Reads outside the
+  such a seat sets `sandbox = "off"` (label `weak`). No leg with the sandbox on has been recorded: the
+  `pending` label for a sandbox-on seat with no MCP server is the plan's placeholder, not a measured result. An MCP server in your grok config would start inside the
+  leg, so a seat with one is refused at preflight, and a leg that started one fails. Give the seat
+  `auth_home = "/abs/dir"`, its own grok home with no MCP config, logged in once with
+  `GROK_HOME=/abs/dir grok login` (`--device-auth` on a machine with no browser); or use `XAI_API_KEY` (the leg
+  then runs on its own empty grok home); or disable the server in your grok config yourself. `doctor` shows
+  which grok home each seat uses. Reads outside the
   root are not refused before they run (measured): the ratifier catches them.
 - **opencode.** Seats run `opencode acp` with a council agent, on per-leg XDG dirs and database, so saved
   opencode accounts never reach a leg: credentials come from provider environment variables, or use the free
