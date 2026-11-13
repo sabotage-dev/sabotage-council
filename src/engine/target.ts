@@ -168,7 +168,8 @@ export function snapshotTree(top: string, headSha: string, options: { paths?: re
         git(['update-index', '--add', '--cacheinfo', `${mode},${blob},${p}`], top, env);
       }
     } else {
-      git(['add', '--update', '--', '.'], top, env);
+      // No pathspec: `add --update -- .` fails ("did not match any file(s)") when the head tracks no file.
+      git(['add', '--update'], top, env);
       const excludes = userExcludesFile(options.env);
       const listed = runGit(['-c', `core.excludesFile=${excludes ?? '/dev/null'}`, 'ls-files', '--others', '--exclude-standard', '-z'], { cwd: top, env });
       const untracked = splitNul(listed.stdout).map((raw) => decodeName(raw, 'the untracked files'));

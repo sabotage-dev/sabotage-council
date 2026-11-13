@@ -263,6 +263,23 @@ describe('round runner end to end through the fake CLIs', () => {
     expect(getEvents(h.store.db, prepared.inputs.roundId).find((e) => e.kind === 'relaunch')?.detail).toMatchObject({ seat: 'a', attempt: 2, failure_class: 'timeout' });
   }, 60_000);
 
+  it('a claude leg killed at its cap is a timeout, not contaminated, and is relaunched once', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const { prepared, result } = await runRound(
+      h,
+      resolveDiffTarget(repo, 'main..feature'),
+      { claude: { [OCC.c]: [claudeCase('success', { hangAfterInit: true }), claudeCase('success')] } },
+      { legTimeoutMs: 3000, roundBudgetMs: 20_000 },
+    );
+    expect(result.ratified).toBe(3);
+    const c = getLegs(h.store.db, prepared.inputs.roundId).filter((l) => l.seat_id === 'c');
+    expect(c.map((l) => [l.attempt, l.status, l.failure_class])).toEqual([
+      [1, 'FAIL', 'timeout'],
+      [2, 'PASS', null],
+    ]);
+  }, 60_000);
+
   it('a leg that times out again is out after one relaunch, and its process group is gone', async () => {
     const h = harness();
     const { repo } = fixtureRepo();
@@ -668,6 +685,16 @@ describe('fold row 2: the snapshot honours the user excludes and leaves secrets 
     expect(treeFiles(repo, t2.head)).toContain('global-only.log');
   });
 
+  it('snapshots untracked work on a head that tracks no file', () => {
+    const repo = scratch('sc-empty-head-');
+    git(repo, ['init', '-q', '-b', 'main']);
+    git(repo, ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+    writeFileSync(join(repo, 'first.py'), 'x = 1\n');
+    const home = scratch('sc-user-home-');
+    const t = resolveDiffTarget(repo, undefined, { env: { PATH: process.env['PATH'], HOME: home } });
+    expect(treeFiles(repo, t.head)).toEqual(['first.py']);
+  });
+
   it('keeps a globally ignored .env and secret-named untracked files out of the root, and warns', async () => {
     const h = harness();
     const { repo } = fixtureRepo();
@@ -968,7 +995,9 @@ describe('fold rows 12-13: a clean root for every fallback and relaunch; one sea
     expect(result).toMatchObject({ quorum: 'council', ratified: 2 });
     const legs = getLegs(h.store.db, prepared.inputs.roundId);
     expect(legs.filter((l) => l.status === 'RUNNING')).toEqual([]);
-    // Not counted. (The claude ratifier fails a leg with no result line on permission-denials, so it is CONTAMINATED.)
+    // Not counted. This leg is cancelled before its init line, and the claude ratifier fails the init-based checks
+    // (offered, permission-mode, cwd) as contaminated when there is no init (a parked follow-up). A leg killed after
+    // init is a timeout: see 'a claude leg killed at its cap'.
     expect(['FAIL', 'CONTAMINATED']).toContain(legs.find((l) => l.seat_id === 'c')?.status);
     expect(getEvents(h.store.db, prepared.inputs.roundId).some((e) => e.kind === 'poll-fail')).toBe(true);
     const record = JSON.parse(readFileSync(join(prepared.roundDir, 'legs', 'c-primary-1', 'process.json'), 'utf8')) as { exit: { doneBy: string } };
