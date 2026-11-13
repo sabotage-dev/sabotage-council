@@ -116,6 +116,9 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     expect(summary.pr).toMatchObject({ kind: 'council', dry_run: true, next: `sabotage-council adjudicate ${id} <ADJUDICATION.json>` });
     const shown = JSON.parse((await c.run('round', 'show', String(id), '--json')).lines.join('\n')) as RoundSummary;
     expect(shown.pr).toMatchObject({ next: `sabotage-council post ${id} --dry-run`, event_posted: null });
+    const text = (await c.run('round', 'show', String(id))).lines;
+    expect(text).toContain(`pr: council round, dry run (never posts); marker "sabotage-council round 3 on sabotage-dev/sabotage-council#2 at ${src.shas['C7']!.slice(0, 7)}"`);
+    expect(text).toContain(`posted: nothing yet; next: sabotage-council post ${id} --dry-run`);
 
     const reads = c.gh.requests().map((r) => r.key);
     expect(reads).toEqual(

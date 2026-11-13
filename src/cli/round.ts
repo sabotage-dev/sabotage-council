@@ -254,6 +254,11 @@ export function renderSummary(s: RoundSummary): string[] {
     out.push('earlier items:');
     for (const i of s.earlier_items) out.push(`  ${i.id} ${i.severity}${i.closed_context ? ' (closed context)' : ''}`);
   }
+  if (s.pr !== undefined) {
+    const p = s.pr;
+    out.push(`pr: ${p.kind} round${p.dry_run ? ', dry run (never posts)' : ''}; marker "${String(p.marker)}"`);
+    out.push(`posted: ${p.event_posted === null ? 'nothing yet' : `${p.event_posted}, review ${String(p.review_id)} at ${String(p.posted_at)}`}; next: ${p.next}`);
+  }
   if (s.adjudication !== null) {
     const a = s.adjudication;
     out.push(`adjudication: verdict ${String(a.verdict)}, owed ${String(a.owed)}, approve ${a.approve === true ? 'yes' : 'no'}, needs ruling ${a.needs_ruling ? 'yes' : 'no'}`);
