@@ -6,7 +6,7 @@ import { changeRequestAsks, countRounds, reviewItems, userChangeRequest, type Cr
 import { ForgeError, type GitHubApi } from '../forge/github.js';
 import { findIdentity, type IdentityMatch } from '../forge/identity.js';
 import { identityMarker, roundMarker } from '../forge/markers.js';
-import { checkPrFiles, ensureMirror, fetchExact, fetchPr, githubUrl, mirrorPath, treeOf, type MirrorSource } from '../forge/mirror.js';
+import { checkPrFiles, defaultMirrorSource, ensureMirror, fetchExact, fetchPr, mirrorPath, treeOf, type MirrorSource } from '../forge/mirror.js';
 import { authorTrusted, loginMismatch, prLabel, readPr, repoKeyOf, type PrRef, type PrSnapshot } from '../forge/pr.js';
 import type { PrData } from '../root/data-files.js';
 import { commitExists, type ShadowRepo } from '../root/git.js';
@@ -39,6 +39,9 @@ export interface PrRoundOptions {
   api: GitHubApi;
   /** Where the mirror fetches from. Default: `https://github.com/<owner>/<repo>.git`, with gh as credential helper. */
   source?: ((ref: PrRef) => MirrorSource) | undefined;
+  /** The environment and the `gh` the API calls run with; the default mirror source's credential helper gets the same (row 7). */
+  env?: NodeJS.ProcessEnv | undefined;
+  ghBin?: string | undefined;
   /** `--dry-run`: the round renders its post and never posts. A closed PR takes only a dry run. */
   dryRun: boolean;
   /** `--no-identity`: take a council round even when the identity path would apply. */
@@ -187,7 +190,7 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
   }
 
   const mirror = ensureMirror(mirrorPath(join(dirname(o.layout.dbPath), 'mirrors'), o.ref));
-  const source = o.source?.(o.ref) ?? { url: githubUrl(o.ref) };
+  const source = o.source?.(o.ref) ?? defaultMirrorSource(o.ref, o.env ?? process.env, o.ghBin);
   fetchPr(mirror, source, o.ref, pr.baseRef, pr.headSha, pr.baseSha);
   const files = checkPrFiles(mirror, pr.baseSha, pr.headSha, pr.files);
   if (!files.checked) warnings.push(files.note);

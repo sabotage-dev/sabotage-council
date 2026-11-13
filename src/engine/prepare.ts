@@ -146,7 +146,9 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
       base: t.base ?? undefined,
       baseline: numbering.baseline ?? undefined,
       foldPaths: t.foldPaths ?? undefined,
-      baselineSnapshot: baselineIsSnapshot(t.repoTop, numbering.baseline, t.head),
+      // A pr round's baseline is a GitHub head, never an engine snapshot: a PR commit forged with the snapshot identity
+      // and message must not skip the not-ancestor check (P6 round 1 row 15).
+      baselineSnapshot: t.mode === 'pr' ? false : baselineIsSnapshot(t.repoTop, numbering.baseline, t.head),
       previousReviews: previous,
       context: t.context,
       pr: pr?.prData,

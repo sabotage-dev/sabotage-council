@@ -13,7 +13,10 @@ import { PR_FILES_MAX, type PrFile, type PrRef } from './pr.js';
  *
  * Fetches allow exactly one protocol: https for a GitHub URL, or `file` for a local path the caller named (the
  * tests' stand-in remote). The URL never comes from PR data. A private repository authenticates through
- * `gh auth git-credential`, so the engine never holds the token.
+ * `gh auth git-credential` as git's only credential helper. The engine never reads, stores or logs a GitHub token,
+ * and never writes one to a root; but a setup that authenticates `gh` only by `GH_TOKEN` (or `GITHUB_TOKEN`) needs
+ * that variable in the helper's environment, since `gh auth git-credential` reads it from there. So the token
+ * reaches git's environment for the fetch, as it reaches `gh`'s for the API calls (P6 round 1 row 7).
  */
 
 export interface MirrorSource {
@@ -26,6 +29,15 @@ export interface MirrorSource {
 }
 
 export const githubUrl = (ref: Pick<PrRef, 'owner' | 'repo'>): string => `https://github.com/${ref.owner}/${ref.repo}.git`;
+
+/**
+ * The default source of a PR's mirror: the GitHub https URL, with `gh` as the credential helper running with the
+ * same environment (and the same `gh`) as the API calls, so a `GH_TOKEN`-only setup that can read the PR can also
+ * fetch it (row 7).
+ */
+export function defaultMirrorSource(ref: Pick<PrRef, 'owner' | 'repo'>, env: NodeJS.ProcessEnv, ghBin?: string): MirrorSource {
+  return { url: githubUrl(ref), env, ghBin };
+}
 
 export function mirrorPath(mirrorsDir: string, ref: Pick<PrRef, 'owner' | 'repo'>): string {
   for (const s of [ref.owner, ref.repo]) {
@@ -43,10 +55,15 @@ export function ensureMirror(gitDir: string): ShadowRepo {
   return { gitDir, source: gitDir };
 }
 
-/** Variables the credential helper may read; nothing else of the user's environment reaches a fetch. */
+/**
+ * Variables the credential helper (`gh auth git-credential`) may read: its token and config, and the proxy and CA
+ * settings of its https call. Nothing else of the user's environment reaches a fetch. The values are passed through
+ * to the helper only: never logged, stored, or written anywhere.
+ */
 const HELPER_ENV = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST', 'GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy', 'SSL_CERT_FILE'];
 
-function fetchConfig(source: MirrorSource): { args: string[]; env: NodeJS.ProcessEnv } {
+/** The git config and environment of one fetch from a source (exported for the credential-helper test). */
+export function fetchConfig(source: MirrorSource): { args: string[]; env: NodeJS.ProcessEnv } {
   const env: NodeJS.ProcessEnv = {};
   if (source.url.startsWith('https://')) {
     for (const k of HELPER_ENV) if (source.env?.[k] !== undefined) env[k] = source.env[k];

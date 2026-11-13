@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// A stub `gh` for the pr-mode tests: it answers `gh api ...` from recorded JSON and logs every request.
+// A stub `gh` for the pr-mode tests: it answers `gh api ...` from recorded JSON and logs every request, and answers
+// `gh auth git-credential get` from GH_TOKEN.
 // $FAKE_GH_DIR/routes.json maps "<METHOD> <path without query>" (or "graphql") to a response:
 //   { "json": <value> } | { "file": "<path>" } | { "fail": "<stderr text>" }
 //   | { "echoReview": { "id": n, "login": "x", "commitId"?: "<sha GitHub binds it to, default the request's>" } }
@@ -8,6 +9,15 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+const args0 = process.argv.slice(2);
+if (args0[0] === 'auth' && args0[1] === 'git-credential') {
+  // `gh auth git-credential get`, as git's credential helper runs it: answers from GH_TOKEN in its own environment,
+  // the way gh does for a token-only setup; with no token it has nothing to give.
+  readFileSync(0, 'utf8');
+  if (args0[2] !== 'get' || !process.env.GH_TOKEN) process.exit(1);
+  process.stdout.write(`protocol=https\nhost=github.com\nusername=x-access-token\npassword=${process.env.GH_TOKEN}\n`);
+  process.exit(0);
+}
 const dir = process.env.FAKE_GH_DIR;
 if (!dir) {
   process.stderr.write('fake-gh: FAKE_GH_DIR is not set\n');

@@ -259,7 +259,8 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     const human = ghReview(7102, 'alice', 'CHANGES_REQUESTED', src.shas['C7']!, '2026-11-12T19:01:00Z', 'Please rename step 7.');
     // The user's own unmarked change request, on an earlier head: its ask is answered (closed), and it is a human's,
     // so it is never dismissed either.
-    const mine = ghReview(7104, 'reviewer-x', 'CHANGES_REQUESTED', src.shas['C6']!, '2026-11-12T18:45:00Z', 'Rename the steps.');
+    // Submitted after our marked change request (row 18: an older one would have been replaced by it).
+    const mine = ghReview(7104, 'reviewer-x', 'CHANGES_REQUESTED', src.shas['C6']!, '2026-11-12T19:02:00Z', 'Rename the steps.');
     jsonList(routes, `GET ${PULL}/reviews`).push(ours, human, mine);
     // CI pending: a hold, so a COMMENT (row 8), with nothing owed.
     const pr = ((json(routes, 'graphql')['data'] as Json)['repository'] as Json)['pullRequest'] as Json;
@@ -423,6 +424,32 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     }
     await Promise.all(c.workers);
   }, 60_000);
+
+  it('row 17: credit refuses a review whose first line is a round, identity or markers_also_count marker', async () => {
+    const src = sourceRepo();
+    const routes = pr2Routes(src.shas);
+    const reviews = jsonList(routes, `GET ${PULL}/reviews`);
+    // A round marker review by the user (the recorded round 2), an identity approval, and a markers_also_count line.
+    routes[`GET ${PULL}/reviews/5880077789`] = { json: reviews.find((r) => r['id'] === 5880077789)! };
+    routes[`GET ${PULL}/reviews/6101`] = { json: ghReview(6101, 'repo-owner', 'APPROVED', src.shas['C5']!, '2026-11-12T18:20:00Z', `sabotage-council identity approval on sabotage-dev/sabotage-council#2 at ${src.shas['C5']!.slice(0, 7)}`) };
+    routes[`GET ${PULL}/reviews/6102`] = { json: ghReview(6102, 'repo-owner', 'COMMENTED', src.shas['C5']!, '2026-11-12T18:21:00Z', 'Council round 2 at abcdef0') };
+    const c = cli(routes, src, '[github]\nlogin = "repo-owner"\nmarkers_also_count = ["Council round"]\n');
+    for (const [id, kind] of [
+      ['5880077789', 'round'],
+      ['6101', 'identity'],
+      ['6102', 'markers_also_count'],
+    ] as const) {
+      const r = await c.run('credit', 'sabotage-dev/sabotage-council#2', id);
+      expect(r.code, id).toBe(1);
+      expect(r.lines.join('\n')).toContain(`review ${id} starts with a ${kind} marker: the round count's marker rules decide whether it counts, so it cannot be credited`);
+    }
+    const store = openStore(c.paths.dbPath);
+    try {
+      expect(store.db.prepare('SELECT count(*) AS n FROM credits').get()).toMatchObject({ n: 0 });
+    } finally {
+      store.close();
+    }
+  });
 
   it('fails closed on a GitHub read that fails: round start exits 1 and stores no round', async () => {
     const src = sourceRepo();

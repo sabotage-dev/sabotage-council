@@ -74,6 +74,8 @@ export async function roundStartPr(io: PrIo, paths: StorePaths, args: StartPrArg
       ref,
       api: apiOf(io),
       source: io.mirrorSource,
+      env: io.env,
+      ghBin: io.ghBin,
       dryRun: args.dryRun,
       identity: args.identity,
       facts: args.facts,
@@ -176,8 +178,7 @@ export async function creditCommand(io: PrIo, paths: StorePaths, target: string,
   const store = openStore(paths.dbPath);
   try {
     const ref = parsePrRef(target);
-    const login = markerConfig(cfg).login;
-    const c = addCredit(store, apiOf(io), ref, reviewId, login, note ?? null);
+    const c = addCredit(store, apiOf(io), ref, reviewId, markerConfig(cfg), note ?? null);
     io.write(`credited review ${reviewId} on ${prLabel(ref)}: head ${c.commitId.slice(0, 7)}, submitted ${c.submittedAt}`);
   } catch (error) {
     io.write(`error: ${error instanceof Error ? error.message : String(error)}`);

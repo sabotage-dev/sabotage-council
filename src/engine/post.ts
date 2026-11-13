@@ -691,10 +691,20 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   return result;
 }
 
-/** Reads one review for a hand credit (plan 3.6 step 4) and stores it; refuses a pending review or one off this PR. */
-export function addCredit(store: Store, api: GitHubApi, ref: PrRef, reviewId: number, by: string, note: string | null): { commitId: string; submittedAt: string } {
+/**
+ * Reads one review for a hand credit (plan 3.6 step 4) and stores it; refuses a pending review, one off this PR, and
+ * one whose first line carries a round, identity or `markers_also_count` marker (P6 round 1 row 17): the marker rules
+ * already decide whether such a review counts (a stranger's, a sha mismatch, an identity approval: never), and a
+ * credit must not overrule them.
+ */
+export function addCredit(store: Store, api: GitHubApi, ref: PrRef, reviewId: number, cfg: MarkerConfig, note: string | null): { commitId: string; submittedAt: string } {
   const r = normalizeReview(api.get(`${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number, 'reviews', reviewId)}`));
   if (r.state === 'PENDING' || r.submittedAt === '') throw new ForgeError(`review ${reviewId} is not submitted`);
+  const marker = parseMarker(r.body, cfg.markers_also_count);
+  if (marker !== null) {
+    throw new ForgeError(`review ${reviewId} starts with a ${marker.kind === 'also' ? 'markers_also_count' : marker.kind} marker: the round count's marker rules decide whether it counts, so it cannot be credited`);
+  }
+  const by = cfg.login;
   store.db
     .prepare(
       `INSERT INTO credits (repo, num, review_id, commit_id, submitted_at, credited_by, credited_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)

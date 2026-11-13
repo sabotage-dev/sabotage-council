@@ -142,9 +142,22 @@ describe("the user's own change request (plan 3.8, 3.9)", () => {
     const unmarked = review({ at: at(2), head: A, state: 'CHANGES_REQUESTED', body: 'Please rename x.' });
     expect(userChangeRequest([marked, unmarked], CFG, B)).toEqual({ review: unmarked, onHead: false });
     expect(userChangeRequest([marked, unmarked], CFG, A)).toEqual({ review: unmarked, onHead: true });
-    // A later marker review by the same login does not clear it: only the user's own unmarked reviews count.
-    const later = review({ at: at(3), head: B, state: 'APPROVED', body: mark(2, B) });
-    expect(userChangeRequest([marked, unmarked, later], CFG, B)?.review.id).toBe(unmarked.id);
+    // A later marked COMMENT sets no standing, and a later marked review that was dismissed no longer stands: the
+    // unmarked request stays the user's.
+    const note = review({ at: at(3), head: B, state: 'COMMENTED', body: mark(2, B) });
+    expect(userChangeRequest([marked, unmarked, note], CFG, B)?.review.id).toBe(unmarked.id);
+    const gone = review({ at: at(3), head: B, state: 'DISMISSED', body: mark(2, B) });
+    expect(userChangeRequest([marked, unmarked, gone], CFG, B)?.review.id).toBe(unmarked.id);
+  });
+
+  it("row 18: the login's later marked APPROVE or REQUEST_CHANGES replaces its older unmarked request, as on GitHub", () => {
+    const unmarked = review({ at: at(2), head: A, state: 'CHANGES_REQUESTED', body: 'Please rename x.' });
+    for (const state of ['APPROVED', 'CHANGES_REQUESTED']) {
+      const later = review({ at: at(3), head: B, state, body: mark(2, B) });
+      expect(userChangeRequest([unmarked, later], CFG, B), state).toBeNull();
+      // A marked review older than the request does not replace it.
+      expect(userChangeRequest([{ ...later, submittedAt: at(1) }, unmarked], CFG, B)?.review.id, state).toBe(unmarked.id);
+    }
   });
 
   it('a later COMMENTED review leaves it standing; a later approval or a dismissal clears it', () => {
@@ -182,6 +195,21 @@ describe('earlier reviews carried as items (plan 3.5)', () => {
       [`R${human.id}`, 'change-request'],
     ]);
     expect(items[1]?.text).toContain('Inline comment on x.ts:2:');
+  });
+
+  it("row 13: a council login's unmarked change request is carried like any reviewer's, until its marked review replaces it", () => {
+    const byHand = review({ at: at(4), head: B, login: 'council-bot', state: 'CHANGES_REQUESTED', body: 'Not yet: the loop.' });
+    const reviews = [review({ at: at(1), head: A, body: mark(1, A) }), byHand];
+    const items = reviewItems({ reviews, comments: [], count: count(reviews, C), cfg: CFG, ours: new Set() });
+    expect(items.map((i) => [i.id, i.kind, i.login])).toEqual([
+      [`R${reviews[0]!.id}`, 'council-review', 'me'],
+      [`R${byHand.id}`, 'change-request', 'council-bot'],
+    ]);
+    const replaced = [...reviews, review({ at: at(5), head: B, login: 'council-bot', state: 'APPROVED', body: mark(2, B) })];
+    expect(reviewItems({ reviews: replaced, comments: [], count: count(replaced, C), cfg: CFG, ours: new Set() }).map((i) => i.kind)).not.toContain('change-request');
+    // Its marked change request is a council review, never an ask.
+    const marked = [review({ at: at(6), head: B, login: 'council-bot', state: 'CHANGES_REQUESTED', body: mark(2, B) })];
+    expect(reviewItems({ reviews: marked, comments: [], count: count(marked, C), cfg: CFG, ours: new Set() }).map((i) => i.kind)).toEqual(['council-review']);
   });
 });
 

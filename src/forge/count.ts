@@ -152,17 +152,44 @@ export interface UserChangeRequest {
   onHead: boolean;
 }
 
+const SETS_STANDING = new Set(['APPROVED', 'CHANGES_REQUESTED']);
+
 /**
- * The user's own open change request (plan 3.8, 3.9): `github.login`'s newest standing review that carries no
- * marker of any kind, when it is CHANGES_REQUESTED. The engine posts as the same login, so its own marker reviews
- * (a council REQUEST_CHANGES included) are never the user's request. On the current head it is a hold; on an
- * earlier head its asks go into the brief.
+ * A login's own change request: its newest standing review that carries no marker of any kind, when it is
+ * CHANGES_REQUESTED and no marked APPROVE or REQUEST_CHANGES by the same login came after it. GitHub keeps one standing
+ * review per reviewer, so the login's later council review replaced it there; re-raising its asks every round would
+ * undo that (P6 round 1 row 18). A later marked COMMENT sets no standing, and a later dismissed one no longer stands,
+ * so neither replaces it.
+ */
+function unmarkedChangeRequest(reviews: readonly Review[], login: string, cfg: MarkerConfig): Review | null {
+  const mine = reviews.filter((r) => sameLogin(r.login, login) && r.state !== 'PENDING');
+  const marked = (r: Review): boolean => parseMarker(r.body, cfg.markers_also_count) !== null;
+  const latest = latestStanding(mine.filter((r) => !marked(r)));
+  if (latest?.state !== 'CHANGES_REQUESTED') return null;
+  const at = (r: Review) => ({ at: r.submittedAt, reviewId: r.id });
+  const replaced = mine.some((r) => SETS_STANDING.has(r.state) && marked(r) && byTime(at(latest), at(r)) < 0);
+  return replaced ? null : latest;
+}
+
+/**
+ * The user's own open change request (plan 3.8, 3.9): `github.login`'s unmarked change request that still stands (see
+ * unmarkedChangeRequest). The engine posts as the same login, so its own marker reviews (a council REQUEST_CHANGES
+ * included) are never the user's request. On the current head it is a hold; on an earlier head its asks go into the
+ * brief.
  */
 export function userChangeRequest(reviews: readonly Review[], cfg: MarkerConfig, head: string): UserChangeRequest | null {
-  const own = reviews.filter((r) => sameLogin(r.login, cfg.login) && r.state !== 'PENDING' && parseMarker(r.body, cfg.markers_also_count) === null);
-  const latest = latestStanding(own);
-  if (latest?.state !== 'CHANGES_REQUESTED') return null;
+  const latest = unmarkedChangeRequest(reviews, cfg.login, cfg);
+  if (latest === null) return null;
   return { review: latest, onHead: latest.commitId.toLowerCase() === head.toLowerCase() };
+}
+
+/**
+ * Each `council_logins` reviewer's unmarked change request that still stands (P6 round 1 row 13): a council login
+ * that requests changes by hand is a human reviewer there, so its asks are carried like any other reviewer's.
+ */
+function councilLoginChangeRequests(reviews: readonly Review[], cfg: MarkerConfig): Review[] {
+  const logins = [...new Map(cfg.council_logins.filter((l) => !sameLogin(l, cfg.login)).map((l) => [l.toLowerCase(), l])).values()];
+  return logins.map((l) => unmarkedChangeRequest(reviews, l, cfg)).filter((r): r is Review => r !== null);
 }
 
 /** Caps one item's text: a review body can hold up to 65,536 characters. */
@@ -205,7 +232,8 @@ export interface ReviewItem {
  * - every counted council review at the baseline head that this store did not adjudicate (another council, or this
  *   engine from another store): the reviews at the baseline carry the earlier rounds' open items forward;
  * - every other reviewer's (outside `github.login` and `council_logins`) newest standing review, when it is
- *   CHANGES_REQUESTED, on any head.
+ *   CHANGES_REQUESTED, on any head;
+ * - every `council_logins` reviewer's unmarked change request that still stands, on any head (row 13).
  * Each holds the review's body and its inline comments, as data.
  */
 export function reviewItems(input: {
@@ -233,7 +261,7 @@ export function reviewItems(input: {
       items.push({ id: `R${r.id}`, reviewId: r.id, login: r.login, kind: 'council-review', text: text(r, `Council review R${r.id}`) });
     }
   }
-  for (const latest of othersChangeRequests(reviews, cfg)) {
+  for (const latest of [...othersChangeRequests(reviews, cfg), ...councilLoginChangeRequests(reviews, cfg)]) {
     if (items.some((i) => i.reviewId === latest.id)) continue;
     items.push({ id: `R${latest.id}`, reviewId: latest.id, login: latest.login, kind: 'change-request', text: text(latest, `Change request R${latest.id}`) });
   }
@@ -252,11 +280,11 @@ function othersChangeRequests(reviews: readonly Review[], cfg: MarkerConfig): Re
 }
 
 /**
- * Every human change request standing on the PR, on any head (plan 3.5, 3.8): the user's own unmarked one and every
- * other reviewer's. A round carries each one it saw (asks, a hold or an R item); at post time one it did not carry
- * holds an approval, since its asks were never adjudicated (P6 round 1 row 12).
+ * Every human change request standing on the PR, on any head (plan 3.5, 3.8): the user's own unmarked one, each
+ * council login's unmarked one, and every other reviewer's. A round carries each one it saw (asks, a hold or an R
+ * item); at post time one it did not carry holds an approval, since its asks were never adjudicated (row 12).
  */
 export function standingChangeRequests(reviews: readonly Review[], cfg: MarkerConfig): Review[] {
   const own = userChangeRequest(reviews, cfg, '');
-  return [...(own === null ? [] : [own.review]), ...othersChangeRequests(reviews, cfg)];
+  return [...(own === null ? [] : [own.review]), ...councilLoginChangeRequests(reviews, cfg), ...othersChangeRequests(reviews, cfg)];
 }

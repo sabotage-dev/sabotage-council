@@ -3,7 +3,8 @@ import { spawnSync } from 'node:child_process';
 /*
  * GitHub access for `pr` rounds (plan 5.1 `forge/`, 9.3), through the user's own `gh` CLI (`gh api`). Why `gh` and
  * not an SDK or `fetch`: `gh` already holds the user's login (keychain, `GH_TOKEN`, enterprise hosts), so the engine
- * never reads, stores or forwards a GitHub token (the same stance as plan 6.5 for every other credential); it
+ * never reads, stores or logs a GitHub token (the same stance as plan 6.5 for every other credential): a `GH_TOKEN`
+ * in the environment reaches only `gh` itself, here and as the mirror fetch's credential helper (mirror.ts); it
  * paginates (`--paginate --slurp`) and fails the whole read with a non-zero exit when any page fails, which is the
  * fail-closed read plan 3.6 asks for; and a stub `gh` on PATH replays recorded JSON in the tests, so the end-to-end
  * test runs the same code as a live round. No new dependency.

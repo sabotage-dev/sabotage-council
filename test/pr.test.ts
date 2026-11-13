@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { adjudicate } from '../src/adjudicate/index.js';
@@ -9,7 +9,9 @@ import { postRound, type PostOptions, type PostResult } from '../src/engine/post
 import { openStore } from '../src/store/index.js';
 import { preparePrRound, type PrRoundOptions } from '../src/engine/pr.js';
 import { ghApi } from '../src/forge/github.js';
-import { checkPrFiles } from '../src/forge/mirror.js';
+import { checkPrFiles, defaultMirrorSource, fetchConfig } from '../src/forge/mirror.js';
+import { gitEnv } from '../src/root/git.js';
+import { SNAPSHOT_MESSAGE } from '../src/engine/target.js';
 import { PR_FILES_MAX } from '../src/forge/pr.js';
 import { parseConfigText, type CouncilConfig } from '../src/config/index.js';
 import { cleanScratchAfterAll } from './helpers/fixtures.js';
@@ -525,6 +527,49 @@ describe('pr rounds: a superseded round', () => {
     expect(next.prepared.inputs.roundNo).toBe(4);
     expect(next.prepared.inputs.earlierItems.map((i) => i.id)).toEqual([owedId, 'R5880199419']);
   }, 60_000);
+});
+
+describe('pr round inputs (P6 round 1)', () => {
+  it('row 15: a PR commit forged with the snapshot identity and message is a GitHub head: a force-push past it is a full round', async () => {
+    const w = await world((r, src) => {
+      reopen(r);
+      // S: a commit on C7 that looks like an engine snapshot; a council reviewed it (round 4), so it is the baseline.
+      git(src.repo, ['checkout', '--quiet', '--detach', src.shas['C7']!]);
+      writeFileSync(join(src.repo, 'src-forged.txt'), 'x\n');
+      git(src.repo, ['add', '--all']);
+      git(src.repo, ['commit', '--quiet', '--author', 'sabotage-council <sabotage-council@localhost>', '-m', SNAPSHOT_MESSAGE]);
+      const forged = git(src.repo, ['rev-parse', 'HEAD']);
+      git(src.repo, ['update-ref', 'refs/heads/forged', forged]);
+      git(src.repo, ['checkout', '--quiet', 'main']);
+      jsonList(r, `GET ${API_PULL}/reviews`).push({ id: 7401, user: { login: 'repo-owner' }, state: 'COMMENTED', commit_id: forged, submitted_at: '2026-11-12T19:00:00Z', body: `sabotage-council round 4 on sabotage-dev/sabotage-council#2 at ${forged.slice(0, 7)}` });
+      // Then a force-push: H sits on C7 (S's parent), not on S.
+      moveHead(r, pushCommit(src, 'H', { 'src/step8.py': 'x = 8\n' }), src);
+    });
+    const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
+    if (r.kind !== 'council') throw new Error('expected a council round');
+    expect(r.prepared.inputs).toMatchObject({ roundNo: 5, scope: 'fallback' });
+    expect(r.prepared.inputs.fullRoundReason).toContain('is not an ancestor of this head (force-push or rebase)');
+  }, 60_000);
+
+  it("row 7: a token-only gh setup can fetch: the default mirror source hands the API's environment to gh auth git-credential", () => {
+    const env = { PATH: process.env['PATH'], GH_TOKEN: 'token-only-setup', HOME: '/nonexistent' };
+    const source = defaultMirrorSource({ owner: 'o', repo: 'r' }, env, FAKE_GH);
+    expect(source).toEqual({ url: 'https://github.com/o/r.git', env, ghBin: FAKE_GH });
+    const fill = (s: typeof source): { status: number | null; out: string } => {
+      const { args, env: helperEnv } = fetchConfig(s);
+      // Only the helper's variables reach git, and through it the helper: never HOME or anything else of the user's.
+      expect(Object.keys(helperEnv).sort()).toEqual(Object.keys(s.env ?? {}).filter((k) => k === 'GH_TOKEN').sort());
+      const r = spawnSync('git', [...args, 'credential', 'fill'], { input: 'protocol=https\nhost=github.com\n\n', env: { ...gitEnv(), ...helperEnv }, encoding: 'utf8', timeout: 20_000 });
+      return { status: r.status, out: r.stdout };
+    };
+    const ok = fill(source);
+    expect(ok.status).toBe(0);
+    expect(ok.out).toContain('password=token-only-setup');
+    // Without the token in that environment the helper has nothing, and git does not prompt.
+    const none = fill(defaultMirrorSource({ owner: 'o', repo: 'r' }, { PATH: process.env['PATH'] }, FAKE_GH));
+    expect(none.status).not.toBe(0);
+    expect(none.out).not.toContain('password=');
+  });
 });
 
 describe("the changed-file cross-check (GitHub's list against the fetched commits)", () => {
