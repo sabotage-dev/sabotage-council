@@ -70,21 +70,28 @@ sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, prin
   <path|repo@ref>` adds other paths or repositories to the root, `--fact <text>` gives the seats an established fact
   they must not refile, and `--question <text>` (at most 3) replaces the default questions.
 - `round start diff [<base>..<head>]` reviews a branch diff; the default is the merge-base with the default branch
-  to HEAD, with uncommitted work snapshotted to a commit object (your index and branches are never touched).
-- `round start` numbers the round from the store (a head counts once a round on it is adjudicated), builds and
-  seals the root, writes the brief, and starts a detached worker that runs the legs; it prints the round id (or
-  JSON with `--json`) and returns. The worker preflights every seat serially, launches the legs in parallel,
-  moves a seat to its fallback within the round on `usage_limit` or `auth` (or when its primary fails preflight),
-  relaunches a leg once on `capacity`, `transport`, `empty` or `timeout` while the round has time, ratifies every
-  leg, sweeps the root for residue, and settles quorum: 2 or more ratified legs is a council round, 1 is a labelled
-  solo review that never approves, 0 fails the round.
+  to HEAD, with uncommitted work snapshotted to a commit object (your index and branches are never touched; your
+  global excludes apply, and untracked files named like secrets, such as `.env*` or `*.pem`, are left out with a
+  warning). An explicit range reviews committed history; `--uncommitted` adds the work tree.
+- `round start` numbers the round from the store (a head counts once a council round on it, with two or more
+  counted legs, is adjudicated; a plan round counts revisions of the plan, so an unrelated commit is not a new
+  round), builds and seals the root, writes the brief, and starts a detached worker that runs the legs; it prints
+  the round id (or JSON with `--json`) and returns. The worker preflights every seat and fallback serially,
+  launches the legs in parallel, moves a seat to its fallback within the round on `usage_limit` or `auth` (or when
+  its primary fails preflight), relaunches a leg once on `capacity`, `transport`, `empty` or `timeout` while the
+  round has time, rebuilds the root first if it changed, ratifies every leg, sweeps the root for residue, and
+  settles quorum over distinct occupants: 2 or more ratified legs is a council round, 1 is a labelled solo review
+  that never approves, 0 fails the round.
 - `round wait <id> [--timeout <minutes>]` exits 0 when the legs settle, 1 when the round failed (or its worker
   died), and 3 when the timeout ran out first.
-- `adjudicate <id> <file>` checks `ADJUDICATION.json` (plan 7.3) against the round and stores it only if every
-  check passes; each rejection names its class (`[attribution]`, `[round-rule]`, ...).
+- `adjudicate <id> <file> [--check]` checks `ADJUDICATION.json` (plan 7.3) against the round as the store
+  recorded it and stores it, once, only if every check passes; each rejection names its class (`[attribution]`,
+  `[round-rule]`, ...). `--check` validates only and lists every majority override with its proof, to show before
+  storing.
 - Every command takes `--config`, `--db` and `--roots`. The store defaults to
   `~/.local/share/sabotage-council/council.db`, with round dirs in `rounds/<id>/` beside it; roots are built under
-  `~/.cache/sabotage-council/roots/` and deleted once the round is adjudicated.
+  `~/.cache/sabotage-council/roots/` as `<store tag>-<round id>-a<attempt>` and deleted, by that name only, once the
+  round is adjudicated. A round dir's `round.json` is a display copy: the store decides.
 
 The Claude Code plugin in [plugin/](plugin/) runs this loop from a session: `/sabotage-council:council plan
 <file>` or `diff`, then the session adjudicates by [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md).

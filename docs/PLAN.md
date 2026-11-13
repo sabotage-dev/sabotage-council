@@ -252,7 +252,14 @@ Rules that hold in every round:
 - **Fail closed.** If any read fails or is partial, the round does not run; the engine never guesses round 1.
 - **Plan and diff targets.** The run store keeps the round number:
   - plan targets are keyed by repo + path;
-  - diff targets are keyed by repo + branch.
+  - diff targets are keyed by repo + branch (`HEAD` is the checked-out branch; a raw sha, a tag or a detached
+    HEAD is keyed by the resolved base);
+  - a head counts once a council round on it (two or more counted legs) is adjudicated: a solo-reviewed head is
+    never a baseline;
+  - plan targets count revisions of the plan (the content of the plan file and any in-repository `--context`
+    path), and fold on those paths only, so an unrelated commit is neither a new round nor in `FOLD.diff`;
+  - a follow-up snapshot of uncommitted work builds on the last reviewed snapshot when that one sits on the same
+    HEAD, so the round is a delta, not a rebase. (P5 round 1 fold.)
 - **Delta baseline.** The baseline head is the newest counted head other than the current one. The round falls
   back to a full review, keeping its number and its round rule, when the baseline is:
   - missing from the mirror;
@@ -889,8 +896,9 @@ A skipped seat can drop the round below quorum. The round then fails visibly; it
 
 ### 5.3 Review root
 
-- **Location.** A fresh directory per attempt under `~/.cache/sabotage-council/roots/<round-id>-a<N>/`, never
-  reused.
+- **Location.** A fresh directory per attempt under `~/.cache/sabotage-council/roots/<store tag>-<round-id>-a<N>/`
+  (the tag hashes the store's path, so two stores never share a name), created exclusively and never reused. The
+  engine deletes a root only by that name, as a direct child of the roots dir (P5 round 1 fold).
 - **Built from a bare mirror,** with git config isolated: `GIT_CONFIG_GLOBAL=/dev/null`, no hooks, no fsmonitor.
   `git archive` writes to a temp file and then extracts. Piping it failed rounds on macOS with SIGPIPE.
 - **Contents:**
