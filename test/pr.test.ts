@@ -854,7 +854,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
     expect([p.event, p.row]).toEqual(['APPROVE', 3]);
   }, 60_000);
 
-  it('row 8: an event that changed with the same body (auto.ci_red_event) is refused too', async () => {
+  it('row 8: an event that changed with the same body (auto.ci_red_event) is refused too, and --expect binds the event with the body', async () => {
     const w = await world((r, src) => {
       approvable(r, src);
       const pr = ((json(r, 'graphql')['data'] as Json)['repository'] as Json)['pullRequest'] as Json;
@@ -865,11 +865,28 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
     const shown = post(w, id, 'dry-run');
     expect([shown.event, shown.row]).toEqual(['REQUEST_CHANGES', 7]);
     const asComment = await config('[github]\nlogin = "repo-owner"\n[auto]\nci_gate = "all"\nci_red_event = "COMMENT"\n');
-    for (const expect_ of [undefined, shown.bodySha256!]) {
+    for (const expect_ of [undefined, shown.reviewSha256!]) {
       const p = postRound(w.h.store, { ...postOptions(w, id, 'post'), config: asComment, expect: expect_ });
       expect([p.outcome, p.event, p.bodySha256]).toEqual(['refused', 'COMMENT', shown.bodySha256]);
     }
     expect(postsSent(w)).toEqual([]);
+
+    // P6 round 2 row 3: two dry runs with the same body and different events. The value --expect takes covers the
+    // event and the body together, so the go for the first never sends the second's event (and the other way round).
+    const second = postRound(w.h.store, { ...postOptions(w, id, 'dry-run'), config: asComment });
+    expect([second.outcome, second.event, second.bodySha256]).toEqual(['rendered', 'COMMENT', shown.bodySha256]);
+    expect(second.reviewSha256).not.toBe(shown.reviewSha256);
+    expect(second.next).toBe(`sabotage-council post ${id} --post --expect ${second.reviewSha256!}`);
+    const crossed = postRound(w.h.store, { ...postOptions(w, id, 'post'), config: asComment, expect: shown.reviewSha256! });
+    expect([crossed.outcome, crossed.event]).toEqual(['refused', 'COMMENT']);
+    expect(crossed.problems.join()).toContain(`differs from the one --expect names (${shown.reviewSha256!.slice(0, 12)}`);
+    const back = postRound(w.h.store, { ...postOptions(w, id, 'post'), expect: second.reviewSha256! });
+    expect([back.outcome, back.event]).toEqual(['refused', 'REQUEST_CHANGES']);
+    expect(postsSent(w)).toEqual([]);
+    // The go for the COMMENT the user saw sends that COMMENT.
+    const sent = postRound(w.h.store, { ...postOptions(w, id, 'post'), config: asComment, expect: second.reviewSha256! });
+    expect([sent.outcome, sent.event]).toEqual(['posted', 'COMMENT']);
+    expect(postsSent(w).map((q) => (q.body as { event: string }).event)).toEqual(['COMMENT']);
   }, 60_000);
 
   it("row 3: a stranger's marker-shaped review and our own pending draft submitted meanwhile both withdraw the approval; a counted council review does not", async () => {

@@ -96,9 +96,11 @@ describe('plugin', () => {
     expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('posts, or runs any other');
     expect(read('plugin/commands/council.md')).toContain("this command's arguments are not that go");
     // P6 round 1 row 8: the post names the dry run the user saw, and a changed review waits for a new go.
-    expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('`sabotage-council post <id> --post --expect <the sha256 that dry run printed>`');
+    // P6 round 2 row 3: --expect takes the review sha256, one hash of the event and the body.
+    expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('`sabotage-council post <id> --post --expect <the review sha256 that dry run printed>`');
     expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('never post the new render on the old go');
-    expect(read('plugin/commands/council.md')).toContain('`sabotage-council post <id> --post --expect <the sha256 the dry run printed>`');
+    expect(read('plugin/commands/council.md')).toContain('`sabotage-council post <id> --post --expect <the review sha256 the dry run printed>`');
+    expect(read('plugin/ADJUDICATE.md')).toContain('`--post --expect <the review sha256 that dry run printed>`');
     const command = frontmatter(read('plugin/commands/council.md'));
     expect(command['description']).toBeTruthy();
     expect(command['argument-hint']).toContain('plan <file>');

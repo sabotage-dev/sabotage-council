@@ -138,6 +138,7 @@ export function renderPost(r: PostResult): string[] {
   const what = r.mode === 'dry-run' ? 'dry run (nothing posted)' : 'post';
   out.push(`round ${r.roundId} ${what}: ${r.outcome}${r.event !== null ? `, event ${r.event} (row ${String(r.row)})` : ''}, commit_id ${r.commitId}`);
   if (r.bodySha256 !== null) out.push(`body sha256 ${r.bodySha256}`);
+  if (r.reviewSha256 !== null) out.push(`review sha256 ${r.reviewSha256} (the event and the body: --expect takes this one)`);
   if (r.ci !== null) out.push(`ci ${r.ci.state}: ${r.ci.note}`);
   for (const p of r.problems) out.push(`  ${p}`);
   if (r.reviewId !== null) out.push(`review ${r.reviewId}`);

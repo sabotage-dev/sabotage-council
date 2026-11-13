@@ -44,7 +44,8 @@ Read every counted leg's full answer (`answer_path`), not only its findings bloc
   unread CI, the hold list, `auto.approve = false`, a solo round, or a change request that came after the round
   started, and maps everything by plan 3.7's table.
 - Nothing posts from here: posting is `sabotage-council post <id> --dry-run`, then, on the user's go,
-  `--post --expect <the sha256 that dry run printed>`.
+  `--post --expect <the review sha256 that dry run printed>` (one hash of the event and the body, so a go for one
+  event never sends another with the same body).
 
 ## Procedure
 

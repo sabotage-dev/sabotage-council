@@ -108,6 +108,13 @@ function openWithNewHead(): { routes: Routes; src: SourceRepo; d: string } {
 const REVIEWER = '[github]\nlogin = "reviewer-x"\ncouncil_logins = ["repo-owner"]\n';
 const posts = (gh: FakeGh) => gh.requests().filter((r) => r.method !== 'GET' && r.key !== 'graphql');
 
+
+/** The review sha256 a post printed: the value `--expect` takes (P6 round 2 row 3). */
+function reviewShaOf(lines: readonly string[]): string {
+  const line = lines.find((l) => l.startsWith('review sha256 '));
+  if (line === undefined) throw new Error(`no review sha256 line in:\n${lines.join('\n')}`);
+  return line.split(' ')[2]!;
+}
 describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
   it('as recorded: round 3 again on the reviewed head, adjudicated, rendered as a COMMENT (the author row); --post is refused', async () => {
     const src = sourceRepo();
@@ -342,7 +349,7 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     // The user sees a held approval (CI pending) and says "post it"; CI turns green before the --post.
     const shown = await c.run('post', String(id), '--dry-run');
     expect(shown.lines[0]).toContain('event COMMENT (row 8)');
-    const shownSha = shown.lines[1]!.replace('body sha256 ', '');
+    const shownSha = reviewShaOf(shown.lines);
     expect(shown.lines).toContain(`next: sabotage-council post ${id} --post --expect ${shownSha}`);
     c.gh.setRoutes(green);
     for (const args of [['--post'], ['--post', '--expect', shownSha]]) {
@@ -356,7 +363,8 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     }
     expect(posts(c.gh)).toEqual([]);
     const again = await c.run('post', String(id), '--dry-run');
-    const sha = again.lines[1]!.replace('body sha256 ', '');
+    const sha = reviewShaOf(again.lines);
+    const bodySha = again.lines[1]!.replace('body sha256 ', '');
     // --expect must name a render a dry run of this round printed, with the same event: a hash taken from elsewhere
     // (here: the dry runs forgotten) does not stand in for one.
     const store = openStore(c.paths.dbPath);
@@ -364,14 +372,19 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     store.db.prepare("DELETE FROM events WHERE round_id = ? AND kind = 'post-dry-run'").run(id);
     const unseen = await c.run('post', String(id), '--post', '--expect', sha);
     expect(unseen.code).toBe(1);
-    expect(unseen.lines.join('\n')).toContain(`no dry run of round ${id} printed APPROVE with body ${sha.slice(0, 12)}`);
+    expect(unseen.lines.join('\n')).toContain(`no dry run of round ${id} printed review ${sha.slice(0, 12)} (APPROVE with body ${bodySha.slice(0, 12)})`);
     for (const k of kept) store.db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES ('x', 'post-dry-run', ?, ?)").run(id, k.detail_json);
     store.close();
+    // P6 round 2 row 3: --expect takes the review sha256 (the event and the body); the body hash alone is refused.
+    const bodyOnly = await c.run('post', String(id), '--post', '--expect', bodySha);
+    expect(bodyOnly.code).toBe(1);
+    expect(bodyOnly.lines.join('\n')).toContain('differs from the one --expect names');
     const posted = await c.run('post', String(id), '--post', '--expect', sha);
     expect(posted.code, posted.lines.join('\n')).toBe(0);
     expect(posts(c.gh)).toHaveLength(1);
     expect((posts(c.gh)[0]?.body as { event: string; body: string })).toMatchObject({ event: 'APPROVE' });
-    expect(createHash('sha256').update((posts(c.gh)[0]?.body as { body: string }).body).digest('hex')).toBe(sha);
+    expect(createHash('sha256').update((posts(c.gh)[0]?.body as { body: string }).body).digest('hex')).toBe(bodySha);
+    expect(createHash('sha256').update(`APPROVE\n${(posts(c.gh)[0]?.body as { body: string }).body}`).digest('hex')).toBe(sha);
     // --expect goes with --post only, and must look like a sha256.
     expect((await c.run('post', String(id), '--dry-run', '--expect', sha)).lines).toEqual(['error: --expect goes with --post']);
   }, 60_000);

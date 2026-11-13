@@ -193,7 +193,7 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
   });
 
   const expectHash = (value: string): string => {
-    if (!/^[0-9a-f]{64}$/.test(value)) throw new InvalidArgumentError('the expected body hash is the 64 lower-case hex sha256 a dry run printed');
+    if (!/^[0-9a-f]{64}$/.test(value)) throw new InvalidArgumentError('the expected review is the 64 lower-case hex review sha256 a dry run printed');
     return value;
   };
   storeOptions(
@@ -203,7 +203,7 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .description("render the round's GitHub review (--dry-run) or post it (--post): one review on the reviewed head (plan 3.7)")
       .option('--dry-run', 'print the exact body and event that would be posted; post nothing')
       .option('--post', 'post the review a dry run showed; refused if it changed since, the head moved, the round was started with --dry-run, or the body fails validation')
-      .option('--expect <sha256>', 'with --post: the body sha256 of the dry run the user approved; only that review posts', expectHash)
+      .option('--expect <sha256>', 'with --post: the review sha256 (the event and the body) of the dry run the user approved; only that review posts', expectHash)
       .option('--json', 'print the result as JSON'),
   ).action(async (id: number, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; post?: boolean; expect?: string; json?: boolean }) => {
     if ((opts.dryRun === true) === (opts.post === true)) {
