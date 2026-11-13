@@ -99,13 +99,14 @@ export async function roundStart(io: RoundIo, paths: StorePaths, args: StartArgs
       target = resolvePlanTarget(cwd, args.target, args.context);
     } else {
       if (args.context.length > 0) throw new Error('--context is a plan-mode option');
-      target = resolveDiffTarget(cwd, args.target);
+      target = resolveDiffTarget(cwd, args.target, { env: io.env });
     }
   } catch (error) {
     io.write(`error: ${error instanceof Error ? error.message : String(error)}`);
     io.setExitCode(1);
     return null;
   }
+  for (const w of target.warnings) io.write(`warn  ${w}`);
   const store = openStore(paths.dbPath);
   try {
     const prepared = prepareRound(store, {

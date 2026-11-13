@@ -1,8 +1,10 @@
 import { existsSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import type { ContextSource } from '../root/build.js';
 import { FULL_SHA, GitError, runGit } from '../root/git.js';
+import { decodeName, splitNul } from '../root/names.js';
 
 /*
  * Resolving what a `plan` or `diff` round reviews (plan 9.1, 9.2): the repository, the head (a snapshot commit when
@@ -42,6 +44,8 @@ export interface ResolvedTarget {
   /** The finding-id namespace (plan 7.3): `plan:<repoKey>:<path>` or `diff:<repoKey>:<branch>`. */
   targetKey: string;
   context: ContextSource[];
+  /** Things the user must hear before the round runs: for example untracked files left out of the snapshot. */
+  warnings: string[];
 }
 
 const ROOT_IDENTITY = ['-c', 'user.name=sabotage-council', '-c', 'user.email=sabotage-council@localhost'];
@@ -102,18 +106,52 @@ function resolveSha(top: string, ref: string): string {
 }
 
 /**
- * Snapshots uncommitted work into a commit object without touching the user's index or branches (plan 9.1, 9.2):
- * a temporary index is filled from HEAD, then from the working tree (`paths` given: those files only, each with
- * `git hash-object`; else every tracked change and every untracked, non-ignored file), written with `write-tree`
- * and committed with `commit-tree` on HEAD. Returns null when the snapshot equals HEAD.
+ * Untracked files whose names look like secrets (fold row 2). They are never put in a snapshot: the root goes to
+ * three model vendors. Basenames only: `.env` and `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, and SSH key names
+ * (`id_<word>`, `id_<word>.pub`).
  */
-export function snapshotWorkTree(top: string, headSha: string, paths?: readonly string[]): string | null {
+export const SECRET_NAME = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx)|id_[a-z0-9]+(?:\.pub)?)$/i;
+
+/**
+ * The user's own global excludes file, which the engine's isolated git calls never read (`core.excludesFile=/dev/null`):
+ * `core.excludesFile` from the user's global git config, else git's default `$XDG_CONFIG_HOME/git/ignore` (or
+ * `~/.config/git/ignore`). Null when there is none. `git config --get` runs no hook and no filter.
+ */
+export function userExcludesFile(env: NodeJS.ProcessEnv = process.env): string | null {
+  const pick: NodeJS.ProcessEnv = {};
+  for (const k of ['PATH', 'HOME', 'XDG_CONFIG_HOME', 'GIT_CONFIG_GLOBAL']) if (env[k] !== undefined) pick[k] = env[k];
+  const r = spawnSync('git', ['config', '--global', '--path', '--get', 'core.excludesFile'], { env: { ...pick, GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf8' });
+  const configured = r.status === 0 ? r.stdout.trim() : '';
+  const home = env['HOME'] ?? '';
+  const xdg = env['XDG_CONFIG_HOME'] !== undefined && env['XDG_CONFIG_HOME'] !== '' ? env['XDG_CONFIG_HOME'] : home === '' ? '' : join(home, '.config');
+  const candidate = configured !== '' ? configured : xdg === '' ? '' : join(xdg, 'git', 'ignore');
+  return candidate !== '' && existsSync(candidate) && statSync(candidate).isFile() ? candidate : null;
+}
+
+export interface SnapshotTree {
+  /** The work tree's tree object; null when it equals the head's tree. */
+  tree: string | null;
+  /** Untracked files left out because their names look like secrets. */
+  skipped: string[];
+  warnings: string[];
+}
+
+/**
+ * The tree of the uncommitted work, built in a temporary index so the user's index and branches are never touched
+ * (plan 9.1, 9.2): filled from `headSha`, then (`paths` given) those files only, each with `git hash-object`; else
+ * every tracked change (`add --update`) and every untracked file git lists with the user's own excludes honoured
+ * (the repository's `.gitignore` files, `.git/info/exclude` and the user's global excludes file, fold row 2), minus
+ * files whose names look like secrets, which are named in a warning.
+ */
+export function snapshotTree(top: string, headSha: string, options: { paths?: readonly string[] | undefined; env?: NodeJS.ProcessEnv | undefined } = {}): SnapshotTree {
   const dir = mkdtempSync(join(tmpdir(), 'sc-snapshot-'));
+  const skipped: string[] = [];
+  const warnings: string[] = [];
   try {
     const env = { GIT_INDEX_FILE: join(dir, 'index') };
     git(['read-tree', headSha], top, env);
-    if (paths !== undefined) {
-      for (const p of paths) {
+    if (options.paths !== undefined) {
+      for (const p of options.paths) {
         const abs = join(top, p);
         if (!existsSync(abs)) throw new TargetError(`${p} does not exist in the work tree`);
         const blob = git(['hash-object', '-w', '--', p], top).out;
@@ -121,22 +159,45 @@ export function snapshotWorkTree(top: string, headSha: string, paths?: readonly 
         git(['update-index', '--add', '--cacheinfo', `${mode},${blob},${p}`], top, env);
       }
     } else {
-      git(['add', '--all', '--', '.'], top, env);
+      git(['add', '--update', '--', '.'], top, env);
+      const excludes = userExcludesFile(options.env);
+      const listed = runGit(['-c', `core.excludesFile=${excludes ?? '/dev/null'}`, 'ls-files', '--others', '--exclude-standard', '-z'], { cwd: top, env });
+      const untracked = splitNul(listed.stdout).map((raw) => decodeName(raw, 'the untracked files'));
+      const add: string[] = [];
+      for (const p of untracked) {
+        if (SECRET_NAME.test(posix.basename(p))) skipped.push(p);
+        else add.push(p);
+      }
+      for (let i = 0; i < add.length; i += 200) git(['update-index', '--add', '--', ...add.slice(i, i + 200)], top, env);
+      if (skipped.length > 0) {
+        warnings.push(
+          `left out of the snapshot, as their names look like secrets (commit them or rename them to include them): ${skipped.map((x) => JSON.stringify(x)).join(', ')}`,
+        );
+      }
     }
     const tree = git(['write-tree'], top, env).out;
     const headTree = git(['rev-parse', `${headSha}^{tree}`], top).out;
-    if (tree === headTree) return null;
-    const commit = runGit([...ROOT_IDENTITY, 'commit-tree', tree, '-p', headSha, '-m', 'sabotage-council snapshot of uncommitted work'], {
-      cwd: top,
-      env: SNAPSHOT_DATES,
-    });
-    return commit.stdout.toString('utf8').trim();
+    return { tree: tree === headTree ? null : tree, skipped, warnings };
   } catch (error) {
     if (error instanceof TargetError) throw error;
     throw new TargetError(`could not snapshot the uncommitted work: ${(error as Error).message}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** A snapshot commit: `tree` on `parent`, with fixed dates, so the same work on the same parent is the same head. */
+export function commitSnapshot(top: string, tree: string, parent: string): string {
+  const commit = runGit([...ROOT_IDENTITY, 'commit-tree', tree, '-p', parent, '-m', SNAPSHOT_MESSAGE], { cwd: top, env: SNAPSHOT_DATES });
+  return commit.stdout.toString('utf8').trim();
+}
+
+export const SNAPSHOT_MESSAGE = 'sabotage-council snapshot of uncommitted work';
+
+/** Snapshots uncommitted work into a commit on HEAD (plan 9.1, 9.2); null when there is nothing uncommitted. */
+export function snapshotWorkTree(top: string, headSha: string, paths?: readonly string[], env?: NodeJS.ProcessEnv): string | null {
+  const t = snapshotTree(top, headSha, { paths, env });
+  return t.tree === null ? null : commitSnapshot(top, t.tree, headSha);
 }
 
 /** `--context <path>` or `--context <repo>@<ref>` (a local git repository at a ref, pinned to its commit). */
@@ -189,6 +250,7 @@ export function resolvePlanTarget(cwd: string, file: string, contexts: readonly 
     label: rel,
     targetKey: `plan:${repoKey}:${rel}`,
     context: contexts.map((c) => parseContext(c, cwd)),
+    warnings: [],
   };
 }
 
@@ -212,19 +274,21 @@ function currentBranch(top: string): string | null {
  * (tracked changes and untracked, non-ignored files) snapshotted to a commit object. An explicit head is taken as
  * committed. The target is keyed by repo + branch: the current branch, or the head ref as given.
  */
-export function resolveDiffTarget(cwd: string, range?: string): ResolvedTarget {
+export function resolveDiffTarget(cwd: string, range?: string, options: { env?: NodeJS.ProcessEnv } = {}): ResolvedTarget {
   const top = repoTopOf(cwd);
   const { repoKey, repoName } = repoIdentity(top);
   let base: string;
   let head: string;
   let branch: string;
   let snapshot: string | null = null;
+  const warnings: string[] = [];
   if (range === undefined || range === '') {
     const headSha = resolveSha(top, 'HEAD');
     base = resolveSha(top, defaultBranch(top));
-    const snap = snapshotWorkTree(top, headSha);
-    head = snap ?? headSha;
-    if (snap !== null) snapshot = `HEAD ${headSha.slice(0, 7)} plus the uncommitted work tree`;
+    const snap = snapshotTree(top, headSha, { env: options.env });
+    warnings.push(...snap.warnings);
+    head = snap.tree === null ? headSha : commitSnapshot(top, snap.tree, headSha);
+    if (snap.tree !== null) snapshot = `HEAD ${headSha.slice(0, 7)} plus the uncommitted work tree`;
     branch = currentBranch(top) ?? `detached-${headSha.slice(0, 7)}`;
   } else {
     const parts = range.split('..');
@@ -248,6 +312,7 @@ export function resolveDiffTarget(cwd: string, range?: string): ResolvedTarget {
     label: `${repoName}@${branch}`,
     targetKey: `diff:${repoKey}:${branch}`,
     context: [],
+    warnings,
   };
 }
 

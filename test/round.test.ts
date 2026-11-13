@@ -20,6 +20,7 @@ import {
   runWorker,
 } from '../src/engine/index.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
+import { git } from './helpers/git-fixture.js';
 import { claudeCase, codexCase, commitChange, fakeAdapters, fakeHome, fixtureRepo, harness, OCC, rosterConfig, runRound, type Harness } from './helpers/round.js';
 
 cleanScratchAfterAll();
@@ -397,7 +398,6 @@ describe('round numbering, delta rounds and round 4+ (plan 3.5, 3.6, D5)', () =>
     const again = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
     expect(again.prepared.inputs).toMatchObject({ roundNo: 1, baseline: null, scope: 'full' });
     // Rewrite the branch: the baseline is no longer an ancestor of the head.
-    const { git } = await import('./helpers/git-fixture.js');
     git(repo, ['reset', '--quiet', '--hard', 'main']);
     commitChange(repo, 'calc/rangesum.py', 'def range_sum(values, start, end):\n    return sum(values[start:end])\n', 'calc: rewritten');
     const r2 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
@@ -469,7 +469,6 @@ describe('round numbering, delta rounds and round 4+ (plan 3.5, 3.6, D5)', () =>
     expect(t2.head).not.toBe(t.head);
     // The same uncommitted content is the same snapshot commit.
     expect(resolvePlanTarget(repo, 'docs/PLAN.md').head).toBe(t2.head);
-    const { git } = await import('./helpers/git-fixture.js');
     // The user's index and branch are untouched: nothing staged, the file still modified in the work tree.
     expect(git(repo, ['diff', '--cached', '--name-only'])).toBe('');
     expect(git(repo, ['diff', '--name-only'])).toBe('docs/PLAN.md');
@@ -615,5 +614,56 @@ describe('fold row 3: the store decides, round.json is a display copy', () => {
     await expect(runWorker(h.store, h.layout, prepared.inputs.roundId, { adapters: fakeAdapters, env, pollMs: 20 })).rejects.toThrow(/no longer hashes to the sealed tree/);
     expect(getRound(h.store.db, prepared.inputs.roundId)?.status).toBe('failed');
     expect(getLegs(h.store.db, prepared.inputs.roundId)).toEqual([]);
+  }, 60_000);
+});
+
+describe('fold row 2: the snapshot honours the user excludes and leaves secrets out', () => {
+  const treeFiles = (repo: string, sha: string): string[] => git(repo, ['ls-tree', '-r', '--name-only', sha]).split('\n');
+
+  it('leaves out files ignored only by the global excludes file (core.excludesFile), git default and info/exclude', () => {
+    const { repo } = fixtureRepo();
+    const home = scratch('sc-user-home-');
+    writeFileSync(join(home, 'global-ignore'), 'global-only.log\n');
+    writeFileSync(join(home, '.gitconfig'), `[core]\n\texcludesFile = ${join(home, 'global-ignore')}\n`);
+    mkdirSync(join(home, 'xdg', 'git'), { recursive: true });
+    writeFileSync(join(home, 'xdg', 'git', 'ignore'), 'xdg-only.log\n');
+    writeFileSync(join(repo, '.git', 'info', 'exclude'), 'info-only.log\n');
+    for (const f of ['global-only.log', 'xdg-only.log', 'info-only.log', 'new-module.py']) writeFileSync(join(repo, f), 'x\n');
+    const env = { PATH: process.env['PATH'], HOME: home };
+    const t = resolveDiffTarget(repo, undefined, { env });
+    const files = treeFiles(repo, t.head);
+    expect(files).toContain('new-module.py');
+    expect(files).not.toContain('global-only.log');
+    expect(files).not.toContain('info-only.log');
+    // With no core.excludesFile configured, git's default $XDG_CONFIG_HOME/git/ignore applies.
+    writeFileSync(join(home, '.gitconfig'), '');
+    const t2 = resolveDiffTarget(repo, undefined, { env: { ...env, XDG_CONFIG_HOME: join(home, 'xdg') } });
+    expect(treeFiles(repo, t2.head)).not.toContain('xdg-only.log');
+    expect(treeFiles(repo, t2.head)).toContain('global-only.log');
+  });
+
+  it('keeps a globally ignored .env and secret-named untracked files out of the root, and warns', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const home = scratch('sc-user-home-');
+    writeFileSync(join(home, '.gitconfig'), `[core]\n\texcludesFile = ${join(home, 'ignore')}\n`);
+    writeFileSync(join(home, 'ignore'), '.env\n');
+    writeFileSync(join(repo, '.env'), 'TOKEN=secret\n');
+    writeFileSync(join(repo, 'server.pem'), 'key\n');
+    writeFileSync(join(repo, '.env.local'), 'TOKEN=secret\n');
+    mkdirSync(join(repo, 'keys'));
+    writeFileSync(join(repo, 'keys', 'id_ed25519'), 'key\n');
+    writeFileSync(join(repo, 'id_utils.py'), 'def f(): pass\n');
+    const t = resolveDiffTarget(repo, undefined, { env: { PATH: process.env['PATH'], HOME: home } });
+    expect(t.warnings).toHaveLength(1);
+    expect(t.warnings[0]).toContain('".env.local"');
+    expect(t.warnings[0]).toContain('"server.pem"');
+    expect(t.warnings[0]).toContain('"keys/id_ed25519"');
+    expect(t.warnings[0]).not.toContain('"id_utils.py"');
+    const r = await runRound(h, t);
+    const root = join(r.prepared.inputs.root, 'widget');
+    for (const f of ['.env', '.env.local', 'server.pem', 'keys/id_ed25519']) expect(existsSync(join(root, f)), f).toBe(false);
+    expect(existsSync(join(root, 'id_utils.py'))).toBe(true);
+    expect(git(repo, ['diff', '--cached', '--name-only'])).toBe('');
   }, 60_000);
 });

@@ -187,6 +187,7 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
       scope: brief.scope,
       baseline: numbering.baseline,
       snapshot: t.snapshot,
+      warnings: t.warnings,
       revision: t.head,
       tree_hash: prepared.sealed.treeHash,
       brief_text: brief.text,

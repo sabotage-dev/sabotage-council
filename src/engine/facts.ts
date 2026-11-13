@@ -20,6 +20,8 @@ export interface PreparedDetail {
   scope: string;
   baseline: string | null;
   snapshot: string | null;
+  /** What the user was warned of at round start (for example untracked files left out of the snapshot). */
+  warnings: string[];
   /** What numbering compares (3.6): the head for diff targets, the plan's content for plan targets (fold row 11). */
   revision: string;
   tree_hash: string;
