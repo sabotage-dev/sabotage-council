@@ -18,11 +18,13 @@ import {
   opencodeEnv,
   opencodeLegFiles,
   opencodePreflight,
+  OPENCODE_SKILL_ROOTS,
   offeredTools,
   parseOpencodeModels,
   readOpencodeRecord,
 } from '../src/adapters/opencode/index.js';
 import type { LegHandle, Occupant, Ratification, RoundCtx } from '../src/adapters/types.js';
+import { sanitizeTrees, workspaceConfigIn } from '../src/root/index.js';
 import { sqlite } from '../src/store/sqlite.js';
 import type { CommandResult, CommandRunner } from '../src/transport/headless.js';
 import { FAKE_ACP, recordedSession } from './helpers/acp.js';
@@ -83,7 +85,7 @@ const RECORDED_OFFER = offeredTools(((JSON.parse(readFileSync(join(fixtureDir('o
 /** An offer of the read set only: what a version that let the council remove the skill tool would give. */
 const READ_OFFER = ['read', 'glob', 'grep'];
 
-function replay(name: string, edit?: (rows: Rows, sid: string) => void, offer: readonly string[] = RECORDED_OFFER): { handle: LegHandle; ctx: RoundCtx; c: CaseFile; dir: string } {
+function replay(name: string, edit?: (rows: Rows, sid: string) => void, offer: readonly string[] = RECORDED_OFFER, skillsEmpty: boolean | null = true): { handle: LegHandle; ctx: RoundCtx; c: CaseFile; dir: string } {
   const c = caseOf(name);
   const { dir, root } = materialize('opencode', name);
   if (c.plantSymlink) symlinkSync(join(dirname(root), 'outside', 'secret.txt'), join(root, 'link-out.txt'));
@@ -102,7 +104,7 @@ function replay(name: string, edit?: (rows: Rows, sid: string) => void, offer: r
     process: null,
     exit,
     files: { log: join(dir, 'updates.jsonl'), stderr: join(dir, 'stderr.log'), process: join(dir, 'process.json') },
-    data: { expect: [{ id: 'mode', value: OPENCODE_AGENT, check: 'mode' }, { id: 'model', value: c.model, check: 'model' }], cliVersion: c.cliVersion, offer: [...offer], mcp: [] },
+    data: { expect: [{ id: 'mode', value: OPENCODE_AGENT, check: 'mode' }, { id: 'model', value: c.model, check: 'model' }], cliVersion: c.cliVersion, offer: [...offer], skillsEmpty, mcp: [] },
   };
   const ctx: RoundCtx = { root, legDir: dir, nonce: c.nonce, briefFile: '/dev/null', timeoutMs: 1000, rootUnchanged: () => ({ unchanged: !c.rootMutated, changes: [] }) };
   return { handle, ctx, c, dir };
@@ -184,6 +186,18 @@ describe('opencode record checks: each fails on its own (mutation coverage)', ()
     ],
     ['an injected AGENTS.md', (rows, sid) => (rows['instruction_entry'] = [{ session_id: sid, key: 'file:AGENTS.md', value: JSON.stringify({ path: 'AGENTS.md' }), removed: 0, time_created: 1, time_updated: 1 }]), ['record-instructions']],
     ['a failed turn', (rows, sid) => (session(rows, sid)['idle_outcome'] = 'failed'), ['record-outcome']],
+    // Owner ruling (c): any skill use fails the leg, refused or not.
+    [
+      'a skill call opencode refused (still CONTAMINATED)',
+      (rows) => withData(firstAssistant(rows), (d) => (d['content'] as unknown[]).push({ type: 'tool', id: 'call_skill', name: 'skill', state: { status: 'error', input: { id: 'opencode' }, error: { type: 'permission.rejected', message: 'Permission denied: skill' } } })),
+      ['record-calls', 'skill'],
+    ],
+    ['a skill message', (rows, sid) => rows['session_message']?.push({ id: 'msg_skill', session_id: sid, type: 'skill', seq: 998, time_created: 1, time_updated: 1, data: JSON.stringify({ skill: 'opencode', name: 'OpenCode', text: 'x' }) }), ['skill']],
+    [
+      'a user message naming a skill',
+      (rows, sid) => rows['session_message']?.push({ id: 'msg_user_skill', session_id: sid, type: 'user', seq: 997, time_created: 1, time_updated: 1, data: JSON.stringify({ text: 'x', skills: [{ id: 'opencode' }] }) }),
+      ['skill'],
+    ],
     [
       'a database read outside the root, its ACP counterpart naming an inside path (codex F1)',
       (rows) => withData(firstAssistant(rows), (d) => {
@@ -219,8 +233,21 @@ describe('opencode record checks: each fails on its own (mutation coverage)', ()
     expect(failedNames(await adapter.ratify(second.handle, second.ctx))).toEqual(['record-tools']);
   });
 
-  it('fails a leg offered the skill tool, a leg whose offer was never computed, and one with an MCP server', async () => {
-    expect(failedNames(await adapter.ratify(replay('smoke').handle, replay('smoke').ctx))).toEqual(['offer']);
+  it('fails a leg whose skill locations hold a definition at ratification (owner ruling)', async () => {
+    const leg = replay('smoke');
+    const target = join(opencodeLegFiles(leg.dir).home, '.agents', 'skills', 'planted', 'SKILL.md');
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, 'x');
+    expect(failedNames(await adapter.ratify(leg.handle, leg.ctx))).toEqual(['skill']);
+  });
+
+  it('accepts the offered skill tool only when preflight proved it empty; fails a leg whose offer was never computed, and one with an MCP server', async () => {
+    const empty = replay('smoke');
+    expect(failedNames(await adapter.ratify(empty.handle, empty.ctx))).toEqual([]);
+    for (const unproven of [false, null]) {
+      const leg = replay('smoke', undefined, RECORDED_OFFER, unproven);
+      expect(failedNames(await adapter.ratify(leg.handle, leg.ctx))).toEqual(['offer']);
+    }
     const none = replay('smoke', undefined, READ_OFFER);
     none.handle.data['offer'] = null;
     expect(failedNames(await adapter.ratify(none.handle, none.ctx))).toEqual(['offer']);
@@ -406,14 +433,52 @@ describe('opencode preflight (4.3), no model call', () => {
     expect(`${pre.reason ?? ''} ${pre.checks.map((c) => c.detail).join(' ')}`).toContain(reason);
   });
 
-  it('refuses the rules 2.2.7 gives the council agent: the skill tool stays offered (grok F6)', async () => {
+  it('accepts the rules 2.2.7 gives the council agent (skill stays offered) only while the skill tool is provably empty (owner ruling)', async () => {
     const recorded = readFileSync(join(fixtureDir('opencode', ''), 'agents.json'), 'utf8');
     for (const agents of [councilAgents([], TAIL_227), recorded]) {
       const { pre } = await preflight({ agents });
-      expect(pre.ok).toBe(false);
-      expect(pre.failureClass).toBe('setup');
-      expect(pre.checks.find((c) => c.name === 'offer')?.detail).toContain('skill beside the read set');
+      expect(pre.ok, pre.reason ?? '').toBe(true);
       expect(pre.data['offer']).toEqual(['read', 'glob', 'grep', 'skill']);
+      expect(pre.data['skillsEmpty']).toBe(true);
+      expect(pre.checks.find((c) => c.name === 'offer')?.detail).toContain('provably empty');
+    }
+  });
+
+  it.each([
+    ['config', ['opencode', 'skills', 'planted', 'SKILL.md']],
+    ['config', ['opencode', 'skill', 'notes.md']],
+    ['data', ['opencode', 'skills', 'planted', 'SKILL.md']],
+    ['cache', ['opencode', 'skills', 'x', 'SKILL.md']],
+    ['home', ['.agents', 'skills', 'planted', 'SKILL.md']],
+    ['home', ['.claude', 'skills', 'planted', 'SKILL.md']],
+  ] as const)('refuses an offered skill tool when a skill definition sits in the leg %s dir (%j)', async (where, rel) => {
+    const legDir = scratch('sc-oc-leg-');
+    const files = opencodeLegFiles(legDir);
+    const target = join(files[where], ...rel);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, '---\nname: planted\ndescription: planted\n---\nPlanted skill.\n');
+    const root = scratch('sc-oc-root-');
+    const r = scriptedRunner({ agents: councilAgents([], TAIL_227) });
+    const pre = await opencodePreflight({ backend: 'opencode', model: 'opencode/big-pickle' }, { bin: 'opencode', runner: r.run, env: { PATH: '/bin', HOME: '/u' }, root, legDir });
+    expect(pre.ok).toBe(false);
+    expect(pre.failureClass).toBe('setup');
+    expect(pre.data['skillsEmpty']).toBe(false);
+    expect(pre.checks.find((c) => c.name === 'offer')?.detail).toContain(target);
+  });
+
+  it('refuses a root holding a skill directory at any depth (condition b), and the sanitizer strips it', async () => {
+    for (const rel of ['.opencode/skills/planted/SKILL.md', 'pkg/.claude/skills/planted/SKILL.md', 'pkg/deep/.agents/skills/planted/SKILL.md']) {
+      const { pre, root } = await preflight({}, {}, { plantRoot: (r) => {
+        mkdirSync(dirname(join(r, 'repo', rel)), { recursive: true });
+        writeFileSync(join(r, 'repo', rel), 'x');
+      } });
+      expect(pre.ok, rel).toBe(false);
+      expect(pre.reason).toBe('root not sanitized');
+      sanitizeTrees(root, ['repo']);
+      expect(workspaceConfigIn(root, OPENCODE_SKILL_ROOTS), rel).toEqual([]);
+      const again = await opencodePreflight({ backend: 'opencode', model: 'opencode/big-pickle' }, { bin: 'opencode', runner: scriptedRunner({ agents: councilAgents([], TAIL_227) }).run, env: { PATH: '/bin', HOME: '/u' }, root, legDir: scratch('sc-oc-leg-') });
+      expect(again.ok, `${rel} after the sanitizer: ${again.reason ?? ''}`).toBe(true);
+      expect(again.data['skillsEmpty']).toBe(true);
     }
   });
 
@@ -495,6 +560,15 @@ describe('opencode end to end, through the fake ACP agent', () => {
       { update: { sessionUpdate: 'tool_call_update', toolCallId: 't1', kind: 'read', status: 'failed', rawInput: { path: '__OUTSIDE__/secret.txt' }, content: [{ type: 'content', content: { type: 'text', text: 'Permission denied: external_directory' } }], rawOutput: { metadata: {}, error: 'Permission denied: external_directory' } } },
     ]);
     expect(failedNames(r)).toEqual([]);
+  });
+
+  it('fails a leg whose ACP log reports a skill call, even one opencode refused (owner ruling c)', async () => {
+    const { r } = await run([
+      { update: { sessionUpdate: 'tool_call', toolCallId: 'sk1', name: 'skill', title: 'skill', kind: 'other', status: 'pending', rawInput: {} } },
+      { update: { sessionUpdate: 'tool_call_update', toolCallId: 'sk1', title: 'skill', kind: 'other', status: 'failed', rawInput: { id: 'opencode' }, content: [{ type: 'content', content: { type: 'text', text: 'Permission denied: skill' } }], rawOutput: { metadata: {}, error: 'Permission denied: skill' } } },
+    ]);
+    expect(failedNames(r)).toContain('skill');
+    expect(r.status).toBe('CONTAMINATED');
   });
 
   it('counts the same failed read as run when its error is anything else (fail closed)', async () => {

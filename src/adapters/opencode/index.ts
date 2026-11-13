@@ -10,13 +10,13 @@ import { rootAliases } from '../paths.js';
 import { isRoot, type AcpCommonResult } from '../acp/ratify.js';
 import type { LegHandle, Occupant, Preflight, RatificationCheck, RoundCtx, SeatAdapter } from '../types.js';
 import { OPENCODE_AGENT, OPENCODE_FLOOR, OPENCODE_FREE_MODELS, OPENCODE_READ_TOOLS, OPENCODE_TESTED_VERSIONS, modelInfos, opencodeDecl, splitModel } from './known.js';
-import { defaultOpencodeBin, opencodeEnv, opencodeLegFiles, prepareOpencodeDirs } from './launch.js';
+import { defaultOpencodeBin, opencodeEnv, opencodeLegFiles, opencodeSkillDefinitions, prepareOpencodeDirs } from './launch.js';
 import { opencodePreflight, parseOpencodeModels } from './preflight.js';
 import { modelRef, num, readOpencodeRecord } from './records.js';
 
 export { OPENCODE_AGENT, OPENCODE_DECLARED, OPENCODE_DENIED_ACTIONS, OPENCODE_FREE_MODELS, OPENCODE_TOOL_ACTIONS, evaluateRules, familyOf, offeredTools, opencodeConfig, opencodeDecl, splitModel, whollyDisabled } from './known.js';
-export { OPENCODE_ENV_ALLOW, OPENCODE_ENV_SET, defaultOpencodeBin, opencodeEnv, opencodeLegFiles } from './launch.js';
-export { canonical, judgeConfigSources, judgeCouncilAgent, opencodePreflight, parseOpencodeModels, parseOpencodeVersion } from './preflight.js';
+export { OPENCODE_ENV_ALLOW, OPENCODE_ENV_SET, defaultOpencodeBin, opencodeEnv, opencodeLegFiles, opencodeSkillDefinitions, opencodeSkillDirs } from './launch.js';
+export { OPENCODE_SKILL_ROOTS, canonical, judgeConfigSources, judgeCouncilAgent, opencodePreflight, parseOpencodeModels, parseOpencodeVersion } from './preflight.js';
 export { readOpencodeRecord } from './records.js';
 
 /*
@@ -82,6 +82,7 @@ const RECORD_CLASS: Readonly<Record<string, FailureClass>> = {
   'record-calls': 'setup',
   offer: 'setup',
   'record-messages': 'contaminated',
+  skill: 'contaminated',
   'record-children': 'contaminated',
   'record-instructions': 'contaminated',
   'record-outcome': 'transport',
@@ -152,9 +153,13 @@ export function opencodeRecords(h: LegHandle, common: AcpCommonResult): AcpRecor
   check('record-calls', orphans.length === 0, orphans.length === 0 ? `every database tool call is in the ACP log (${rec.tools.length})` : `database tool calls the ACP log never reported: ${orphans.map((t) => `${t.name} ${String(t.id)}`).join(', ')}`);
   // The offer, computed at preflight from the council agent's effective rules, must be the read set; and no MCP
   // server may be configured in the leg (grok F6).
+  // The skill tool is accepted only when preflight proved the leg and the root hold no skill definition (owner
+  // ruling, 2026-11-12).
   const offer = Array.isArray(h.data['offer']) ? (h.data['offer'] as unknown[]).map(String) : null;
   const mcp = Array.isArray(h.data['mcp']) ? (h.data['mcp'] as unknown[]).map(String) : null;
-  const extraOffer = offer === null ? [] : offer.filter((t) => !(OPENCODE_READ_TOOLS as readonly string[]).includes(t));
+  const skillsEmpty = h.data['skillsEmpty'] === true;
+  const allowedOffer: readonly string[] = [...OPENCODE_READ_TOOLS, ...(skillsEmpty ? ['skill'] : [])];
+  const extraOffer = offer === null ? [] : offer.filter((t) => !allowedOffer.includes(t));
   check(
     'offer',
     offer !== null && extraOffer.length === 0 && mcp !== null && mcp.length === 0,
@@ -166,8 +171,19 @@ export function opencodeRecords(h: LegHandle, common: AcpCommonResult): AcpRecor
           ? `MCP servers configured in the leg: ${mcp === null ? 'not checked' : mcp.join(', ')}`
           : `offered ${offer.join(', ')}; no MCP server`,
   );
-  const userTools = rec.messages.filter((m) => m.type === 'shell' || m.type === 'skill');
-  check('record-messages', userTools.length === 0, userTools.length === 0 ? 'no shell or skill message' : `shell or skill messages: ${userTools.map((m) => `${m.type}@${m.seq}`).join(', ')}`);
+  const userTools = rec.messages.filter((m) => m.type === 'shell');
+  check('record-messages', userTools.length === 0, userTools.length === 0 ? 'no shell message' : `shell messages: ${userTools.map((m) => `${m.type}@${m.seq}`).join(', ')}`);
+  // Owner ruling (c): the offered skill tool must never be used. Any skill call (in the database or the ACP log,
+  // run or refused), any skill message, any user message naming a skill, or a skill definition that appeared in
+  // the leg's skill locations fails the leg.
+  const skillUses = [
+    ...rec.tools.filter((t) => t.name === 'skill').map((t) => `database skill call ${String(t.id)} (${String(t.status)})`),
+    ...[...common.log.toolCalls.values()].filter((c) => c.titles.includes('skill') || c.kinds.includes('skill') || str(c.fields['name']) === 'skill').map((c) => `ACP skill call ${c.id}`),
+    ...rec.messages.filter((m) => m.type === 'skill').map((m) => `skill message @${m.seq}`),
+    ...rec.messages.filter((m) => m.type === 'user' && Array.isArray(m.data['skills']) && m.data['skills'].length > 0).map((m) => `user message @${m.seq} names skills`),
+    ...opencodeSkillDefinitions(opencodeLegFiles(h.legDir)).map((p) => `skill definition in the leg: ${p}`),
+  ];
+  check('skill', skillUses.length === 0, skillUses.length === 0 ? 'no skill call, skill message or skill definition' : skillUses.join('; '));
   check('record-children', rec.children.length === 0, rec.children.length === 0 ? 'no child session' : `child sessions (subagents): ${rec.children.join(', ')}`);
   const injected = rec.instructions.filter((i) => !i.removed && INSTRUCTION_FILE.test(`${i.key} ${JSON.stringify(i.value)}`));
   check('record-instructions', injected.length === 0, injected.length === 0 ? `${rec.instructions.length} instruction entr(ies), none from an instruction file` : `instruction files injected: ${injected.map((i) => i.key).join(', ')}`);
@@ -249,7 +265,7 @@ export function createOpencodeAdapter(options: OpencodeAdapterOptions = {}): Sea
           ...(o.effort !== undefined ? [{ id: 'effort', value: o.effort, check: 'effort' as const }] : []),
         ],
         files: { log: files.log, stderr: files.stderr, process: files.process, db: files.db },
-        data: { db: files.db, offer: pre.data['offer'] ?? null, mcp: pre.data['mcp'] ?? null },
+        data: { db: files.db, offer: pre.data['offer'] ?? null, skillsEmpty: pre.data['skillsEmpty'] ?? null, mcp: pre.data['mcp'] ?? null },
       };
     },
     reads: OPENCODE_READS,

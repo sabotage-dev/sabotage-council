@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { opencodeConfig } from './known.js';
 
@@ -105,6 +105,51 @@ export function opencodeLegFiles(legDir: string): OpencodeLegFiles {
     db: join(dir, 'opencode.db'),
     planted: join(dir, 'planted.json'),
   };
+}
+
+/**
+ * Every place opencode 2.2.7 reads skill definitions from in a leg (its source): `skill/` and `skills/` under each
+ * config directory (`config/plugin/skill.ts`; the leg's is `$XDG_CONFIG_HOME/opencode`), `skills/` under
+ * `~/.claude` and `~/.agents` (`config/plugin/compatibility.ts`; `.claude` is off with OPENCODE_DISABLE_CLAUDE_CODE,
+ * `.agents` has no switch) and the cache URL skills are pulled into (`skill/discovery.ts`). The data dir is
+ * listed too, as the owner's ruling names it. Project dirs are not walked (OPENCODE_DISABLE_PROJECT_CONFIG); the
+ * root scan covers the root.
+ */
+export function opencodeSkillDirs(files: OpencodeLegFiles): string[] {
+  return [
+    join(files.config, 'opencode', 'skill'),
+    join(files.config, 'opencode', 'skills'),
+    join(files.data, 'opencode', 'skill'),
+    join(files.data, 'opencode', 'skills'),
+    join(files.cache, 'opencode', 'skills'),
+    join(files.home, '.agents', 'skills'),
+    join(files.home, '.claude', 'skills'),
+    join(files.home, '.config', 'opencode', 'skill'),
+    join(files.home, '.config', 'opencode', 'skills'),
+  ];
+}
+
+/**
+ * The entries in the leg's skill locations: every file or link at any depth (stricter than opencode's own scan,
+ * which reads `SKILL.md` and top-level `.md` files). Empty means provably no skill definition in the leg.
+ */
+export function opencodeSkillDefinitions(files: OpencodeLegFiles): string[] {
+  const out: string[] = [];
+  const visit = (path: string): void => {
+    let stats;
+    try {
+      stats = lstatSync(path);
+    } catch {
+      return;
+    }
+    if (!stats.isDirectory()) {
+      out.push(path);
+      return;
+    }
+    for (const name of readdirSync(path).sort()) visit(join(path, name));
+  };
+  for (const dir of opencodeSkillDirs(files)) visit(dir);
+  return out;
 }
 
 export function prepareOpencodeDirs(files: OpencodeLegFiles, planted?: Record<string, unknown>): void {

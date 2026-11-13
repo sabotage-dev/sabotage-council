@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 import type { FailureClass } from '../../config/vocab.js';
+import { workspaceConfigIn } from '../../root/sanitize.js';
 import type { CommandRunner } from '../../transport/headless.js';
 import { isObject, str } from '../codex/records.js';
 import { rootAliases, underRoot } from '../paths.js';
@@ -19,7 +20,7 @@ import {
   offeredTools,
   type Rule,
 } from './known.js';
-import { opencodeEnv, opencodeLegFiles, prepareOpencodeDirs } from './launch.js';
+import { opencodeEnv, opencodeLegFiles, opencodeSkillDefinitions, prepareOpencodeDirs } from './launch.js';
 
 /*
  * opencode preflight (plan 4.3), with no model call. Every command runs a private server (`--standalone`) on the
@@ -134,7 +135,14 @@ export function judgeCouncilAgent(text: string): { found: boolean; problems: str
   return { found: true, problems, problem: null, offered: offeredTools(rules) };
 }
 
-const ROOT_AGENT_CONFIG = /^(?:\.opencode|opencode\.jsonc?|AGENTS.*\.md|CONTEXT\.md|\.claude)$/i;
+const ROOT_AGENT_CONFIG = /^(?:\.opencode|opencode\.jsonc?|AGENTS.*\.md|CONTEXT\.md|\.claude|\.agents)$/i;
+
+/**
+ * The directories opencode reads skills from in a workspace (`.opencode/skill(s)`, `.claude/skills`,
+ * `.agents/skills`, from the cwd up), checked at any depth (owner ruling, condition b). The root sanitizer moves
+ * every one whole.
+ */
+export const OPENCODE_SKILL_ROOTS = /^(?:\.opencode|\.claude|\.agents)$/i;
 
 export async function opencodePreflight(o: Occupant, options: OpencodePreflightOptions): Promise<Preflight> {
   const checks: PreflightCheck[] = [];
@@ -143,6 +151,7 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
   const files = opencodeLegFiles(options.legDir);
   let loaded: string[] = [];
   let offer: string[] | null = null;
+  let skillsEmpty: boolean | null = null;
   let mcpServers: string[] | null = null;
   let dumped: string | null = null;
   const result = (ok: boolean, failureClass: FailureClass | null, reason: string | null, cliVersion: string | null, data: Record<string, unknown> = {}): Preflight => ({
@@ -154,7 +163,7 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
     userOwned,
     failureClass,
     reason,
-    data: { db: files.db, loaded, offer, mcp: mcpServers, dumped, ...data },
+    data: { db: files.db, loaded, offer, skillsEmpty, mcp: mcpServers, dumped, ...data },
   });
   const fail = (name: string, detail: string): void => {
     checks.push({ name, status: 'fail', detail });
@@ -200,7 +209,10 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
   const sources = judgeConfigSources(config.stdout, files.config, options.root);
   loaded = sources.fromRoot;
   if (sources.problem === null) dumped = 'opencode debug config: its config sources (instructions files are checked per leg from its database)';
-  const planted = existsSync(options.root) ? readdirSync(options.root).filter((n) => ROOT_AGENT_CONFIG.test(n)) : [];
+  const planted = [
+    ...(existsSync(options.root) ? readdirSync(options.root).filter((n) => ROOT_AGENT_CONFIG.test(n)) : []),
+    ...workspaceConfigIn(options.root, OPENCODE_SKILL_ROOTS).filter((r) => r.includes('/')),
+  ];
   if (planted.length > 0) {
     fail('isolation', `the root holds agent config the sanitizer should have moved: ${planted.join(', ')}`);
     return result(false, 'setup', 'root not sanitized', cliVersion, { refusedBy: 'root-scan' });
@@ -219,11 +231,28 @@ export async function opencodePreflight(o: Occupant, options: OpencodePreflightO
   }
   offer = agent.offered;
   // The leg must be offered only the read set (plan 4.2, grok F6). On 2.2.7 the skill tool always is: opencode
-  // appends `skill browser deny` after the council's rules, so no council rule can remove the tool.
-  const extra = offer.filter((t) => !(OPENCODE_READ_TOOLS as readonly string[]).includes(t));
+  // appends `skill browser deny` after the council's rules, so no council rule can remove the tool. Owner ruling
+  // (2026-11-12): the offered skill tool is allowed only when provably empty: (a) no skill definition in the leg's
+  // skill locations, (b) none in the root, at any depth; (c), no skill call or skill message, is ratification's.
+  const legSkills = opencodeSkillDefinitions(files);
+  const rootSkills = workspaceConfigIn(options.root, OPENCODE_SKILL_ROOTS);
+  skillsEmpty = legSkills.length === 0 && rootSkills.length === 0;
+  const allowed: readonly string[] = [...OPENCODE_READ_TOOLS, ...(skillsEmpty ? ['skill'] : [])];
+  const extra = offer.filter((t) => !allowed.includes(t));
   if (extra.length > 0) {
-    fail('offer', `the council agent is offered ${extra.join(', ')} beside the read set (computed from its effective rules${extra.includes('skill') ? '; opencode appends `skill browser deny` after the council rules, so the skill tool stays offered' : ''})`);
+    const skillWhy = !extra.includes('skill')
+      ? ''
+      : `; the skill tool stays offered (opencode appends \`skill browser deny\` after the council rules) and skill definitions exist: ${[...legSkills, ...rootSkills.map((r) => `${r} in the root`)].slice(0, 10).join(', ')}`;
+    fail('offer', `the council agent is offered ${extra.join(', ')} beside the read set (computed from its effective rules)${skillWhy}`);
     return result(false, 'setup', `offered beyond the read set: ${extra.join(', ')}`, cliVersion);
+  }
+  if (offer.includes('skill')) {
+    checks.push({
+      name: 'offer',
+      status: 'note',
+      detail:
+        "offered the read set and the skill tool, which is accepted as provably empty (owner ruling): no skill definition in the leg's skill locations or in the root; 2.2.7's built-in in-memory skills are removed by the council's skill.use policy and denied by its skill rule, and any skill call or skill message fails the leg",
+    });
   }
   const mcp = await run(['mcp', 'list', '--standalone']);
   if (!/No MCP servers configured/i.test(mcp.stdout)) {

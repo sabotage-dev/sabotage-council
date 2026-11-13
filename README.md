@@ -82,8 +82,10 @@ unless every seat is proven `isolated`.
   `opencode/*` models. opencode refused an outside read by path itself; a read through a symlink inside the root
   ran in the canary (the review root replaces such links with text files, but the label stays `pending`). On
   2.2.7 the council agent is still offered the `skill` tool: opencode appends its own `skill` rule after the
-  council's, so no council rule removes it. A leg must be offered only reads, so preflight refuses every opencode
-  seat on 2.2.7.
+  council's, so no council rule removes it. The tool is accepted only while it is provably empty: preflight
+  refuses a leg whose own skill locations (its XDG config, data and cache dirs, its `~/.agents` and `~/.claude`)
+  or whose root (any `.opencode/`, `.claude/` or `.agents/`, at any depth) hold a skill, and any skill call
+  (refused or not), skill message or user message naming a skill fails the leg.
 - **Cursor (`cursor-agent`).** Seats call the newest release under `~/.local/share/cursor-agent/versions/` by
   path, never `agent` on PATH (the Cursor installer repoints that name). Print mode needs `--trust`; the council
   config and its deny-all-but-reads hook live in a per-leg `CURSOR_CONFIG_DIR`. With `CURSOR_API_KEY` the leg also
