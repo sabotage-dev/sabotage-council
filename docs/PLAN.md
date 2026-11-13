@@ -449,7 +449,8 @@ There are two shared transports:
       - the adapter refuses any session whose reported mode differs, before the prompt is sent.
     - preflight refuses the leg when the rules the leg will load allow anything. Each adapter declares where those
       rules live (P3): antigravity runs every leg on its own `--gemini-dir`, so the leg loads only
-      `<leg>/gemini/antigravity-cli/settings.json` and `<leg>/gemini/config/config.json`, which the adapter writes;
+      `<leg>/gemini/antigravity-cli/settings.json` and `<leg>/gemini/config/config.json` (the adapter writes the
+      first, agy creates the second; measured: no fallback to `~/.gemini` for either, nor for MCP config);
       kiro runs every leg on its own `KIRO_HOME`, so the leg loads only `$KIRO_HOME/agents/sabotage-council.json`,
       which the adapter writes and hashes. The user's own rule files never reach a leg. A backend whose rules
       cannot be read stays `pending`.
@@ -1376,7 +1377,10 @@ Settled by P3 (agy 1.5.7 and kiro-cli 3.2.1, 2026-11-12; one smoke and one canar
 owner's consumer Google sign-in and a separate personal Kiro login):
 
 - **antigravity.** `--gemini-dir <abs dir>` moves the settings, the shared config and the conversation records
-  while the keyring sign-in still works. Tool calls carry `name` (`read_file`, `run_command`, `write_file`, ...),
+  while the keyring sign-in still works. Round 1 measured, with no model call, that agy creates its own
+  `config/config.json` and `mcp_config.json` there and does not fall back to `$HOME/.gemini` (a planted MCP server
+  did not start; the positive control did); whether `$HOME/.gemini` instructions, skills, plugins and hooks stay
+  out is not measured, and agy needs the real HOME for its keyring sign-in. Tool calls carry `name` (`read_file`, `run_command`, `write_file`, ...),
   `kind`, `args` and `locations`. Reads inside the workspace run with no permission request; an outside read asks,
   and the client's rejection held (the canary's secret never reached the stream). agy reports `in_progress` when
   a call starts, before it asks, so only `completed` after a rejection counts as execution. **A rejection ends

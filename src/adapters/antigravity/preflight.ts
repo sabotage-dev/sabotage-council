@@ -198,7 +198,7 @@ export async function agyPreflight(o: Occupant, options: AgyPreflightOptions): P
   checks.push({
     name: 'rules',
     status: 'ok',
-    detail: "the leg's own settings (--gemini-dir in the leg dir) hold no allow rule; the user's settings, rules, plugins, skills and hooks do not load",
+    detail: "the leg's own settings (--gemini-dir in the leg dir) hold no allow rule; agy reads settings and MCP config from that dir, not ~/.gemini (measured); ~/.gemini instructions, skills, plugins and hooks are not measured",
   });
   const planted = ROOT_AGENT_CONFIG.filter((name) => existsSync(join(options.root, name)));
   if (planted.length > 0) {

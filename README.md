@@ -42,7 +42,11 @@ antigravity and kiro are `pending`: their promotion canaries ran and did not pro
   wrapping `agy` in third-party tools is not supported on consumer plans and can lead to account suspension.
   The documented headless route is a Gemini API key: set `GEMINI_API_KEY` and the seat runs with
   `modelProvider: "gemini"`. A consumer sign-in also works, at your own risk. Each leg runs on its own
-  `--gemini-dir`, so your agy settings, rules, plugins and skills never load into a review.
+  `--gemini-dir`. Measured on agy 1.5.7 with no model call: agy then reads its settings and its MCP config from
+  that directory, not from `~/.gemini` (an MCP server planted in `~/.gemini` did not start). Not measured:
+  whether your global `GEMINI.md`, skills, plugins and hooks in `~/.gemini` stay out. The root sanitizer and the
+  per-call permission check apply either way. agy still runs with your real HOME, which its keyring sign-in
+  needs.
 - **Kiro (`kiro-cli`).** Seats run `kiro-cli acp` on the v2 engine with a council agent profile in a per-leg
   `KIRO_HOME`. A seat may set `auth_home = "/abs/dir"` to use a separate Kiro login (for example a personal one
   beside a work one): kiro-cli then runs with `HOME` there, and `doctor` shows which home each seat uses. Log that

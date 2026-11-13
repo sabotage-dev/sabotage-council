@@ -4,8 +4,9 @@ import { join, resolve } from 'node:path';
 /*
  * The antigravity leg's command line and its own files (plan 4.2, D7): `agy acp`, the documented client route,
  * never `agy -p` for a review. The leg gets:
- *   - its own gemini dir (`--gemini-dir`, absolute) in the leg dir, so the user's settings, rules, plugins, skills,
- *     hooks and global instruction file stay out, and the conversation records land beside the update log;
+ *   - its own gemini dir (`--gemini-dir`, absolute) in the leg dir: agy reads its settings and MCP config from
+ *     there, not from `~/.gemini` (measured, see known.ts; instruction files, skills, plugins and hooks under
+ *     `~/.gemini` are not measured), and the conversation records land beside the update log;
  *   - telemetry off, the terminal sandbox on, and the default customizations off;
  *   - its own log file, read by the ratifier;
  *   - auto-update off (the CLI updated itself overnight during planning).

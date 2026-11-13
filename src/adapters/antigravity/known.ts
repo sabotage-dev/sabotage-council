@@ -15,8 +15,15 @@ export interface AgyVersionDecl {
  * agy 1.5.7, measured 2026-11-12 over ACP (no model turn for these facts):
  *   - `agy acp` takes `--gemini-dir <absolute dir>`; with it, the app data directory, the user settings file
  *     (`<dir>/antigravity-cli/settings.json`), the shared config (`<dir>/config/config.json`) and the conversation
- *     records all move there, while the keyring sign-in still authenticates. Each leg gets its own gemini dir, so
- *     no user rule, plugin, skill, hook or global instruction file of the real `~/.gemini` reaches it.
+ *     records all move there, while the keyring sign-in still authenticates. Each leg gets its own gemini dir.
+ *   - What that isolation is measured to cover (round 1, no model call, a planted `$HOME/.gemini` in a scratch
+ *     HOME): when `<dir>/config/config.json` is absent agy creates its own `config.json` and `mcp_config.json` in
+ *     `<dir>/config` and does not fall back to `$HOME/.gemini`. An MCP server planted in
+ *     `$HOME/.gemini/config/mcp_config.json` did not start, while the same file started its server when it was the
+ *     gemini dir (the positive control). The CLI settings come from `<dir>/antigravity-cli/settings.json` only
+ *     ("using defaults" when it is absent). Not measured: whether the global `GEMINI.md`, skills, plugins and hooks
+ *     under `$HOME/.gemini` stay out (only a model turn would show instructions loading). agy keeps the real HOME:
+ *     with HOME changed, its keyring sign-in did not load ("Authentication required" at `session/new`).
  *   - `session/new` reports config options `model`, `thought_level` and `mode` (`default`, `accept-edits`, `auto`,
  *     `plan`), plus the older `models` and `modes` fields. `session/set_config_option` sets each one.
  */
