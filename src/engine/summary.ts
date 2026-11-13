@@ -73,7 +73,7 @@ export interface RoundSummary {
   round_dir: string;
   root: string;
   brief_path: string;
-  earlier_items: Array<{ id: string; severity: string; closed_context: boolean; text: string }>;
+  earlier_items: Array<{ id: string; severity: string; origin: string; closed_context: boolean; text: string }>;
   legs: LegSummary[];
   adjudication: { verdict: string | null; owed: number | null; approve: boolean | null; needs_ruling: boolean } | null;
   started_at: string;
@@ -189,7 +189,7 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
     round_dir: roundDir,
     root: facts.root,
     brief_path: join(roundDir, 'BRIEF.md'),
-    earlier_items: facts.detail.earlier_items.map((i) => ({ id: i.id, severity: i.severity, closed_context: i.closedContext, text: i.text })),
+    earlier_items: facts.detail.earlier_items.map((i) => ({ id: i.id, severity: i.severity, origin: i.origin, closed_context: i.closedContext, text: i.text })),
     legs,
     adjudication:
       round.status === 'adjudicated'

@@ -55,7 +55,7 @@ function adjudicationFor(h: Harness, roundId: number, edit: (a: Record<string, u
     reason: 'the loop drops the end element',
     findings,
     unmapped,
-    earlier_items: inputs.earlierItems.filter((i) => !i.closedContext).map((i) => ({ source: i.id, status: 'closed', evidence: 'fixed', fix_row: null })),
+    earlier_items: inputs.earlierItems.filter((i) => !i.closedContext).map((i) => ({ source: i.id, status: 'closed', evidence: 'widget/calc/rangesum.py:2 fixed', fix_row: null })),
     human_asks: [],
     leg_verdicts: legs.map((l) => ({ seat: l.seat_id, raw: l.verdict_raw, effective: l.verdict_raw })),
     not_verified: [],
@@ -322,17 +322,19 @@ describe('round runner end to end through the fake CLIs', () => {
 });
 
 describe('round numbering, delta rounds and round 4+ (plan 3.5, 3.6, D5)', () => {
-  it('runs round 2 as a delta on FOLD.diff, carrying round 1 owed rows (not its follow-ups) as earlier items', async () => {
+  it('runs round 2 as a delta on FOLD.diff, carrying round 1 owed rows and follow-ups as earlier items', async () => {
     const h = harness();
     const { repo } = fixtureRepo();
     const r1 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
-    // Round 1: the claude legs' finding is owed; codex's extracted item is a separate follow-up, which is not carried.
+    // Round 1: the claude legs' finding is owed; codex's extracted item is a separate follow-up. Both are carried.
+    let followId = '';
     const r1ok = adjudicate(h.store, h.layout, r1.prepared.inputs.roundId, adjudicationFor(h, r1.prepared.inputs.roundId, (a, c) => {
       const owed = (a['findings'] as Array<Record<string, unknown>>)[0]!;
       const raised = owed['raised_by'] as Array<{ seat: string }>;
       owed['raised_by'] = raised.filter((r) => r.seat !== 'a');
       const title = 'range_sum has no test for an empty range';
       const id = findingIdOf(c.inputs.targetKey, c.path, title);
+      followId = id;
       (a['findings'] as unknown[]).push({ ...owed, id, title, severity: 'LOW', outcome: 'follow-up', raised_by: raised.filter((r) => r.seat === 'a') });
       a['followups'] = [id];
     }));
@@ -347,7 +349,7 @@ describe('round numbering, delta rounds and round 4+ (plan 3.5, 3.6, D5)', () =>
     expect(brief).toContain('ROUND: 2');
     expect(brief).toContain('only the delta, FOLD.diff');
     const owedId = findingIdOf(i2.targetKey, `${i2.repoName}/calc/rangesum.py`, 'range_sum excludes the end index');
-    expect(i2.earlierItems.map((i) => [i.id, i.closedContext])).toEqual([[owedId, false]]);
+    expect(i2.earlierItems.map((i) => [i.id, i.closedContext, i.origin]).sort()).toEqual([[owedId, false, 'owed'], [followId, false, 'follow-up']].sort());
     expect(brief).toContain(`- ${owedId}`);
     expect(readFileSync(join(i2.root, 'PREVIOUS-REVIEWS.md'), 'utf8')).toContain('DATA: HIGH widget/calc/rangesum.py:11 range_sum excludes the end index');
 
@@ -369,17 +371,33 @@ describe('round numbering, delta rounds and round 4+ (plan 3.5, 3.6, D5)', () =>
       a['leg_verdicts'] = (a['leg_verdicts'] as Array<{ seat: string; raw: string }>).map((v) => ({ ...v, effective: v.raw === 'NEEDS-WORK' ? 'SHIP-WITH-FIXES' : v.raw }));
     }));
     expect(ok.outcome.ok, JSON.stringify(ok.outcome)).toBe(true);
-    const item = h.store.db.prepare('SELECT status, body_sha256 FROM earlier_items WHERE round_id = ?').get(i2.roundId) as { status: string; body_sha256: string };
-    expect(item.status).toBe('closed');
-    expect(item.body_sha256).toMatch(/^[0-9a-f]{64}$/);
+    const stored = h.store.db.prepare('SELECT status, body_sha256 FROM earlier_items WHERE round_id = ?').all(i2.roundId) as Array<{ status: string; body_sha256: string }>;
+    expect(stored).toHaveLength(2);
+    for (const item of stored) {
+      expect(item.status).toBe('closed');
+      expect(item.body_sha256).toMatch(/^[0-9a-f]{64}$/);
+    }
 
     // Round 3: the closed item is closed context, with no row asked.
     commitChange(repo, 'calc/notes.md', 'notes\n', 'notes');
     const r3 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
     expect(r3.prepared.inputs.roundNo).toBe(3);
-    expect(r3.prepared.inputs.earlierItems.map((i) => [i.id, i.closedContext])).toEqual([[owedId, true]]);
-    expect(readFileSync(r3.prepared.inputs.briefFile, 'utf8')).toContain(`Closed context (closed earlier, unchanged; no row needed): ${owedId}.`);
+    expect(r3.prepared.inputs.earlierItems.map((i) => [i.id, i.closedContext]).sort()).toEqual([[owedId, true], [followId, true]].sort());
+    expect(readFileSync(r3.prepared.inputs.briefFile, 'utf8')).toMatch(new RegExp(`Closed context \\(closed earlier, unchanged; no row needed\\): .*${owedId}`));
   }, 120_000);
+
+  it('carries earlier items into a re-run at the same head (fold row 9)', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const r1 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    expect(adjudicate(h.store, h.layout, r1.prepared.inputs.roundId, adjudicationFor(h, r1.prepared.inputs.roundId)).outcome.ok).toBe(true);
+    const again = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    const i = again.prepared.inputs;
+    expect(i.roundNo).toBe(1);
+    const owedId = findingIdOf(i.targetKey, `${i.repoName}/calc/rangesum.py`, 'range_sum excludes the end index');
+    expect(i.earlierItems.map((x) => [x.id, x.closedContext, x.origin])).toEqual([[owedId, false, 'owed']]);
+    expect(readFileSync(i.briefFile, 'utf8')).toContain(`- ${owedId}`);
+  }, 60_000);
 
   it('counts a head only once a round on it is adjudicated', async () => {
     const h = harness();

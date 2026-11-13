@@ -161,6 +161,8 @@ export interface CarriedItem {
   id: string;
   severity: Severity;
   kind: 'finding' | 'human_ask';
+  /** The outcome it last had: owed and rulings may be owed again; a follow-up stays one unless raised again. */
+  origin: 'owed' | 'ruling' | 'follow-up';
   /** The item as the seats read it in PREVIOUS-REVIEWS.md. */
   text: string;
   /** Closed in an earlier round with this exact text: listed as closed context, no row asked (plan 3.5). */
@@ -190,7 +192,8 @@ export function numberRound(db: DatabaseSync, targetId: number, head: string): R
   const roundNo = heads.size + (heads.has(head) ? 0 : 1);
   const other = [...council].reverse().find((r) => String(r['head_sha']) !== head);
   const baseline = other === undefined ? null : String(other['head_sha']);
-  return { roundNo, baseline, items: roundNo > 1 ? carriedItems(db, rounds.map((r) => Number(r['id']))) : [] };
+  // Earlier items come from every adjudicated round of the target, a same-head re-run and a solo round included.
+  return { roundNo, baseline, items: carriedItems(db, rounds.map((r) => Number(r['id']))) };
 }
 
 /** Adjudicated rounds of a target that settled with two or more counted legs: council rounds. */
@@ -210,8 +213,8 @@ export function itemText(f: Row, roundNo: number): string {
 }
 
 /**
- * The earlier items of a delta round (plan 3.5), from the target's adjudicated rounds in order: a finding the
- * adjudicator made owed (or a ruling) opens an item; an `earlier_items` row closes it, keeping the hash of the text
+ * The earlier items of a round (plan 3.5), from the target's adjudicated rounds in order: a finding the adjudicator
+ * made owed, a ruling or a follow-up opens an item (fold row 9); an `earlier_items` row closes it, keeping the hash of the text
  * it was closed on. An open item asks for a row; a closed one whose text is unchanged is closed context.
  */
 export function carriedItems(db: DatabaseSync, roundIds: readonly number[]): CarriedItem[] {
@@ -224,12 +227,13 @@ export function carriedItems(db: DatabaseSync, roundIds: readonly number[]): Car
       if (e['status'] === 'closed') item.closedSha = e['body_sha256'] === null ? sha256(item.text) : String(e['body_sha256']);
       else item.closedSha = null;
     }
-    for (const f of all(db, "SELECT * FROM findings WHERE round_id = ? AND outcome IN ('owed', 'ruling') ORDER BY id", roundId)) {
+    for (const f of all(db, "SELECT * FROM findings WHERE round_id = ? AND outcome IN ('owed', 'ruling', 'follow-up') ORDER BY id", roundId)) {
       const id = String(f['id']);
       items.set(id, {
         id,
         severity: (f['severity'] ?? 'LOW') as Severity,
         kind: f['kind'] === 'human_ask' ? 'human_ask' : 'finding',
+        origin: f['outcome'] as CarriedItem['origin'],
         text: itemText(f, roundNo),
         closedContext: false,
         fromRound: roundNo,

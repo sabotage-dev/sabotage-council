@@ -39,8 +39,26 @@ export interface ContextItem {
   id: string;
   severity: Severity;
   kind: 'finding' | 'human_ask';
+  /** What the item was when it was last raised: an owed row or ruling, or a follow-up (fold row 9). */
+  origin: 'owed' | 'ruling' | 'follow-up';
   closedContext: boolean;
 }
+
+/**
+ * Whether an earlier item is owed again while open (plan 3.5 (b), (c)): an earlier owed row or ruling, under this
+ * round's rule. A carried follow-up stays a follow-up unless the adjudicator raises it again.
+ */
+export function itemOwedEligible(item: Pick<ContextItem, 'severity' | 'kind' | 'origin'>, rule: RoundRule): boolean {
+  return item.origin !== 'follow-up' && owedEligible(item, rule);
+}
+
+/** A finding row tied to an earlier item: the same stable id, or linked by same_as or closes_item (fold row 9). */
+export function tiedTo(f: Pick<AdjudicatedFinding, 'id' | 'same_as' | 'closes_item'>, source: string): boolean {
+  return f.id === source || f.same_as === source || f.closes_item === source;
+}
+
+/** Evidence that an earlier item is closed: a file:line, a commit sha, or a finding id (fold row 9). */
+export const CLOSED_EVIDENCE = /[^\s:()]+:\d+|\b[0-9a-f]{7,40}\b|\bf_[0-9a-f]{12}\b/;
 
 /** What the adjudication is checked against: the round as the engine recorded it. */
 export interface AdjudicationContext {
@@ -190,7 +208,9 @@ export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): Va
     return prior === undefined;
   };
   for (const f of a.findings) {
-    if (f.kind === 'finding' && f.raised_by.length === 0) err('attribution', `finding ${f.id} names no seat in raised_by`);
+    // A carried row (the fix_row of an earlier item, tied to it) keeps its earlier attribution: no current seat needed.
+    const carried = a.earlier_items.some((e) => e.fix_row === f.id && tiedTo(f, e.source));
+    if (f.kind === 'finding' && f.raised_by.length === 0 && !carried) err('attribution', `finding ${f.id} names no seat in raised_by (or carry it as an earlier item's fix_row)`);
     for (const r of f.raised_by) {
       if (!mapOnce(r.seat, r.leg_finding, `finding ${f.id}`)) continue;
       const leg = own(r.seat, r.leg_finding);
@@ -213,6 +233,7 @@ export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): Va
   // Severity, owner and the round's rule on owed rows.
   for (const f of a.findings) {
     if (f.outcome !== 'owed') continue;
+    if (f.proof.trim().length < 10) err('severity', `finding ${f.id} is owed without proof (file:line or command output)`);
     if (f.severity === 'NIT') err('severity', `finding ${f.id} is owed at NIT: nits never block (plan 3.5)`);
     if (f.owner !== 'this') err('owner', `finding ${f.id} is owed but its owner is ${f.owner}: a fix in another repository is not owed by this change (plan 3.4 rule 8)`);
     if (ctx.rule === 'high-only' && f.severity !== 'HIGH' && f.kind !== 'human_ask') {
@@ -252,7 +273,9 @@ export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): Va
   }
   const clear = legsClear(Object.values(effective));
 
-  // Earlier items: every one but closed context has one row; an owed-eligible item still open names its owed row.
+  // Earlier items (fold row 9): every one but closed context has one row. A closed row cites its evidence. A row still
+  // open or half-closed names its fix_row, a finding tied to the item: an owed (or ruling) row when the item is owed
+  // under this round's rule, else at least a follow-up listed in followups, so a round 4+ approval still lists it.
   const items = new Map(ctx.earlierItems.map((i) => [i.id, i]));
   const rows = new Set<string>();
   for (const e of a.earlier_items) {
@@ -265,8 +288,19 @@ export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): Va
     rows.add(e.source);
     const fix = e.fix_row === null ? undefined : byId.get(e.fix_row);
     if (e.fix_row !== null && !fix) err('coverage', `earlier item ${e.source}: fix_row ${e.fix_row} is not a finding of this adjudication`);
-    if (e.status !== 'closed' && owedEligible(item, ctx.rule) && (!fix || (fix.outcome !== 'owed' && fix.outcome !== 'ruling'))) {
-      err('coverage', `earlier item ${e.source} is ${e.status} and owed under this round's rule (plan 3.5), so its fix_row must name an owed finding`);
+    if (fix && !tiedTo(fix, e.source)) err('coverage', `earlier item ${e.source}: fix_row ${fix.id} is not tied to it (the same id, or same_as or closes_item naming it)`);
+    if (e.status === 'closed') {
+      if (!CLOSED_EVIDENCE.test(e.evidence) && !(fix && tiedTo(fix, e.source))) {
+        err('coverage', `earlier item ${e.source} is closed without evidence: cite a file:line, a commit or the fix row id`);
+      }
+      continue;
+    }
+    if (itemOwedEligible(item, ctx.rule)) {
+      if (!fix || (fix.outcome !== 'owed' && fix.outcome !== 'ruling')) {
+        err('coverage', `earlier item ${e.source} is ${e.status} and owed under this round's rule (plan 3.5), so its fix_row must name an owed finding`);
+      }
+    } else if (!fix || !['owed', 'ruling', 'follow-up', 'nit'].includes(fix.outcome) || ((fix.outcome === 'follow-up' || fix.outcome === 'nit') && !a.followups.includes(fix.id))) {
+      err('coverage', `earlier item ${e.source} is ${e.status} and not owed this round, so its fix_row must name a follow-up listed in followups (plan 3.5)`);
     }
   }
   for (const item of ctx.earlierItems) {

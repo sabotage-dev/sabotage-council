@@ -66,7 +66,7 @@ export function adjudicationContext(store: Store, layout: DataLayout, roundId: n
         ? null
         : (legFindings.all(l.id) as Array<{ local_id: string; severity: Severity }>).map((x) => ({ id: x.local_id, severity: x.severity })),
     })),
-    earlierItems: facts.detail.earlier_items.map((i) => ({ id: i.id, severity: i.severity, kind: i.kind, closedContext: i.closedContext })),
+    earlierItems: facts.detail.earlier_items.map((i) => ({ id: i.id, severity: i.severity, kind: i.kind, origin: i.origin ?? 'owed', closedContext: i.closedContext })),
     humanAsks: facts.detail.human_asks,
     knownFindingIds: new Set(known.map((k) => k.id)),
   };

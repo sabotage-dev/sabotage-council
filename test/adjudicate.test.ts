@@ -37,7 +37,7 @@ function ctx(over: Partial<AdjudicationContext> = {}): AdjudicationContext {
       { seat: 'b', verdictRaw: 'SHIP-WITH-FIXES', findings: [{ id: 'F1', severity: 'MEDIUM' }] },
       { seat: 'c', verdictRaw: 'SHIP', findings: null },
     ],
-    earlierItems: [{ id: ITEM, severity: 'HIGH', kind: 'finding', closedContext: false }],
+    earlierItems: [{ id: ITEM, severity: 'HIGH', kind: 'finding', origin: 'owed', closedContext: false }],
     humanAsks: [],
     knownFindingIds: new Set([ITEM]),
     ...over,
@@ -299,10 +299,75 @@ describe('adjudicate: plan 7.3 validator', () => {
     if (r4.ok) expect(r4.effective.majorityOverrides).toEqual([]);
   });
 
+  it('earlier items survive (fold row 9): tied fix rows, carried rows without new seats, listed follow-ups, closing evidence', () => {
+    const FOLLOW = id('an earlier follow-up');
+    const items = (over: Partial<AdjudicationContext['earlierItems'][number]>[] = []) =>
+      ctx({
+        earlierItems: [{ id: ITEM, severity: 'HIGH', kind: 'finding', origin: 'owed', closedContext: false, ...over[0] }],
+        knownFindingIds: new Set([ITEM, FOLLOW]),
+      });
+    const carriedRow = (outcome: string, severity = 'HIGH'): Record<string, unknown> => ({
+      id: ITEM,
+      title: 'an earlier owed row',
+      path: PATH,
+      line: 3,
+      severity,
+      outcome,
+      owner: 'this',
+      proof: 'widget/calc/rangesum.py:3 still exclusive',
+      kind: 'finding',
+      raised_by: [],
+      same_as: null,
+      closes_item: null,
+    });
+    // A carried owed finding stays owed with no current seat raising it again.
+    const carried = valid();
+    carried.findings.push(carriedRow('owed'));
+    carried['earlier_items'] = [{ source: ITEM, status: 'open', evidence: 'still open', fix_row: ITEM }];
+    expect(errorsOf(carried, items())).toEqual([]);
+    // A fix_row that is not tied to the item is rejected.
+    const untied = valid();
+    untied['earlier_items'] = [{ source: ITEM, status: 'open', evidence: 'still open', fix_row: F1 }];
+    expect(errorsOf(untied, items()).join('\n')).toContain(`fix_row ${F1} is not tied to it`);
+    // A row with no seat that is not a carried fix row still needs a seat.
+    const orphan = valid();
+    orphan.findings.push(carriedRow('owed'));
+    expect(errorsOf(orphan, items()).join('\n')).toContain(`finding ${ITEM} names no seat in raised_by`);
+    // Round 4+: an open carried MEDIUM item is not owed, but must still be a listed follow-up.
+    const r4 = (a: Adj): void => {
+      a['round'] = 4;
+    };
+    const unlisted = valid();
+    r4(unlisted);
+    unlisted['earlier_items'] = [{ source: ITEM, status: 'open', evidence: 'not yet', fix_row: null }];
+    const ctx4 = { ...items([{ severity: 'MEDIUM' }]), roundNo: 4, rule: 'high-only' as const };
+    expect(errorsOf(unlisted, ctx4).join('\n')).toContain(`earlier item ${ITEM} is open and not owed this round, so its fix_row must name a follow-up listed in followups`);
+    const listed = valid();
+    r4(listed);
+    listed.findings.push(carriedRow('follow-up', 'MEDIUM'));
+    listed['followups'] = [F2, ITEM];
+    listed['earlier_items'] = [{ source: ITEM, status: 'open', evidence: 'not yet', fix_row: ITEM }];
+    expect(errorsOf(listed, ctx4)).toEqual([]);
+    // A carried follow-up open in a later round stays a follow-up (never owed by itself), but must be listed.
+    const follow = valid();
+    follow['earlier_items'] = [{ source: ITEM, status: 'half-closed', evidence: 'partly', fix_row: null }];
+    expect(errorsOf(follow, items([{ origin: 'follow-up', severity: 'LOW' }])).join('\n')).toContain('not owed this round');
+    // Closing needs evidence: a file:line, a commit, or the fix row.
+    for (const [evidence, ok] of [['done', false], ['fixed in abc1234', true], ['widget/calc/rangesum.py:3 inclusive now', true]] as const) {
+      const closed = valid();
+      closed['earlier_items'] = [{ source: ITEM, status: 'closed', evidence, fix_row: null }];
+      expect(errorsOf(closed, items()).length === 0, evidence).toBe(ok);
+    }
+    // An owed row needs proof.
+    const noProof = valid();
+    f(noProof, 0)['proof'] = '';
+    expect(errorsOf(noProof).join('\n')).toContain(`finding ${F1} is owed without proof`);
+  });
+
   it('asks no row for a closed-context item (plan 3.5)', () => {
     const a = valid();
     a['earlier_items'] = [];
-    expect(errorsOf(a, ctx({ earlierItems: [{ id: ITEM, severity: 'HIGH', kind: 'finding', closedContext: true }] }))).toEqual([]);
+    expect(errorsOf(a, ctx({ earlierItems: [{ id: ITEM, severity: 'HIGH', kind: 'finding', origin: 'owed', closedContext: true }] }))).toEqual([]);
   });
 
   it('rejects text that is not JSON', () => {
