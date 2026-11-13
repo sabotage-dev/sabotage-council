@@ -41,8 +41,10 @@ Read every counted leg's full answer (`answer_path`), not only its findings bloc
   `human_ask` finding row and a `human_asks` row (an open ask is owed in every round, Q7). On this head it is a
   hold: set `needs_ruling: true` (the engine rejects the file otherwise).
 - **Approve** decides whether the post may approve; the post step still holds an approval for red, pending or
-  unread CI, the hold list, `auto.approve = false` or a solo round, and maps everything by plan 3.7's table.
-- Nothing posts from here: posting is `sabotage-council post <id> --dry-run`, then `--post` on the user's go.
+  unread CI, the hold list, `auto.approve = false`, a solo round, or a change request that came after the round
+  started, and maps everything by plan 3.7's table.
+- Nothing posts from here: posting is `sabotage-council post <id> --dry-run`, then, on the user's go,
+  `--post --expect <the sha256 that dry run printed>`.
 
 ## Procedure
 
