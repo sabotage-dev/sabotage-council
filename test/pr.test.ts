@@ -10,7 +10,7 @@ import { parseConfigText, type CouncilConfig } from '../src/config/index.js';
 import { cleanScratchAfterAll } from './helpers/fixtures.js';
 import { FAKE_GH, fakeGh, filesFor, pr2Routes, pushCommit, sourceRepo, type FakeGh, type Routes, type SourceRepo } from './helpers/github.js';
 import { git } from './helpers/git-fixture.js';
-import { fakeAdapters, fakeHome, harness, ROSTER_TOML, type Harness } from './helpers/round.js';
+import { fakeAdapters, fakeHome, harness, ROSTER_TOML, type FakeCases, type Harness } from './helpers/round.js';
 import { adjudicationFromSummary, type AdjOptions } from './helpers/adjudication.js';
 
 cleanScratchAfterAll();
@@ -174,6 +174,19 @@ describe('pr rounds: preparation rules', () => {
     expect(brief).toContain('This round is a full review, but this rule still applies (D17).');
   });
 
+  it('fetches a head the pull ref has moved past, by its exact sha', async () => {
+    const w = await world((r, src) => {
+      reopen(r);
+      // GitHub's API names head H, but refs/pull/2/head already points elsewhere (it moved after the read).
+      const h = pushCommit(src, 'H', { 'src/step8.py': 'x = 8\n' });
+      moveHead(r, h, src);
+      git(src.repo, ['update-ref', 'refs/pull/2/head', src.shas['C7']!]);
+    });
+    const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
+    if (r.kind !== 'council') throw new Error('expected a council round');
+    expect(r.prepared.inputs.head).toBe(w.src.shas['H']);
+  });
+
   it('a missing baseline is fetched exactly first, and when it stays missing the brief says "changed files unknown"', async () => {
     const w = await world();
     // A credit on a head GitHub no longer has, submitted after round 3: it is the newest counted head.
@@ -269,11 +282,16 @@ describe('pr rounds: preparation rules', () => {
 });
 
 /** Prepares, runs and (optionally) adjudicates a pr round through the fake legs. */
-async function councilRound(w: World, o: Partial<PrRoundOptions> = {}, adj?: AdjOptions): Promise<{ id: number; summary: RoundSummary; adjudicated: ReturnType<typeof adjudicate> | null }> {
+async function councilRound(
+  w: World,
+  o: Partial<PrRoundOptions> = {},
+  adj?: AdjOptions,
+  cases: FakeCases = {},
+): Promise<{ id: number; summary: RoundSummary; adjudicated: ReturnType<typeof adjudicate> | null }> {
   const r = preparePrRound(w.h.store, w.options(o));
   if (r.kind !== 'council') throw new Error('expected a council round');
   const id = r.prepared.inputs.roundId;
-  const { env } = fakeHome({});
+  const { env } = fakeHome(cases);
   await runLegs(w.h.store, w.h.layout, id, { adapters: fakeAdapters, env, pollMs: 20, legTimeoutMs: 20_000 });
   const summary = roundSummary(w.h.store, w.h.layout, id);
   const adjudicated = adj === undefined ? null : adjudicate(w.h.store, w.h.layout, id, JSON.stringify(adjudicationFromSummary(summary, adj)));
@@ -407,6 +425,14 @@ describe('pr rounds: the untrusted seat policy (plan 5.2)', () => {
     const c = await councilRound(al);
     expect(legsOf(al, c.id).map((l) => l[0])).toEqual(['a', 'b', 'c']);
     expect(getEvents(al.h.store.db, c.id).find((e) => e.kind === 'untrusted-allow')?.detail).toMatchObject({ seat: 'a', enforcement: 'sandboxed-exec' });
+
+    // fallback: a fallback that is not strong either is not taken. With claude on an untested version every claude
+    // occupant is below strong, so no seat has a strong leg: every seat is out and the round fails visibly.
+    const none = await world(readOnly, await untrusted('fallback'));
+    const n = await councilRound(none, {}, undefined, { claudeTop: { version: '2.1.999' } });
+    expect(legsOf(none, n.id)).toEqual([]);
+    expect(getRound(none.h.store.db, n.id)?.status).toBe('failed');
+    expect(getEvents(none.h.store.db, n.id).filter((e) => e.kind === 'seat-out').map((e) => (e.detail as { seat: string }).seat)).toEqual(['a', 'b', 'c']);
 
     // A trusted author's round never applies the policy.
     const trusted = await world(undefined, await untrusted('skip'));
