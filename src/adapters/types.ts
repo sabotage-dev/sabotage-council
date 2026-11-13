@@ -32,6 +32,8 @@ export interface Occupant {
    * work one) is read from its own token store. Absent: the user's HOME.
    */
   authHome?: string | undefined;
+  /** grok seats only: the OS sandbox profile (plan 4.2). Absent: `read-only`. */
+  sandbox?: 'read-only' | 'off' | undefined;
 }
 
 /** What a seat needs to know about the round. */

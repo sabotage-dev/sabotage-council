@@ -326,14 +326,18 @@ export function hasOutput(call: AcpToolCall, denialNotice?: (snapshot: Json) => 
  * Whether a tool call ran, on the evidence of every snapshot:
  *   - `completed` at any position, or tool output at any position, before or after a rejection: it ran;
  *   - a call the client never rejected that was reported `in_progress`: it ran;
- *   - the one measured exception: a rejected call whose only progress is a bare `in_progress` with no output. agy
+ *   - the measured exceptions: a rejected call whose only progress is a bare `in_progress` with no output (agy
  *     1.5.7 reports `in_progress` when a call starts, before it asks, and again on its way to `failed` after a
- *     rejection; the canary's secret never reached the stream.
+ *     rejection; the canary's secret never reached the stream), and a call the agent itself refused, reported with
+ *     the backend's denial notice and no other output (opencode 2.2.7).
  * A call that only ever went to `failed` with no output (agy drops the rest of a batch that way) did not start.
  */
 export function executed(call: AcpToolCall, denialNotice?: (snapshot: Json) => boolean): boolean {
   if (call.statuses.includes('completed') || hasOutput(call, denialNotice)) return true;
   if (call.rejectedAt !== null) return false;
+  // The agent's own permission check stopped the call (opencode 2.2.7 reports `in_progress`, then `failed` with
+  // `Permission denied: <action>`): no output and no completion, so the tool did not run.
+  if (denialNotice !== undefined && call.snapshots.some((s) => denialNotice(s))) return false;
   return call.statuses.includes('in_progress');
 }
 

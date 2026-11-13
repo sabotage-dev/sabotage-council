@@ -8,7 +8,13 @@ import {
   agentConfigFile,
   sanitizedPathMap,
   sanitizeTrees,
+  skillDefinitionRule,
+  skillDefinitionsIn,
+  workspaceConfigIn,
 } from '../src/root/index.js';
+import { CURSOR_WORKSPACE_CONFIG } from '../src/adapters/cursor/preflight.js';
+import { MUSE_WORKSPACE_CONFIG } from '../src/adapters/muse/preflight.js';
+import { plantCanaryRoot } from '../src/cli/deep.js';
 import { removeDir, tempDir } from './helpers/git-fixture.js';
 
 let root: string;
@@ -166,5 +172,100 @@ describe('sanitizeTrees', () => {
     expect(map('repo/.cursor/AGENTS.md')).toBe('_repo-agent-config/repo/.cursor/AGENTS.md.council-data');
     expect(map('repo/x/GEMINI.md')).toBe('repo/x/GEMINI.md.council-data');
     expect(map('repo/x/other.md')).toBe('repo/x/other.md');
+  });
+});
+
+/*
+ * Round 1 row 9 (claude F11): every entry the cursor and muse research names as loaded from a workspace, at the
+ * top level and nested, is moved or renamed by the sanitizer, and each backend's preflight scan finds it at any
+ * depth before the sanitizer runs and nothing after.
+ */
+const CURSOR_ENTRIES = ['.cursor/rules/planted.mdc', '.cursor/hooks.json', '.cursor/mcp.json', '.cursor/cli.json', '.cursorrules', '.cursorignore', 'AGENTS.md', 'CLAUDE.md', '.claude/settings.json', '.mcp.json'];
+const MUSE_ENTRIES = ['.muse/hooks.json', '.muse/settings.json', '.agents/AGENTS.md', '.agents/memory/MEMORY.md', '.agents/skills/planted/SKILL.md', '.agents/agents/planted.md', '.codex/skills/planted/SKILL.md', '.claude/CLAUDE.md', '.claude/skills/planted/SKILL.md', 'AGENTS.md', 'CLAUDE.md', 'MEMORY.md', '.mcp.json'];
+
+describe('cursor and muse workspace entries (round 1 row 9)', () => {
+  it.each([
+    ['cursor', CURSOR_ENTRIES, CURSOR_WORKSPACE_CONFIG],
+    ['muse', MUSE_ENTRIES, MUSE_WORKSPACE_CONFIG],
+  ])('%s: the preflight scan finds every entry at any depth, and none after the sanitizer', (_backend, entries, names) => {
+    for (const prefix of ['repo/', 'repo/pkg/', 'repo/pkg/deep/']) for (const rel of entries) put(`${prefix}${rel}`);
+    const before = workspaceConfigIn(root, names);
+    for (const prefix of ['repo/', 'repo/pkg/', 'repo/pkg/deep/']) {
+      for (const rel of entries) {
+        const top = rel.split('/')[0] ?? rel;
+        expect(before, `${prefix}${rel}`).toContain(`${prefix}${top}`);
+      }
+    }
+    sanitizeTrees(root, ['repo']);
+    expect(workspaceConfigIn(root, names)).toEqual([]);
+    for (const prefix of ['repo/', 'repo/pkg/', 'repo/pkg/deep/']) for (const rel of entries) expect(existsSync(join(root, `${prefix}${rel}`)), `${prefix}${rel}`).toBe(false);
+  });
+
+  it('the doctor --deep canary root, sanitized, leaves nothing either scan finds', () => {
+    plantCanaryRoot(join(root, 'repo'), join(root, 'markers'));
+    expect(workspaceConfigIn(root, CURSOR_WORKSPACE_CONFIG).length).toBeGreaterThan(0);
+    sanitizeTrees(root, ['repo']);
+    expect(workspaceConfigIn(root, CURSOR_WORKSPACE_CONFIG)).toEqual([]);
+    expect(workspaceConfigIn(root, MUSE_WORKSPACE_CONFIG)).toEqual([]);
+  });
+
+  it('skips the quarantine dir, reports a matching dir without entering it, and reports links by their own names', () => {
+    put('_repo-agent-config/repo/.cursor/hooks.json');
+    put('repo/.cursor/rules/a.mdc');
+    put('repo/notes/AGENTS.council-data');
+    symlinkSync('/nonexistent', join(root, 'repo', '.cursorrules'));
+    expect(workspaceConfigIn(root, CURSOR_WORKSPACE_CONFIG)).toEqual(['repo/.cursor', 'repo/.cursorrules']);
+    expect(workspaceConfigIn(join(root, 'missing'), CURSOR_WORKSPACE_CONFIG)).toEqual([]);
+  });
+
+  it('the global list holds .cursorrules and every directory the two backends load', () => {
+    expect(AGENT_CONFIG_FILES).toContain('.cursorrules');
+    for (const d of ['.cursor', '.claude', '.agents', '.muse', '.codex']) expect(AGENT_CONFIG_DIRS).toContain(d);
+  });
+});
+
+describe('skill definitions (round 2, codex F1)', () => {
+  it.each([
+    ['repo/tools/SKILL.md', 'SKILL.md'],
+    ['repo/x/skill.MD', 'SKILL.md'],
+    ['_repo-agent-config/repo/.claude/skills/a/SKILL.md', 'SKILL.md'],
+    ['_repo-agent-config/repo/.claude/skills/a/run.sh', 'skill dir'],
+    ['_repo-agent-config/repo/.opencode/skill/notes.md', 'skill dir'],
+    ['repo/.agents/Skills/notes.md', 'skill dir'],
+    ['_repo-agent-config/repo/.claude/skills/a/SKILL.md.council-data', null],
+    ['repo/skills/helper.md', null],
+    ['repo/docs/SKILL.md.txt', null],
+    ['_repo-agent-config/repo/.claude/settings.json', null],
+  ])('%s matches %s', (rel, rule) => {
+    expect(skillDefinitionRule(rel)).toBe(rule);
+  });
+
+  it('neutralizes skill files as they are quarantined, and SKILL.md anywhere; leaves other skills/ dirs alone', () => {
+    put('repo/.claude/skills/review/SKILL.md');
+    put('repo/.claude/skills/review/scripts/run.sh');
+    put('repo/pkg/.opencode/skills/x/notes.md');
+    put('repo/pkg/.agents/skills/y/SKILL.md');
+    put('repo/tools/pack/SKILL.md');
+    put('repo/skills/helper.md');
+    expect(skillDefinitionsIn(root).length).toBe(5);
+    sanitizeTrees(root, ['repo']);
+    expect(skillDefinitionsIn(root)).toEqual([]);
+    for (const rel of [
+      '_repo-agent-config/repo/.claude/skills/review/SKILL.md.council-data',
+      '_repo-agent-config/repo/.claude/skills/review/scripts/run.sh.council-data',
+      '_repo-agent-config/repo/pkg/.opencode/skills/x/notes.md.council-data',
+      '_repo-agent-config/repo/pkg/.agents/skills/y/SKILL.md.council-data',
+      'repo/tools/pack/SKILL.md.council-data',
+      'repo/skills/helper.md',
+    ]) {
+      expect(existsSync(join(root, rel)), rel).toBe(true);
+    }
+  });
+
+  it('scans the quarantine too: a live skill file left there is found', () => {
+    put('_repo-agent-config/repo/.claude/skills/x/SKILL.md');
+    put('_repo-agent-config/repo/.agents/skills/notes.md');
+    expect(skillDefinitionsIn(root)).toEqual(['_repo-agent-config/repo/.agents/skills/notes.md', '_repo-agent-config/repo/.claude/skills/x/SKILL.md']);
+    expect(skillDefinitionsIn(join(root, 'missing'))).toEqual([]);
   });
 });

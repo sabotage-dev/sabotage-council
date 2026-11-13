@@ -92,7 +92,12 @@ export const PLANTED: Readonly<Record<string, string>> = {
   'pkg/sub/.claude/settings.local.json': 'Q/pkg/sub/.claude/settings.local.json',
   'pkg/sub/.Cursor/rules.md': 'Q/pkg/sub/.Cursor/rules.md',
   'pkg/.KIRO/hooks/x.json': 'Q/pkg/.KIRO/hooks/x.json',
-  'deep/a/b/c/.agents/skills/s.md': 'Q/deep/a/b/c/.agents/skills/s.md',
+  // Skill definitions (round 2, codex F1): neutralized as they are quarantined, and SKILL.md anywhere.
+  'deep/a/b/c/.agents/skills/s.md': 'Q/deep/a/b/c/.agents/skills/s.md.council-data',
+  '.claude/skills/review/SKILL.md': 'Q/.claude/skills/review/SKILL.md.council-data',
+  '.claude/skills/review/scripts/run.sh': 'Q/.claude/skills/review/scripts/run.sh.council-data',
+  '.opencode/skill/notes.md': 'Q/.opencode/skill/notes.md.council-data',
+  'tools/pack/SKILL.md': 'tools/pack/SKILL.md.council-data',
   'deep/a/b/c/.opencode/agent.md': 'Q/deep/a/b/c/.opencode/agent.md',
   'deep/a/b/.gemini/GEMINI.md': 'Q/deep/a/b/.gemini/GEMINI.md.council-data',
   'deep/.Muse/notes.md': 'Q/deep/.Muse/notes.md',
@@ -121,6 +126,8 @@ export const NOT_AGENT_CONFIG: readonly string[] = [
   'pkg/CLAUDE.md.bak',
   'pkg/.cursor-tools/x.md',
   'pkg/agents/readme.md',
+  'pkg/skills/helper.md',
+  'docs/SKILL.md.txt',
 ];
 
 export interface Fixture {

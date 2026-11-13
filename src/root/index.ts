@@ -48,6 +48,11 @@ export {
   COUNCIL_DATA_SUFFIX,
   sanitizedPathMap,
   sanitizeTrees,
+  SKILL_DIR,
+  SKILL_FILE,
+  skillDefinitionRule,
+  skillDefinitionsIn,
+  workspaceConfigIn,
   type SanitizedEntry,
 } from './sanitize.js';
 export {

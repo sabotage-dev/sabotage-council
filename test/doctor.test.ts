@@ -40,7 +40,7 @@ describe('doctor', () => {
     expect(lines).toEqual([
       'ok    node v22.13.0 satisfies >=22.13',
       `ok    config ${configPath} loaded`,
-      'note  config-wide model and family checks wait for every backend adapter; codex, claude, antigravity and kiro seats are preflighted below',
+      'note  config-wide model and family checks are not run here; each seat is preflighted below',
       `ok    store ${dbPath} at schema version 1, applied migration(s) 1`,
       'seats:',
       '  a  codex / gpt-6.1-sol / high  (fallback kiro / gpt-5.6-sol / high on usage_limit, auth)',
@@ -147,6 +147,22 @@ describe('doctor preflight per seat (plan 4.3)', () => {
       writeFileSync(configPath, PLAN_EXAMPLE);
       const plain = await doctor({ adapters });
       expect(plain.lines).toContain("        home  the user's HOME (default)");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('shows which grok home a grok seat signs in from: its auth_home, or the default', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sc-grok-auth-home-'));
+    try {
+      writeFileSync(configPath, PLAN_EXAMPLE.replace('model = "grok-4.7"\neffort = "high"', `model = "grok-4.7"\neffort = "high"\nauth_home = "${home}"`));
+      const adapters: SeatAdapters = (backend) => (backend === 'grok' ? stubAdapter({ enforcement: 'weak', cliVersion: '1.0.70' }) : undefined);
+      const { lines } = await doctor({ adapters });
+      expect(lines).toContain(`  c  grok / grok-4.7 / high, auth_home ${home}`);
+      expect(lines).toContain(`        grok home  ${home} (auth_home)`);
+      writeFileSync(configPath, PLAN_EXAMPLE);
+      const plain = await doctor({ adapters: (backend) => (backend === 'grok' ? stubAdapter({ enforcement: 'weak', cliVersion: '1.0.70', data: { grokHome: '/u/.grok', route: 'login' } }) : undefined) });
+      expect(plain.lines).toContain('        grok home  /u/.grok (login)');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

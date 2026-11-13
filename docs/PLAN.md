@@ -444,8 +444,9 @@ There are two shared transports:
         planning step), set with `session/set_config_option` (config id `mode`; agy also reports the older
         `modes` field);
       - for kiro it is the council agent `sabotage-council`, set by the v2 engine's `--agent` launch flag and
-        checked as reported in `modes.currentModeId` (the v2 engine reports no `configOptions`); opencode's is
-        named in P4;
+        checked as reported in `modes.currentModeId` (the v2 engine reports no `configOptions`); for opencode it is
+        the council agent `council` from `OPENCODE_CONFIG_CONTENT`, set with `session/set_config_option` (config
+        id `mode`) after the `model` and, for a model with variants, `effort` options (P4);
       - the adapter refuses any session whose reported mode differs, before the prompt is sent.
     - preflight refuses the leg when the rules the leg will load allow anything. Each adapter declares where those
       rules live (P3): antigravity runs every leg on its own `--gemini-dir`, so the leg loads only
@@ -543,14 +544,17 @@ Per-backend hazards the adapters handle (each one was found in the research or m
     - With `off`, the allowlist is the only enforcement, and the leg records it.
   - **Read paths are audited in every sandbox mode.** The research says even the read-only sandbox permits reads
     everywhere. Ratification reads every `read_file`, `grep` and `list_dir` path from `updates.jsonl`
-    `tool_call.rawInput` (cross-checked against `chat_history.jsonl`) and
-    fails the leg on one that resolves outside the root.
+    `tool_call.rawInput`, cross-checked against the stream's `tool_use` blocks (every stream tool use and every
+    `tool_completed` call must be in `updates.jsonl` with its paths; N9), and fails the leg on one that resolves
+    outside the root. Measured in P4 (1.0.70, `dontAsk`): reads outside the root by path, through a symlink and
+    by grep all ran with no denial, so this audit is detection, not a boundary.
   - MCP servers listed in the `GROK_HOME` config start even under the allowlist. The probe saw `context7` started
-    through `npx`: a process with network.
+    through `npx`: a process with network. Owner ruling (P4): a leg that starts an MCP server fails.
     - With `XAI_API_KEY`, the leg uses an isolated `GROK_HOME` with no MCP entries.
-    - With a subscription login, the user's own servers start; that is user-owned and unreachable without
-      `use_tool`. The leg's label drops to `weak` and `doctor` names the servers.
-    - Ratification records every `mcp_server_starting` event.
+    - With a subscription login, the user's own servers would start, so preflight refuses the seat (`grok
+      inspect` names the servers) and `doctor` says so; the user's grok config is never edited by the tool.
+    - Ratification fails a leg with any `mcp_server_starting` event, naming the servers (`setup`; a server from
+      outside the user's grok config is `contaminated`).
 - **antigravity**
   - Google's FAQ says wrapping `agy -p` inside third-party applications "is not supported under consumer plans"
     and can lead to account suspension. The adapter never uses `agy -p`.
@@ -641,14 +645,25 @@ listed by `doctor`) from **repository-controlled** context (never allowed).
 | Backend | Proof (no model call unless marked) |
 |---|---|
 | codex | Run from the root, `codex debug prompt-input` with the leg's `-c`/`--disable` flags shows no MCP tool definitions and no repository instructions. This command accepts only `-c`, `--enable` and `--disable`. The user's global `~/.codex/AGENTS.md` is listed as user-owned; it loads even with `--ignore-user-config` (probe). `--ignore-user-config` and per-server `-c mcp_servers.<name>.enabled=false` must not be combined: together they fail config load with "invalid transport" (measured). The leg uses the per-server flags, so this preflight renders exactly the leg's config; the binding proof is the rollout's `top_level_tools` (4.2). |
-| grok | `grok inspect --json` under the leg env shows no project instructions, hooks or permission sources. Servers from `$GROK_HOME/config.toml` still list and start; they are user-owned and unreachable under the tool allowlist. The binding proof is `tool_definitions.json` after launch. |
+| grok | `grok inspect --json` under the leg env shows no project instructions, hooks or permission sources. Servers from `$GROK_HOME/config.toml` would start in the leg, so a seat with one is refused (owner ruling: a leg that starts MCP fails); the seat's `auth_home` gives it its own grok home with no MCP config. The binding proof is `tool_definitions.json` after launch. |
 | antigravity | No `agy -p` policy proof (D7). Preflight runs only the no-turn `/usage` and `agy models`, and checks the rules the leg will load: its own `--gemini-dir` settings (no allow rule, no auto mode, workspace-only access). Proof is per leg: the update log, the CLI log (the leg's own app data dir) and the conversation DB (every model call's label). Label `pending` (P3 canary below). |
 | claude | `system/init.tools` (stream-json, `--verbose`) ⊆ the leg's tool set, with no exception; `permissionMode` is `dontAsk`. P2 measured on 2.1.322 that `--setting-sources ""` (any set without `user`) drops plugin tools, user hooks and user allow rules while the login (Keychain) still works, so every Claude leg launches that way. On an untested version, a subscription user with an enabled plugin is refused at preflight and must use an API key; `doctor` says so. |
 | kiro | The HOME kiro-cli runs with (the seat's `auth_home`, else the user's), the token store's expiry and refresh-token presence (never a value), `chat --list-models` under a short cap, the agent profile hash, and a fresh `KIRO_HOME` (no steering, hooks, MCP config or other agents). Label `pending` (P3 canary below). |
-| opencode | Effective config dump shows the council agent only, with `skill` denied. |
+| opencode | On the leg's own XDG dirs and database, from the root (P4, 2.2.7): `debug config` lists only the leg's config dir and the council document; `debug agents` shows the council agent's effective rules (opencode's defaults, then the council's, last match wins) denying every non-read action, `skill` and `external_directory` included, and the offer computed from them (2.2.7's `whollyDisabled`: a tool stays offered unless the last rule matching it denies resource `*`) is the read set only. Measured on 2.2.7 (P4 round 1): opencode appends `skill browser deny` after the council's rules, so `skill` stays offered. Owner ruling (2026-11-12): allowed only if provably empty: the leg's skill locations hold no file, the root holds no `.opencode/`, `.claude/` or `.agents/` outside the quarantine, and no live skill file anywhere in the root, the quarantine included (round 2), and ratification fails any skill call, skill message or user message naming a skill; `mcp list` and `plugin list` are empty; `models` offers the pin. The root holds no `.opencode/`, `opencode.json`, `AGENTS.md` or `.claude/`. Label `pending` (P4 canary in 14). |
+| cursor | The versioned binary under `~/.local/share/cursor-agent/versions/` by path, a Cursor `--version`, `CURSOR_API_KEY` (the keychain login keeps the user's HOME, where the council hooks are never read, so it is refused until a live run shows them loading), the slug in `models`, a root with no `.cursor/`, `.claude/`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursorignore` or `.mcp.json` at any depth. No offline load dump. Label `weak` (D14). |
+| muse | `--version`, `muse usage` (or `META_API_KEY`, named as pay-as-you-go), a declared model that is not a contributor variant, a root with no `.muse/`, `.agents/`, `.claude/`, `.codex/`, `.mcp.json`, `AGENTS.md` or `CLAUDE.md`, and the leg's own XDG config holding only `{"schema_version": 1}`. No offline load dump. Label `weak`. |
 
 **Canary root:** `doctor --deep` runs the isolation checks against a canary root that contains planted hook,
 MCP and instruction files for every backend, at the top level and nested. Any backend that loads one fails.
+Built in P4 (round 1 fold): each occupant gets its own fresh canary root and markers dir; every planted hook
+event, MCP server and plugin writes its own marker, named for the occupant, file, entry and level, outside the
+root if anything runs it. A backend fails (`loads`) when a marker appears during its preflight, or when its own
+load dump (codex `prompt-input`, grok `inspect`, opencode `debug config`, a relative path resolved against the
+root) lists a planted file: exit 1. A backend passes as `isolated` (its load dump ran on the planted root and
+listed nothing from it) or, with no load dump, as proven by its own recorded promotion canary when its label is
+`strong` on that version (claude 2.1.322 and 2.1.323). A refusal by a filename scan (`refused`), a pass with no
+load dump (`unproven`) and a preflight that fails on a clean root too (`unchecked`) print "unproven by --deep":
+exit 2 when nothing loaded. Exit 0 only when every backend is proven.
 
 **Auth refresh:** run once, serially, before parallel launch. Parallel legs racing a token refresh was a measured
 failure.
@@ -792,7 +807,9 @@ model = "gpt-6.1-sol"
 effort = "high"
 fallback = { backend = "kiro", model = "gpt-5.6-sol", effort = "high", on = ["usage_limit", "auth"] }
 # kiro seats and fallbacks may add auth_home = "/abs/dir": kiro-cli then runs with HOME there, so a separate
-# Kiro login (its own token store) is used; the default is the user's HOME (P3).
+# Kiro login (its own token store) is used; the default is the user's HOME (P3). grok seats may add one too:
+# the leg's GROK_HOME is that dir, logged in once with `GROK_HOME=/abs/dir grok login`, holding its own config
+# and no MCP server (P4 round 1, owner ruling).
 
 [[seats]]
 id = "b"
@@ -857,10 +874,10 @@ It warns (and `doctor` repeats the warning) when:
 
 | Label | Meaning | Backends now |
 |---|---|---|
-| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | claude 2.1.322 with the P2 leg flags (`--tools`, `--restricted`, `--setting-sources ""`): its P2 canary, with a planted user allow rule, had every outside read (by path, through a symlink, Glob and Grep) denied before execution, and write, command and fetch tools not offered. grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
+| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | claude 2.1.322 and 2.1.323 with the P2 leg flags (`--tools`, `--restricted`, `--setting-sources ""`): the promotion canary on each version, with a planted user allow rule, had every outside read (by path, through a symlink, Glob and Grep) denied before execution, and write, command and fetch tools not offered. grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
 | `sandboxed-exec` | Commands run inside a write- and network-denied sandbox, but reads are not confined to the root. | codex |
-| `pending` | The mechanism exists but its denial has not been measured (14). | claude on an untested version; antigravity 1.5.7 and kiro 3.2.1 (their P3 canaries ran and did not prove every action, 14); opencode until its P4 canary. Each backend leaves `pending` only through its own canary, including a planted user allow rule |
-| `weak` | Enforcement depends on config the agent may not honour, or is unmeasured. | cursor; muse until probed; grok with `--sandbox off` or with a user MCP server started |
+| `pending` | The mechanism exists but its denial has not been measured (14). | claude on an untested version; antigravity 1.5.7 and kiro 3.2.1 (their P3 canaries ran and did not prove every action, 14); opencode 2.2.7 (its P4 canary ran; the read through a symlink inside the root ran, 14); grok with its sandbox running and no MCP server started, until a pre-execution read boundary is measured (N1). Each backend leaves `pending` only through its own canary, including a planted user allow rule |
+| `weak` | Enforcement depends on config the agent may not honour, or is unmeasured. | cursor (no live run in v1, D14); muse (no logged-in run in P4); grok with `--sandbox off` (a leg that starts an MCP server fails outright, owner ruling) |
 
 **PRs from authors without write access** (`auto` and `pr`): any seat whose label is not `strong` follows
 `council.untrusted_seat_policy`:
@@ -950,7 +967,9 @@ It moves whole agent-config directories to `_repo-agent-config/<original path>`:
 It renames agent-config files with a `.council-data` suffix:
 - `AGENTS*.md`, `CLAUDE.md`, `GEMINI.md`, `MEMORY.md`;
 - `.mcp.json`, `opencode.json` / `opencode.jsonc`;
-- `.cursorrules`, `.cursorignore`.
+- `.cursorrules`, `.cursorignore`;
+- skill definitions (P4 round 2): every `SKILL.md` at any depth, and every file under a `skill/` or `skills/`
+  directory inside a moved agent-config directory, so a quarantined skill still matches no CLI's skill discovery.
 
 Nested files matter: Kiro injects a nested `AGENTS.md` once a file beside it is read.
 
@@ -1398,9 +1417,43 @@ owner's consumer Google sign-in and a separate personal Kiro login):
   the symlink with no request and the secret reached the stream, caught only at ratification. So the profile
   check at preflight is the guard, not the client. Result: `pending` (write, command and fetch were not
   attempted, and the offer is not in any record).
-- Cursor: whether the installed CLI has a native ACP mode, and the strength of its read-only stack.
-- Muse Code: its `--json` event names and the model and effort fields in a logged-in run.
-- opencode: a full review run with a paid provider.
+- Cursor: whether the installed CLI has a native ACP mode, and the strength of its read-only stack (no live run
+  in v1, D14: the P4 adapter is built from the documentation and synthetic fixtures; untested in it are the
+  stdin route for the prompt, whether `CURSOR_CONFIG_DIR` relocates hooks and turns off third-party hook import,
+  the hook output contract, the legacy `model` slug in hook payloads, and every error text).
+- Muse Code: its model, effort and tool records in a logged-in run, and which side-effect intents a read records
+  (no logged-in run in P4, owner ruling).
+- grok: a configuration whose reads cannot leave the root before execution (a custom sandbox profile, or deny
+  rules), and the sandboxed path on a machine where `--sandbox read-only` starts.
+
+Settled by P4 (grok 1.0.70 on the owner's grok.com login; opencode 2.2.7 on its free models, no account or key;
+2026-11-12; one smoke and one canary of two runs each):
+
+- **grok.** The working leg command ran as built, `HOME` isolated: `tool_definitions.json` and `system/init.tools`
+  were exactly `read_file`, `grep`, `list_dir`; no instruction file was injected and no hook ran; the smoke found
+  the planted defect. `updates.jsonl` carries every call's `rawInput` (`target_file`, `target_directory`, `path`).
+  The user grok config's MCP server (`context7`) started in every leg, so preflight refused each leg and the
+  launched-anyway legs failed ratification (owner ruling). Canary (clean, and with allow rules passed by
+  `--allow`): the outside read by path, the read through the symlink and the grep outside the root all ran under
+  `dontAsk` with no denial, and the secret reached the stream; ratification caught them (`read-paths`, CONTAMINATED).
+  Write, command and fetch were not attempted (no such tool is offered). Result: `weak` (`--sandbox off`), and
+  never `strong` on this configuration: reads are not refused before they run.
+- **opencode.** `opencode acp` with the council agent, the per-leg XDG dirs and database: the session started in
+  mode `council`, the free model `opencode/big-pickle` was pinned and held, and the smoke found the planted defect
+  (PASS). Canary: the outside read by path and the searches outside the root were refused by opencode itself before
+  they ran (`failed`, `Permission denied: external_directory`, no permission request to the client); the read
+  through the symlink inside the root ran and the secret reached the log (opencode's `external_directory` check is
+  lexical), caught only at ratification. Write, command and fetch were not attempted. With allow rules planted in
+  a temp config passed in `OPENCODE_CONFIG`, preflight refused the leg; launched anyway, the same pattern held.
+  Result: `pending`. The review root replaces such symlinks with text files (5.3), but the canary is the bar.
+- **doctor --deep** on the owner's machine (no model call): grok fails (its `inspect` lists the planted project
+  `.grok/config.toml`), opencode refuses the planted root at preflight, claude 2.1.323 is unchecked (its preflight
+  refuses on a clean root too: an untested version with installed plugins). Round 1 fold: 2.1.323 is declared
+  from its own zero-cost runs and its canary (`strong`); opencode's config dump now runs before its root scan,
+  so its verdict is `isolated` from that dump, and a filename refusal no longer passes `--deep`.
+- **claude 2.1.323 promotion canary** (round 1 fold, once, exactly as P2, claude-haiku-5-5 effort low, $0.0017):
+  offered only Glob, Grep, Read; every outside read (path, symlink, Grep, Glob) denied before execution; no
+  write, command or fetch tool; no secret in the stream or transcript; root unchanged. `strong`.
 
 Settled by P2: `claude --restricted` confines Glob and Grep as well as Read (the canary, 5.2), and
 `--setting-sources ""` drops installed-plugin tools while keeping the user's own login (4.2).
@@ -1437,3 +1490,4 @@ a builder should reconcile when building the named phase.
 | N22-N25 | Folded in rev 1.5 (council round 5's follow-ups): the codex native list is declared verbatim and enforced as an allowlist, orchestration calls are allowed at use, and P2 replays the exec-only and delegating fixtures. | 4.5, 10 | P2 |
 | N8, N12, N15-N18, N27-N32 | Folded in P2: the P2 row's child case reads "a subagent whose own rollout fails" (N8); 4.2 says how MCP names and child rollouts are found (N12), where a denial shows and what is parsed (N15, N16); 4.5 lists the fail-closed path rules, the reads, the offer-to-call map, exact membership, calls on children and the input stall (N17, N18, N28-N31); N27's delegating leg was recorded fresh with one cheap live run; N32's two references now say D17. | 4.2, 4.5, 3.5 | P2 |
 | N26 | 3.2's verdict-line wording vs the P1 split-line test; the P1 findings fixture should also cover YAML; this section's header and intro say "round 3" for items from later rounds. | 3.2, 10, 15 | P1 |
+| N1, N9 | Folded in P4: 5.2 names grok with its sandbox running and no MCP server `pending` (and the adapter labels it so), and `weak` with `--sandbox off` (N1); 4.2's grok read-path audit reads `updates.jsonl` `rawInput` and cross-checks it against the stream's tool uses, not `chat_history.jsonl` (N9). | 4.2, 5.2 | P4 |

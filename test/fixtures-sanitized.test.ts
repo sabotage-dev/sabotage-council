@@ -24,17 +24,45 @@ const FORBIDDEN: ReadonlyArray<[string, RegExp]> = [
   ['a token field value', /"(?:access_token|refresh_token|client_secret)":\s*"[^"]/],
 ];
 
+/**
+ * Byte arrays inside JSON records (grok's grep `stdout` is one) decoded to text, so a path stored as numbers is
+ * scanned too.
+ */
+export function byteArrayTexts(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/\[(\d{1,3}(?:,\s*\d{1,3}){15,})\]/g)) {
+    const bytes = (m[1] ?? '').split(',').map((n) => Number(n.trim()));
+    if (bytes.every((b) => b >= 0 && b < 256)) out.push(Buffer.from(bytes).toString('utf8'));
+  }
+  return out;
+}
+
+/** What the scan reads of one fixture: its text, plus every byte array in it decoded. */
+export function scannedText(text: string): string {
+  return [text, ...byteArrayTexts(text)].join('\n');
+}
+
 describe('fixtures are sanitized', () => {
   const files = listFiles(FIXTURES);
+  const contents = (f: string): string => scannedText(readFileSync(f, 'utf8'));
 
   it('scans the recorded fixtures of every adapter', () => {
     const rel = files.map((f) => relative(FIXTURES, f));
-    for (const kind of ['codex/', 'claude/', 'antigravity/', 'kiro/']) expect(rel.some((f) => f.startsWith(kind))).toBe(true);
+    for (const kind of ['codex/', 'claude/', 'antigravity/', 'kiro/', 'grok/', 'opencode/', 'muse/', 'cursor/']) expect(rel.some((f) => f.startsWith(kind))).toBe(true);
   });
 
   it.each(FORBIDDEN)('no fixture contains %s', (_what, pattern) => {
-    const hits = files.filter((f) => pattern.test(readFileSync(f, 'utf8'))).map((f) => relative(FIXTURES, f));
+    const hits = files.filter((f) => pattern.test(contents(f))).map((f) => relative(FIXTURES, f));
     expect(hits).toEqual([]);
+  });
+
+  it('decodes byte arrays before scanning (a path stored as numbers is caught)', () => {
+    const encoded = JSON.stringify({ stdout: [...Buffer.from('/var/folders/x/y/T/z')] });
+    expect(byteArrayTexts(encoded).some((t) => /\/var\/folders\//.test(t))).toBe(true);
+    // The scan itself reads the decoded text: the macOS temp path pattern catches the encoded one.
+    const temp = FORBIDDEN.find(([what]) => what === 'a macOS temp path')?.[1];
+    expect(temp?.test(encoded)).toBe(false);
+    expect(temp?.test(scannedText(encoded))).toBe(true);
   });
 
   it('catches each shape (the scan works)', () => {

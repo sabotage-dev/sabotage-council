@@ -1,0 +1,154 @@
+{
+  "grokVersion": "1.0.70",
+  "channel": "stable",
+  "updateChannel": null,
+  "cwd": "__SC_ROOT__",
+  "projectRoot": null,
+  "projectTrusted": true,
+  "projectInstructions": [],
+  "permissions": {
+    "sources": [],
+    "loaded": 0,
+    "skipped": [],
+    "mcpServerAllowlist": [],
+    "mcpLockdownSources": [],
+    "mcpManagedServersOnly": "off",
+    "marketplaceAllowlist": [],
+    "marketplaceLockdownSources": [],
+    "managedMarketplaces": [],
+    "managedSettingsPath": "/Library/Application Support/ClaudeCode/managed-settings.json",
+    "managedSettingsExists": false,
+    "managedSettingsActive": false,
+    "claudeBypassLockAdvisory": false
+  },
+  "loginPolicy": {
+    "disableApiKeyAuth": null,
+    "forceLoginTeamUuid": null,
+    "apiKeyAuthDisabled": false
+  },
+  "hooks": [],
+  "skills": [
+    {
+      "name": "review",
+      "description": "A bundled review skill (placeholder: the recorded list named the owner's installed skills and was replaced).",
+      "source": {
+        "type": "builtin"
+      }
+    }
+  ],
+  "agents": [
+    {
+      "name": "general-purpose",
+      "description": "General purpose agent for multi-step tasks.",
+      "source": {
+        "type": "builtin"
+      }
+    }
+  ],
+  "plugins": [],
+  "marketplaces": [],
+  "mcpServers": [
+    {
+      "name": "context7",
+      "transport": "stdio",
+      "target": "npx",
+      "source": {
+        "type": "configToml",
+        "path": "__SC_GROK_HOME__/config.toml"
+      }
+    }
+  ],
+  "lspServers": [],
+  "configSources": {
+    "layers": [
+      {
+        "role": "user",
+        "path": "__SC_GROK_HOME__/config.toml"
+      }
+    ]
+  },
+  "experiments": [],
+  "externalCompat": {
+    "remoteSettingsLoaded": false,
+    "cells": [
+      {
+        "vendor": "cursor",
+        "surface": "skills",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "cursor",
+        "surface": "rules",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "cursor",
+        "surface": "agents",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "cursor",
+        "surface": "mcps",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "cursor",
+        "surface": "hooks",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "cursor",
+        "surface": "sessions",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "claude",
+        "surface": "skills",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "claude",
+        "surface": "rules",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "claude",
+        "surface": "agents",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "claude",
+        "surface": "mcps",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "claude",
+        "surface": "hooks",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "claude",
+        "surface": "sessions",
+        "enabled": true,
+        "source": "default"
+      },
+      {
+        "vendor": "codex",
+        "surface": "sessions",
+        "enabled": true,
+        "source": "default"
+      }
+    ]
+  }
+}

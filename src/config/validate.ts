@@ -4,6 +4,7 @@ import {
   checkDistinctOccupants,
   checkFallbacksDiffer,
   checkAuthHome,
+  checkGrokLogins,
   checkKiroLogins,
   checkSandboxOnlyForGrok,
   checkModels,
@@ -43,7 +44,7 @@ export async function validateConfig(raw: unknown, options: ValidateOptions = {}
   errors.push(...checkFallbacksDiffer(config.seats));
   errors.push(...checkSandboxOnlyForGrok(config.seats));
   errors.push(...checkAuthHome(config.seats));
-  if (errors.length === 0) errors.push(...checkKiroLogins(config.seats));
+  if (errors.length === 0) errors.push(...checkKiroLogins(config.seats), ...checkGrokLogins(config.seats));
 
   const warnings: ConfigIssue[] = [];
   let modelsChecked = false;

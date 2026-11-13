@@ -29,12 +29,30 @@ Planned modes:
 
 ## Status
 
-Building (P3). Built so far: the config schema and loader, the run store, the review root and brief, the reply
-parsers, the headless transport with the codex and claude seats, and the ACP transport with the antigravity and
-kiro seats. There are no review rounds yet. The v1 build plan is [docs/PLAN.md](docs/PLAN.md).
+Building (P4). Built so far: the config schema and loader, the run store, the review root and brief, the reply
+parsers, the headless transport with the codex, claude, grok, cursor and muse seats, and the ACP transport with
+the antigravity, kiro and opencode seats. There are no review rounds yet. The v1 build plan is
+[docs/PLAN.md](docs/PLAN.md).
 
-Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong`, codex is `sandboxed-exec`, and
-antigravity and kiro are `pending`: their promotion canaries ran and did not prove every action (plan 14).
+Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322 and 2.1.323, the
+versions its canary ran on) and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their
+promotion canaries ran and did not prove every action was refused before it ran (plan 14). grok is `weak` with
+`--sandbox off` (it would be `pending` with its sandbox running, a label no recorded run backs: no sandbox-on leg
+has run). cursor and muse are `weak`: no live canary runs for them in v1. With the default
+`untrusted_seat_policy = "fallback"`, a round on a PR from an author without write access needs `strong`
+fallbacks for those seats, or it fails below quorum, visibly.
+
+`doctor --deep` runs every seat's preflight, with no model call, against its own canary root of planted hooks,
+rules and MCP config for every backend (top level and nested). Every planted hook event, MCP server and plugin
+writes its own marker if anything runs it. What it proves: no planted code ran during preflight, and, for a
+backend with an offline load dump (codex `debug prompt-input`, grok `inspect --json`, opencode `debug config`),
+that the dump lists nothing from the root. It proves only what that dump covers (opencode's covers config
+sources, not instruction files, which ratification checks per leg) and nothing about a model turn. A seat whose
+backend has no load dump gets an "unproven by --deep" line (`unproven`, or `refused` when its preflight refused
+the planted root by a filename scan), except claude on a version whose label is `strong` from its own recorded
+promotion canary (2.1.322 and 2.1.323): its line says isolation is proven by that canary instead. Exit codes:
+`0` every seat proven (by its load dump or its canary), `1` some seat loaded a planted file (or another doctor
+check failed), `2` nothing loaded but some seat is unproven by `--deep`.
 
 ### Backend notes
 
@@ -51,6 +69,36 @@ antigravity and kiro are `pending`: their promotion canaries ran and did not pro
   `KIRO_HOME`. A seat may set `auth_home = "/abs/dir"` to use a separate Kiro login (for example a personal one
   beside a work one): kiro-cli then runs with `HOME` there, and `doctor` shows which home each seat uses. Log that
   home in once with `HOME=/abs/dir kiro-cli login`.
+- **Grok (`grok`).** Seats run headless with a read-only tool allowlist, `dontAsk`, deny rules and `HOME`
+  isolated per leg. `--sandbox read-only` refuses to start on a Mac whose Docker Desktop socket is a symlink, so
+  such a seat sets `sandbox = "off"` (label `weak`). No leg with the sandbox on has been recorded: the `pending`
+  label for a sandbox-on seat with no MCP server is the plan's placeholder, not a measured result. An MCP server
+  in your grok config would start inside the leg, so a seat with one is refused at preflight, and a leg that
+  started one fails. Give the seat `auth_home = "/abs/dir"`, its own grok home with no MCP config, logged in once
+  with `GROK_HOME=/abs/dir grok login` (`--oauth` for the browser flow, `--device-auth` for a device code); or use
+  `XAI_API_KEY` (the leg then runs on its own empty grok home); or disable the server in your grok config
+  yourself. `doctor` shows which grok home each seat uses. Reads outside the root are not refused before they
+  run (measured): the ratifier catches them.
+- **opencode.** Seats run `opencode acp` with a council agent, on per-leg XDG dirs and database, so saved
+  opencode accounts never reach a leg: credentials come from provider environment variables, or use the free
+  `opencode/*` models. opencode refused an outside read by path itself; a read through a symlink inside the root
+  ran in the canary (the review root replaces such links with text files, but the label stays `pending`). On
+  2.2.7 the council agent is still offered the `skill` tool: opencode appends its own `skill` rule after the
+  council's, so no council rule removes it. The tool is accepted only while it is provably empty: preflight
+  refuses a leg whose own skill locations (its XDG config, data and cache dirs, its `~/.agents` and `~/.claude`)
+  hold any file, or whose root holds a live skill file anywhere, the quarantine included (the sanitizer renames
+  every `SKILL.md`, and every file in a quarantined skill dir, with `.council-data`); any skill call (refused or
+  not), skill message or user message naming a skill fails the leg.
+- **Cursor (`cursor-agent`).** Seats call the newest release under `~/.local/share/cursor-agent/versions/` by
+  path, never `agent` on PATH (the Cursor installer repoints that name). Print mode needs `--trust`; the council
+  config and its deny-all-but-reads hook live in a per-leg `CURSOR_CONFIG_DIR` and in the leg's own `HOME`.
+  Cursor seats need `CURSOR_API_KEY`: the keychain login keeps your `HOME`, where the council hooks are never
+  read (and Cursor would import your `~/.claude` hooks), so preflight refuses it until a live run shows the hooks
+  loading there. `doctor` refuses Cursor seats in `auto`.
+- **Muse Code (`muse`).** Seats always run with contributor mode off (on by default for subscriptions, it lets
+  Meta train on the reviewed code), the read-only permission profile, and never `--trust-workspace`.
+  `META_API_KEY`, when set, wins over your `muse login` session and bills pay-as-you-go; `doctor` says which one a
+  seat uses.
 
 ## Development
 

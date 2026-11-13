@@ -1,0 +1,2 @@
+muse: workspace root: __SC_ROOT__ (explicit)
+muse: Agent delegation: auto unavailable: workspace is untrusted.

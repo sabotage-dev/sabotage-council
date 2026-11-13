@@ -249,6 +249,8 @@ export async function codexPreflight(o: Occupant, options: CodexPreflightOptions
     return result(false, 'setup', 'cannot render the leg prompt offline', cliVersion);
   }
   const verdict = judgePromptInput(items, decl.nativeOffer, Object.keys(decl.execNested));
+  // The offline load dump `doctor --deep` relies on: the leg's own prompt, rendered from the root.
+  const dumped = 'codex debug prompt-input: the rendered leg prompt, its instructions and tools';
   const problems: string[] = [];
   if (verdict.offered.length === 0) problems.push('no tools in the render');
   if (verdict.nested === null || verdict.nested.length === 0) problems.push('cannot read the nested tools of exec from the render');
@@ -259,7 +261,9 @@ export async function codexPreflight(o: Occupant, options: CodexPreflightOptions
   if (verdict.repoInstructions) problems.push('repository AGENTS.md instructions load from the root');
   if (problems.length > 0) {
     fail(checks, 'isolation', problems.join('; '));
-    return result(false, 'setup', `the leg's config does not isolate: ${problems.join('; ')}`, cliVersion);
+    // What the render shows loading from the root (for `doctor --deep`).
+    const loaded = [...(verdict.repoInstructions ? ['repository AGENTS.md instructions'] : []), ...verdict.mcpTools.map((t) => `MCP tool ${t}`)];
+    return result(false, 'setup', `the leg's config does not isolate: ${problems.join('; ')}`, cliVersion, { loaded, dumped });
   }
   checks.push({
     name: 'isolation',
@@ -271,5 +275,5 @@ export async function codexPreflight(o: Occupant, options: CodexPreflightOptions
     userOwned.push(`global AGENTS.md (${where}) loads into every codex leg`);
     checks.push({ name: 'user-owned', status: 'note', detail: `global AGENTS.md loads (user-owned): ${where}` });
   }
-  return result(true, null, null, cliVersion, { mcpNames, codexHome: codexHomeOf(options.env), effort });
+  return result(true, null, null, cliVersion, { mcpNames, codexHome: codexHomeOf(options.env), effort, dumped });
 }

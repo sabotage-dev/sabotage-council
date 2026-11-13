@@ -44,8 +44,10 @@ const githubLogin = z
   .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/, { error: 'not a valid GitHub login' });
 
 /**
- * `auth_home` (kiro seats and fallbacks only): the HOME kiro-cli runs with, so a separate Kiro login is read from
- * its own token store. Absolute here; that it exists and the backend is kiro are checked in rules.ts.
+ * `auth_home` (kiro and grok seats and fallbacks only), a separate login of the seat's own:
+ *   - kiro: the HOME kiro-cli runs with, so its login is read from that HOME's token store;
+ *   - grok: the leg's `GROK_HOME`, holding the seat's own grok login and config (the user's `~/.grok` is untouched).
+ * Absolute here; that it exists, the backend, and that two declared logins are not one store are checked in rules.ts.
  */
 const authHome = z
   .string()

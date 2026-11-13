@@ -33,12 +33,14 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     .description('check Node, the config, the run store and each seat\'s preflight (no model calls)')
     .option('--config <path>', `config file (default: $${CONFIG_ENV}, else ~/.config/sabotage-council/config.toml)`)
     .option('--db <path>', `run store (default: $${DB_ENV}, else ~/.local/share/sabotage-council/council.db)`)
-    .action(async (opts: { config?: string; db?: string }) => {
+    .option('--deep', 'also preflight every seat against a canary root of planted hooks, rules and MCP config (still no model calls); exit 1 if a seat loads one, 2 if nothing loads but a seat is unproven')
+    .action(async (opts: { config?: string; db?: string; deep?: boolean }) => {
       const code = await runDoctor({
         configPath: resolveConfigPath(opts.config, io.env),
         dbPath: resolveDbPath(opts.db, io.env),
         adapters: io.adapters,
         env: io.env,
+        deep: opts.deep === true,
         write: io.write,
       });
       io.setExitCode(code);

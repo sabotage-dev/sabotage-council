@@ -41,6 +41,26 @@ export const AGENT_CONFIG_FILES: readonly string[] = [
   '.cursorignore',
 ];
 
+/**
+ * Skill definitions (round 2, codex F1). A moved agent-config directory keeps its contents under the quarantine,
+ * so skill files there would still match a CLI's skill discovery by name. The sanitizer neutralizes them with the
+ * `.council-data` suffix: every `SKILL.md` at any depth, and every file under a `skill/` or `skills/` directory
+ * inside a moved agent-config directory.
+ */
+export const SKILL_FILE = /^SKILL\.md$/i;
+export const SKILL_DIR = /^skills?$/i;
+
+/** The skill rule a root-relative path matches, or null: `SKILL.md`, or a file in a skill dir of an agent dir. */
+export function skillDefinitionRule(rel: string): string | null {
+  const segments = rel.split('/');
+  const name = segments[segments.length - 1] ?? '';
+  if (name.toLowerCase().endsWith(COUNCIL_DATA_SUFFIX)) return null;
+  if (SKILL_FILE.test(name)) return 'SKILL.md';
+  const dirs = segments.slice(0, -1);
+  const agent = dirs.findIndex((d) => agentConfigDir(d) !== null);
+  return agent >= 0 && dirs.slice(agent + 1).some((d) => SKILL_DIR.test(d)) ? 'skill dir' : null;
+}
+
 /** `*` becomes `[\s\S]*`, not `.*`: `.` stops at `\n`, `\r`, U+2028 and U+2029, all legal in a file name. */
 function globRegex(glob: string): RegExp {
   const body = glob
@@ -89,7 +109,7 @@ function renameFiles(root: string, start: string, originOf: (rel: string) => str
   if (stats === null || !stats.isDirectory()) return;
   for (const entry of walk(root, start)) {
     if (entry.kind === 'dir') continue;
-    const rule = agentConfigFile(basename(entry.rel));
+    const rule = agentConfigFile(basename(entry.rel)) ?? skillDefinitionRule(entry.rel);
     if (rule !== null) renames.push({ rel: entry.rel, rule });
   }
   for (const { rel, rule } of renames) {
@@ -104,7 +124,8 @@ function renameFiles(root: string, start: string, originOf: (rel: string) => str
  * - an entry named like an agent-config directory moves whole to `_repo-agent-config/<original path>` (a link
  *   with that name moves too, since a CLI would follow it);
  * - a file or link named like an agent-config file gets the `.council-data` suffix, including inside the moved
- *   directories.
+ *   directories, and so does every skill definition (`SKILL.md` anywhere, every file in a skill dir of a moved
+ *   agent-config directory).
  * Names are matched case-insensitively. Returns every move and rename.
  */
 export function sanitizeTrees(root: string, trees: readonly string[]): SanitizedEntry[] {
@@ -131,6 +152,40 @@ export function sanitizeTrees(root: string, trees: readonly string[]): Sanitized
   }
   for (const tree of trees) renameFiles(root, tree, (rel) => rel, out);
   return out;
+}
+
+/**
+ * A backend preflight's check that the sanitizer ran: every entry under `root`, at any depth, whose name matches
+ * that backend's own list of what it loads from a workspace (round 1 row 9: nested entries load too, from the
+ * workspace up to the repository root). The quarantine dir is skipped, a matching directory is reported and not
+ * entered, links are reported by their own names and never followed. A name that cannot be read is reported too,
+ * so the preflight refuses rather than passes.
+ */
+export function workspaceConfigIn(root: string, names: RegExp): string[] {
+  if (lstatOrNull(root)?.isDirectory() !== true) return [];
+  try {
+    return walk(root, '', (e) => e.rel !== AGENT_CONFIG_QUARANTINE && !names.test(basename(e.rel)))
+      .filter((e) => e.rel !== AGENT_CONFIG_QUARANTINE && names.test(basename(e.rel)))
+      .map((e) => e.rel);
+  } catch (error) {
+    return [`(the root could not be read: ${error instanceof Error ? error.message : String(error)})`];
+  }
+}
+
+/**
+ * Every un-neutralized skill definition under `root`, the quarantine included (round 2, codex F1): a `SKILL.md`
+ * anywhere, or a file under a `skill/` or `skills/` directory inside an agent-config directory, whose name does not
+ * end in `.council-data`. Empty after the sanitizer ran. A name that cannot be read is reported too.
+ */
+export function skillDefinitionsIn(root: string): string[] {
+  if (lstatOrNull(root)?.isDirectory() !== true) return [];
+  try {
+    return walk(root)
+      .filter((e) => e.kind !== 'dir' && skillDefinitionRule(e.rel) !== null)
+      .map((e) => e.rel);
+  } catch (error) {
+    return [`(the root could not be read: ${error instanceof Error ? error.message : String(error)})`];
+  }
 }
 
 /** Maps a pre-sanitizer root-relative path to where the sanitizer put it. */

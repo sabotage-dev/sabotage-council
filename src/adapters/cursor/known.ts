@@ -1,0 +1,73 @@
+import type { EnforcementLabel } from '../types.js';
+
+/*
+ * What the cursor adapter declares (plan 4.2, 5.2). Built from Cursor's CLI documentation and changelog only:
+ * owner ruling D14 allows no Cursor live run in v1, so no version is tested, every leg is `weak`, and `doctor`
+ * refuses Cursor seats for `auto`. The facts the adapter relies on, each still to be measured by a canary:
+ *   - the installer unpacks each release to `~/.local/share/cursor-agent/versions/<YYYY.MM.DD-sha7>/cursor-agent` and
+ *     repoints `~/.local/bin/agent`, a name other CLIs use, so the adapter calls the versioned binary by path;
+ *   - headless print mode (`-p --output-format stream-json`) needs `--trust`, which also enables project hooks, so
+ *     the root must be sanitized first; `--mode ask` is the read-only mode; `--sandbox enabled` sandboxes shell;
+ *   - `CURSOR_CONFIG_DIR` relocates the CLI config (`cli-config.json`: approval mode, permissions, sandbox and its
+ *     read boundary); hooks (`hooks.json`) can deny a tool before it runs and receive `model_id`,
+ *     `model_params` (effort) and `workspace_roots`; `system/init.model` is a display name only;
+ *   - Cursor imports Claude Code hooks from `~/.claude/settings.json` by default.
+ */
+
+export const CURSOR_DECLARED: Readonly<Record<string, { enforcement: EnforcementLabel }>> = {};
+export const CURSOR_TESTED_VERSIONS = Object.keys(CURSOR_DECLARED);
+/** Grep and Glob honour the read boundary from this release on (changelog); older builds are refused. */
+export const CURSOR_FLOOR = '2026.10.15';
+/** Weakest enforcement of the eight (plan 4.2), and below `strong` in v1 whatever a canary shows (plan 10). */
+export const CURSOR_LABEL: EnforcementLabel = 'weak';
+
+/** A Cursor CLI version: `YYYY.MM.DD-<sha7>`. */
+export function parseCursorVersion(text: string): string | null {
+  return /\b(\d{4}\.\d{2}\.\d{2})-[0-9a-f]{7}\b/.exec(text)?.[1] ?? null;
+}
+
+export function compareCursorVersions(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Stream `tool_call` kinds that read (the stream names each call by its kind key). */
+export const CURSOR_READ_CALLS = ['readToolCall', 'grepToolCall', 'globToolCall', 'lsToolCall'] as const;
+/** Hook `tool_name`s the council hook lets through: reads only. */
+export const CURSOR_READ_TOOLS = ['read', 'read_file', 'grep', 'glob', 'ls', 'list_dir', 'file_search'] as const;
+
+/** Permissions in the council-owned `cli-config.json` (deny wins over allow). */
+export const CURSOR_PERMISSIONS = {
+  allow: ['Read(**)'],
+  deny: ['Write(**)', 'Write(/**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'],
+} as const;
+
+/**
+ * The model each pinnable slug must be served as (round 1 row 2): the hook's `model_id` and the effort in its
+ * `model_params`. Cursor encodes effort in the slug; the hook reports the model and the effort apart. From the
+ * documentation's slug examples (`gpt-5.5-high`, `claude-opus-5-high`, `claude-opus-4-7-thinking-max` with
+ * `effort=max`); the `model_id` values are the slug without its effort suffix, as the documented hook example shows,
+ * and are unmeasured until a Cursor live run (D14). A slug not in this table cannot be pinned: preflight refuses
+ * it, and a leg whose hook names another `model_id` or effort fails `model`.
+ */
+export const CURSOR_MODEL_MAP: Readonly<Record<string, { modelId: string; effort: string }>> = {
+  'gpt-5.5-low': { modelId: 'gpt-5.5', effort: 'low' },
+  'gpt-5.5-medium': { modelId: 'gpt-5.5', effort: 'medium' },
+  'gpt-5.5-high': { modelId: 'gpt-5.5', effort: 'high' },
+  'gpt-5.3-codex-high': { modelId: 'gpt-5.3-codex', effort: 'high' },
+  'claude-opus-5-high': { modelId: 'claude-opus-5', effort: 'high' },
+  'claude-opus-4-7-thinking-max': { modelId: 'claude-opus-4-7', effort: 'max' },
+};
+
+/**
+ * What the council's `cli-config.json` holds, by the documented keys only (cursor.com/docs/cli/reference/
+ * configuration): `version`, `editor.vimMode` and `permissions` are required; `approvalMode` takes `allowlist`,
+ * `auto-review` or `unrestricted`; `sandbox.readBoundary` takes `system` (the default) or `workspace`, the narrowest
+ * value (it still includes `~/.cursor`, which on the API-key route is the leg's own empty HOME). No documented key
+ * turns off third-party (Claude Code) imports: that toggle is a Cursor app setting only, so the leg's own HOME is the
+ * isolation, and the keychain route (which keeps the user's HOME) is refused (round 2: the council hooks in the leg
+ * HOME would never load there).
+ */
+export const CURSOR_READ_BOUNDARY = 'workspace';
+
+/** Flags a leg never passes. */
+export const CURSOR_FORBIDDEN_FLAGS = ['-f', '--force', '--yolo', '--approve-mcps'] as const;

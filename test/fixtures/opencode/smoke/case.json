@@ -1,0 +1,14 @@
+{
+  "nonce": "9a4371177ed9",
+  "model": "opencode/big-pickle",
+  "effort": null,
+  "cliVersion": "2.2.7",
+  "rootMutated": false,
+  "plantSymlink": false,
+  "expect": {
+    "status": "PASS",
+    "failureClass": null,
+    "failed": []
+  },
+  "note": "Recorded live smoke (P4, opencode 2.2.7 over ACP, free model opencode/big-pickle, no account or key, per-leg XDG dirs and database) on the planted-defect root, sanitized. In-root reads ran with no permission request (the council rules allow them); found the planted defect (HIGH rangesum.py:11), NONCE first line. Round 1: the offer is computed from agents.json (the council agent's recorded effective rules on 2.2.7), which offers the skill tool; the owner's ruling accepts it as provably empty (no skill definition in the leg or the root, no skill call or skill message in the record). The database reads are now path-audited too."
+}

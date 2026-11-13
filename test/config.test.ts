@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { formatPath, loadConfig, parseConfigText, type ConfigIssue, type ValidationResult } from '../src/config/index.js';
+import { checkGrokLogins } from '../src/config/rules.js';
 import { fakeRegistry, FAKE_MODELS } from './fake-registry.js';
 
 const PLAN_EXAMPLE = readFileSync(new URL('./fixtures/config/plan-example.toml', import.meta.url), 'utf8');
@@ -215,7 +216,7 @@ describe('config: fallbacks', () => {
       expect(errorsOf(await parseConfigText(toml(seat(A), seat(B), kiro('relative/home')))).map((e) => [e.path, e.message])).toEqual([['seats[2].auth_home', 'auth_home must be an absolute path']]);
       expect(errorsOf(await parseConfigText(toml(seat(A), seat(B), kiro(join(home, 'missing'))))).map((e) => e.path)).toEqual(['seats[2].auth_home']);
       expect(errorsOf(await parseConfigText(toml(seat(A) + `auth_home = "${home}"\n`, seat(B), seat(C)))).map((e) => [e.path, e.message])).toEqual([
-        ['seats[0].auth_home', 'auth_home applies only to kiro (this occupant is codex)'],
+        ['seats[0].auth_home', 'auth_home applies only to kiro and grok (this occupant is codex)'],
       ]);
       expect(
         errorsOf(await parseConfigText(toml(seat({ ...A, fallback: `{ backend = "claude", model = "claude-opus-5-5", auth_home = "${home}", on = ["auth"] }` }), seat(B), seat(C)))).map((e) => e.path),
@@ -242,6 +243,30 @@ describe('config: fallbacks', () => {
       expect(errorsOf(await parseConfigText(toml(seat(A), kiro('b', 'claude-sonnet-4.5', personal), kiro('c', 'claude-sonnet-4.5', personal)))).map((e) => e.path)).toEqual(['seats[2]']);
       // A kiro fallback of the same model on a second login is a different occupant (claude F10).
       okOf(await parseConfigText(toml(seat({ ...A, backend: 'kiro', model: 'claude-sonnet-4.5', effort: undefined, fallback: `{ backend = "kiro", model = "claude-sonnet-4.5", auth_home = "${work}", on = ["usage_limit"] }` }) + `auth_home = "${personal}"\n`, seat(B), seat(C))));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('grok logins (owner ruling): auth_home on a grok seat is accepted, and a symlinked one aliasing another login is an error', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'sc-grok-logins-'));
+    try {
+      const own = join(base, 'grok-home');
+      const other = join(base, 'other');
+      const user = join(base, 'user-grok');
+      for (const d of [own, other, user]) mkdirSync(d);
+      symlinkSync(own, join(base, 'alias'));
+      symlinkSync(user, join(base, 'user-alias'));
+      const grok = (id: string, model: string, authHome: string): string => seat({ id, backend: 'grok', model, effort: 'low' }) + `sandbox = "off"\nauth_home = "${authHome}"\n`;
+      okOf(await parseConfigText(toml(seat(A), seat(B), grok('c', 'grok-4.7', own))));
+      expect(errorsOf(await parseConfigText(toml(seat(A), grok('b', 'grok-4.6', own), grok('c', 'grok-4.7', join(base, 'alias'))))).map((e) => [e.path, e.message.includes('same store')])).toEqual([
+        ['seats[2].auth_home', true],
+      ]);
+      // An auth_home that resolves to the user's own grok home is the user's login, not a separate one.
+      const seats = [{ id: 'c', backend: 'grok' as const, model: 'grok-4.7', auth_home: join(base, 'user-alias') }, { id: 'd', backend: 'grok' as const, model: 'grok-4.6' }];
+      expect(checkGrokLogins(seats as never, { userGrokHome: user }).map((e) => e.path).sort()).toEqual(['seats[0].auth_home', 'seats[1].auth_home']);
+      expect(checkGrokLogins(seats.slice(0, 1) as never, { userGrokHome: user }).map((e) => e.message.includes("the user's own grok home"))).toEqual([true]);
+      expect(checkGrokLogins([{ id: 'c', backend: 'grok', model: 'grok-4.7', auth_home: own }] as never, { userGrokHome: user })).toEqual([]);
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

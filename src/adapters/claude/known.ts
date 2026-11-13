@@ -76,8 +76,21 @@ const CLAUDE_2_1_322: ClaudeVersionDecl = {
   enforcement: 'strong',
 };
 
+/*
+ * 2.1.323 (P4 round 1 row 11), measured with the same zero-cost runs (a nonexistent model, the API answered 404,
+ * $0): with the leg's flags `system/init.tools` is Glob, Grep, Read, only the four built-in plugins load, no user
+ * hook event appears, and `--tools default` (with and without `--restricted`) offers no built-in outside the
+ * 2.1.322 list. The promotion canary then ran once exactly as P2 (2026-11-12, claude-haiku-5-5, effort low, the
+ * same planted allow rule in a temp settings file, $0.0017): offered only Glob, Grep, Read under `dontAsk`; the
+ * outside Read by path, the symlink Read, Grep and Glob were each denied before execution and are in
+ * `permission_denials`; the secret never reached the stream or the transcript, no file was created, the root hash
+ * was unchanged. So 2.1.323 is `strong` too.
+ */
+const CLAUDE_2_1_323: ClaudeVersionDecl = { ...CLAUDE_2_1_322, enforcement: 'strong' };
+
 export const CLAUDE_DECLARED: Readonly<Record<string, ClaudeVersionDecl>> = {
   '2.1.322': CLAUDE_2_1_322,
+  '2.1.323': CLAUDE_2_1_323,
 };
 
 export const CLAUDE_TESTED_VERSIONS = Object.keys(CLAUDE_DECLARED);
