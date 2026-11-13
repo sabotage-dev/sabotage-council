@@ -87,6 +87,14 @@ describe('cursor ratification: each check fails on its own (mutation coverage)',
     ['a pin with no declared model_id', () => undefined, ['model'], { model: 'gpt-9-high' }],
     ['a started shell call that never completed (claude F4)', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'started', call_id: 's', tool_call: { shellToolCall: { args: { command: 'echo hi' } } } }), ['tools-used', 'read-paths-known']],
     ['a started outside read that never completed', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'started', call_id: 'o2', tool_call: { readToolCall: { args: { path: '/etc/hosts' } } } }), ['read-paths']],
+    [
+      'a call started as a shell and completed as a read (every kind of a call counts)',
+      (d) => {
+        append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'started', call_id: 'k', tool_call: { shellToolCall: { args: { command: 'cat x', path: '__SC_ROOT__' } } } });
+        append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'completed', call_id: 'k', tool_call: { readToolCall: { args: { path: '__SC_ROOT__' } } } });
+      },
+      ['tools-used'],
+    ],
     ['a completed read with no path (never judged as the root)', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'completed', call_id: 'n', tool_call: { readToolCall: { result: { success: {} } } } }), ['read-paths-known']],
     ['a read whose path is nested where the ratifier cannot judge it', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'completed', call_id: 'q', tool_call: { readToolCall: { args: { path: { nested: 1 } } } } }), ['read-paths-known']],
     ['a postToolUse whose input names an outside path (claude F5)', (d) => append(join(d, 'hooks.ndjson'), { event: 'postToolUse', decision: null, payload: { tool_name: 'grep', tool_input: { pattern: 'x', path: '/Users' } } }), ['read-paths']],

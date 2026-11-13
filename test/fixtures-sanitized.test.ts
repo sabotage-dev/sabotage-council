@@ -37,12 +37,14 @@ export function byteArrayTexts(text: string): string[] {
   return out;
 }
 
+/** What the scan reads of one fixture: its text, plus every byte array in it decoded. */
+export function scannedText(text: string): string {
+  return [text, ...byteArrayTexts(text)].join('\n');
+}
+
 describe('fixtures are sanitized', () => {
   const files = listFiles(FIXTURES);
-  const contents = (f: string): string => {
-    const text = readFileSync(f, 'utf8');
-    return [text, ...byteArrayTexts(text)].join('\n');
-  };
+  const contents = (f: string): string => scannedText(readFileSync(f, 'utf8'));
 
   it('scans the recorded fixtures of every adapter', () => {
     const rel = files.map((f) => relative(FIXTURES, f));
@@ -57,6 +59,10 @@ describe('fixtures are sanitized', () => {
   it('decodes byte arrays before scanning (a path stored as numbers is caught)', () => {
     const encoded = JSON.stringify({ stdout: [...Buffer.from('/var/folders/x/y/T/z')] });
     expect(byteArrayTexts(encoded).some((t) => /\/var\/folders\//.test(t))).toBe(true);
+    // The scan itself reads the decoded text: the macOS temp path pattern catches the encoded one.
+    const temp = FORBIDDEN.find(([what]) => what === 'a macOS temp path')?.[1];
+    expect(temp?.test(encoded)).toBe(false);
+    expect(temp?.test(scannedText(encoded))).toBe(true);
   });
 
   it('catches each shape (the scan works)', () => {

@@ -69,14 +69,14 @@ unless every seat is proven `isolated`.
   home in once with `HOME=/abs/dir kiro-cli login`.
 - **Grok (`grok`).** Seats run headless with a read-only tool allowlist, `dontAsk`, deny rules and `HOME`
   isolated per leg. `--sandbox read-only` refuses to start on a Mac whose Docker Desktop socket is a symlink, so
-  such a seat sets `sandbox = "off"` (label `weak`). No leg with the sandbox on has been recorded: the
-  `pending` label for a sandbox-on seat with no MCP server is the plan's placeholder, not a measured result. An MCP server in your grok config would start inside the
-  leg, so a seat with one is refused at preflight, and a leg that started one fails. Give the seat
-  `auth_home = "/abs/dir"`, its own grok home with no MCP config, logged in once with
-  `GROK_HOME=/abs/dir grok login` (`--device-auth` on a machine with no browser); or use `XAI_API_KEY` (the leg
-  then runs on its own empty grok home); or disable the server in your grok config yourself. `doctor` shows
-  which grok home each seat uses. Reads outside the
-  root are not refused before they run (measured): the ratifier catches them.
+  such a seat sets `sandbox = "off"` (label `weak`). No leg with the sandbox on has been recorded: the `pending`
+  label for a sandbox-on seat with no MCP server is the plan's placeholder, not a measured result. An MCP server
+  in your grok config would start inside the leg, so a seat with one is refused at preflight, and a leg that
+  started one fails. Give the seat `auth_home = "/abs/dir"`, its own grok home with no MCP config, logged in once
+  with `GROK_HOME=/abs/dir grok login` (`--oauth` for the browser flow, `--device-auth` for a device code); or use
+  `XAI_API_KEY` (the leg then runs on its own empty grok home); or disable the server in your grok config
+  yourself. `doctor` shows which grok home each seat uses. Reads outside the root are not refused before they
+  run (measured): the ratifier catches them.
 - **opencode.** Seats run `opencode acp` with a council agent, on per-leg XDG dirs and database, so saved
   opencode accounts never reach a leg: credentials come from provider environment variables, or use the free
   `opencode/*` models. opencode refused an outside read by path itself; a read through a symlink inside the root

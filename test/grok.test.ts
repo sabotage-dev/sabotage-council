@@ -195,6 +195,15 @@ describe('grok ratification: each check fails on its own (mutation coverage)', (
     ['a grep output listing an outside match', (_d, s) => insertUpdate(s, (id) => ({ sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', rawOutput: { type: 'GrepSearch', file_matches: [{ path: '/etc/hosts' }] } }), false), ['read-paths']],
     ['a completion of a shell tool (every reported name counts)', (_d, s) => writeJsonl(join(s, 'events.jsonl'), [...readJsonl(join(s, 'events.jsonl')), { type: 'tool_completed', tool_name: 'run_terminal_command', tool_call_id: 'x' }]), ['read-paths-known', 'tools-used']],
     ['a call reported under two tool names', (_d, s) => insertUpdate(s, (id) => ({ sessionUpdate: 'tool_call_update', toolCallId: id, _meta: { 'x.ai/tool': { name: 'grep' } } }), false), ['tools-used']],
+    [
+      'a shell call only updates.jsonl reports (no stream use, no started or completed event)',
+      (_d, s) =>
+        writeJsonl(join(s, 'updates.jsonl'), [
+          ...readJsonl(join(s, 'updates.jsonl')),
+          { method: 'session/update', params: { sessionId: 'x', update: { sessionUpdate: 'tool_call', toolCallId: 'call_update_only', title: 'run_terminal_cmd', _meta: { 'x.ai/tool': { name: 'run_terminal_cmd', input: { command: 'ls' } } }, rawInput: { command: 'ls' } } } },
+        ]),
+      ['read-paths-known', 'tools-used'],
+    ],
     ['a stream tool use naming a path updates.jsonl does not', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('assistant'), (r) => {
       for (const b of (r['message'] as { content: Array<Record<string, unknown>> }).content) if (b['type'] === 'tool_use' && b['name'] === 'read_file') b['input'] = { target_file: 'planted/README.md' };
     }), ['read-paths-known']],
