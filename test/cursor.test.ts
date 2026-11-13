@@ -66,7 +66,7 @@ describe('cursor replay (synthetic: D14, no live run)', () => {
   it('passes the documented shapes, and labels the leg weak', () => {
     const r = ratifyCursorLeg(legFor());
     expect(failedNames(r)).toEqual([]);
-    expect(r).toMatchObject({ status: 'PASS', enforcement: 'weak', modelObserved: 'gpt-5.5-high', cwdOk: true, tokensIn: 4200 });
+    expect(r).toMatchObject({ status: 'PASS', enforcement: 'weak', modelObserved: 'gpt-5.5', cwdOk: true, tokensIn: 4200 });
     expect(r.toolsUsed).toEqual(['grepToolCall', 'readToolCall']);
   });
 });
@@ -76,12 +76,22 @@ describe('cursor ratification: each check fails on its own (mutation coverage)',
     ['a malformed stream line', (d) => writeFileSync(join(d, 'stream.jsonl'), readFileSync(join(d, 'stream.jsonl'), 'utf8').replace('\n', '\n{not json\n')), ['stream']],
     ['a result of another session', (d) => edit(join(d, 'stream.jsonl'), typeIs('result'), (r) => (r['session_id'] = 'other')), ['session']],
     ['an init cwd outside the root', (d) => edit(join(d, 'stream.jsonl'), typeIs('system'), (r) => (r['cwd'] = '/elsewhere')), ['cwd']],
-    ['no hook record (the council hook did not run)', (d) => writeFileSync(join(d, 'hooks.ndjson'), ''), ['hook-log', 'model', 'workspace']],
+    ['no hook record (the council hook did not run)', (d) => writeFileSync(join(d, 'hooks.ndjson'), ''), ['effort', 'hook-log', 'model', 'workspace']],
     ['another cursor version in the hook', (d) => edit(join(d, 'hooks.ndjson'), allHooks, (r) => (payload(r)['cursor_version'] = '2026.12.01-0000000')), ['cli-version']],
     ['workspace roots beyond the root', (d) => edit(join(d, 'hooks.ndjson'), allHooks, (r) => (payload(r)['workspace_roots'] = ['__SC_ROOT__', '/home/user'])), ['workspace']],
     ['another model slug', (d) => edit(join(d, 'hooks.ndjson'), allHooks, (r) => (payload(r)['model'] = 'gpt-5.5-medium')), ['model']],
     ['no model_id', (d) => edit(join(d, 'hooks.ndjson'), allHooks, (r) => delete payload(r)['model_id']), ['model']],
-    ['another effort than the pin', (d) => edit(join(d, 'hooks.ndjson'), allHooks, (r) => (payload(r)['model_params'] = [{ id: 'effort', value: 'medium' }])), ['effort'], { effort: 'high' }],
+    ['another model_id behind the pinned slug (codex F6)', (d) => edit(join(d, 'hooks.ndjson'), allHooks, (r) => (payload(r)['model_id'] = 'gpt-5.2')), ['model']],
+    ['another effort than the slug declares', (d) => edit(join(d, 'hooks.ndjson'), allHooks, (r) => (payload(r)['model_params'] = [{ id: 'effort', value: 'medium' }])), ['effort']],
+    ['no model_params effort', (d) => edit(join(d, 'hooks.ndjson'), allHooks, (r) => delete payload(r)['model_params']), ['effort']],
+    ['a pin with no declared model_id', () => undefined, ['model'], { model: 'gpt-9-high' }],
+    ['a started shell call that never completed (claude F4)', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'started', call_id: 's', tool_call: { shellToolCall: { args: { command: 'echo hi' } } } }), ['tools-used', 'read-paths-known']],
+    ['a started outside read that never completed', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'started', call_id: 'o2', tool_call: { readToolCall: { args: { path: '/etc/hosts' } } } }), ['read-paths']],
+    ['a completed read with no path (never judged as the root)', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'completed', call_id: 'n', tool_call: { readToolCall: { result: { success: {} } } } }), ['read-paths-known']],
+    ['a read whose path is nested where the ratifier cannot judge it', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'completed', call_id: 'q', tool_call: { readToolCall: { args: { path: { nested: 1 } } } } }), ['read-paths-known']],
+    ['a postToolUse whose input names an outside path (claude F5)', (d) => append(join(d, 'hooks.ndjson'), { event: 'postToolUse', decision: null, payload: { tool_name: 'grep', tool_input: { pattern: 'x', path: '/Users' } } }), ['read-paths']],
+    ['a preToolUse let through with an outside path', (d) => append(join(d, 'hooks.ndjson'), { event: 'preToolUse', decision: 'allow', payload: { tool_name: 'glob', tool_input: { path: '/etc' } } }), ['read-paths']],
+    ['a shell execution the hook did not deny', (d) => append(join(d, 'hooks.ndjson'), { event: 'beforeShellExecution', decision: 'allow', payload: { command: 'echo' } }), ['tools-used']],
     ['a completed write call', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'completed', call_id: 'w', tool_call: { writeToolCall: { args: { path: '__SC_ROOT__/x.txt' } } } }), ['tools-used']],
     ['a completed read outside the root', (d) => append(join(d, 'stream.jsonl'), { type: 'tool_call', subtype: 'completed', call_id: 'o', tool_call: { readToolCall: { args: { path: '/etc/hosts' } } } }), ['read-paths']],
     ['a file edit', (d) => append(join(d, 'hooks.ndjson'), { event: 'afterFileEdit', decision: null, payload: { file_path: '__SC_ROOT__/x.txt' } }), ['edits']],
@@ -166,7 +176,14 @@ describe('cursor launch', () => {
     prepareCursorConfig(files, root, '/usr/bin/node');
     const config = JSON.parse(readFileSync(files.cliConfig, 'utf8')) as Record<string, Record<string, unknown>>;
     expect(config['permissions']).toEqual({ allow: ['Read(**)'], deny: ['Write(**)', 'Write(/**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'] });
-    expect(config['sandbox']).toMatchObject({ readBoundary: 'workspace' });
+    // The documented keys only: the required ones, the narrowest read boundary, the strictest approval mode.
+    expect(Object.keys(config).sort()).toEqual(['approvalMode', 'editor', 'permissions', 'sandbox', 'version']);
+    expect(config['sandbox']).toEqual({ readBoundary: 'workspace' });
+    expect(config['editor']).toEqual({ vimMode: false });
+    expect(config['approvalMode']).toBe('allowlist');
+    // The same config and hooks at the leg HOME's user-level location (the API-key route's own HOME).
+    expect(readFileSync(join(files.home, '.cursor', 'hooks.json'), 'utf8')).toBe(readFileSync(files.hooksJson, 'utf8'));
+    expect(readFileSync(join(files.home, '.cursor', 'cli-config.json'), 'utf8')).toBe(readFileSync(files.cliConfig, 'utf8'));
     const hooks = (JSON.parse(readFileSync(files.hooksJson, 'utf8')) as { hooks: Record<string, Array<{ command: string }>> }).hooks;
     expect(Object.keys(hooks)).toEqual(expect.arrayContaining(['preToolUse', 'beforeReadFile', 'beforeShellExecution', 'beforeMCPExecution', 'afterFileEdit', 'stop']));
     expect(hooks['preToolUse']?.[0]?.command).toContain(files.hookScript);
@@ -242,15 +259,24 @@ describe('cursor preflight (4.3), no model call', () => {
     expect(pre.ok).toBe(false);
     expect(pre.reason).toContain(reason);
   });
-  it('lists the user HOME files Cursor imports on the keychain login; the API-key route skips status', async () => {
+  it('refuses the keychain route when the user HOME holds anything Cursor imports or reads; the API-key route runs on its own HOME', async () => {
     const home = scratch('sc-cursor-u-');
     mkdirSync(join(home, '.claude'));
     writeFileSync(join(home, '.claude', 'settings.json'), '{}');
+    mkdirSync(join(home, '.cursor', 'projects'), { recursive: true });
     const { pre } = await preflight({}, { env: { HOME: home } });
-    expect(pre.userOwned).toEqual(['~/.claude/settings.json (Cursor imports it on the keychain login)']);
+    expect(pre.ok).toBe(false);
+    expect(pre.reason).toBe('user HOME holds Cursor imports: .claude/settings.json, .cursor/projects');
     const keyed = await preflight({}, { env: { HOME: home, CURSOR_API_KEY: 'never-read' } });
+    expect(keyed.pre.ok).toBe(true);
     expect(keyed.calls).toEqual([['--version'], ['models']]);
-    expect(keyed.pre.userOwned).toEqual([]);
+    expect(keyed.pre.userOwned).toEqual(['CURSOR_API_KEY']);
+  });
+
+  it('refuses a slug with no declared model_id, and an effort the slug does not carry', async () => {
+    expect((await preflight({ model: 'gpt-9-high' })).pre.reason).toBe('no declared model_id for gpt-9-high');
+    expect((await preflight({ model: 'gpt-5.5-high', effort: 'low' })).pre.reason).toBe('effort not in the slug');
+    expect((await preflight({ model: 'gpt-5.5-high', effort: 'high' })).pre.ok).toBe(true);
   });
 });
 

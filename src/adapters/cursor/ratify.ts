@@ -4,7 +4,7 @@ import { collectPaths, judgePath } from '../acp/policy.js';
 import { isObject, num, readJsonl, str, type Json } from '../codex/records.js';
 import { rootAliases } from '../paths.js';
 import { nonceOnFirstLine, verdictOf, type Ratification, type RatificationCheck } from '../types.js';
-import { CURSOR_LABEL, CURSOR_READ_CALLS, CURSOR_READ_TOOLS } from './known.js';
+import { CURSOR_LABEL, CURSOR_MODEL_MAP, CURSOR_READ_CALLS, CURSOR_READ_TOOLS } from './known.js';
 
 /*
  * Cursor failure signatures (plan 4.4) and ratification (plan 4.5), from the stream-json output and the council
@@ -52,6 +52,7 @@ export const CURSOR_CLASS_OF_CHECK: Readonly<Record<string, FailureClass>> = {
   effort: 'model',
   'tools-used': 'contaminated',
   'read-paths': 'contaminated',
+  'read-paths-known': 'setup',
   edits: 'contaminated',
   result: 'transport',
   answer: 'empty',
@@ -155,35 +156,83 @@ export function ratifyCursorLeg(input: CursorRatifyInput): Ratification {
   const badRoots = roots.filter((w) => !Array.isArray(w) || w.length !== 1 || !isRootPath(w[0]));
   check('workspace', roots.length > 0 && badRoots.length === 0, roots.length === 0 ? 'no workspace_roots in the hook log' : badRoots.length === 0 ? `workspace_roots = [root] in ${roots.length} event(s)` : `workspace_roots not [root]: ${JSON.stringify(badRoots[0])}`);
 
+  // The served model is bound to the pin through the declared table (round 1 row 2): every hook event's
+  // `model_id` is the slug's model and its `model_params` effort is the slug's effort; the legacy slug, where a
+  // hook reports it, is the pin.
+  const declared = CURSOR_MODEL_MAP[input.model];
   const ids = [...new Set(payloads.map((p) => str(p['model_id'])).filter((m): m is string => m !== null))];
   const slugs = payloads.map((p) => str(p['model'])).filter((m): m is string => m !== null);
   const badSlugs = [...new Set(slugs.filter((m) => m !== input.model))];
+  const badIds = ids.filter((m) => m !== declared?.modelId);
   check(
     'model',
-    ids.length === 1 && slugs.length > 0 && badSlugs.length === 0,
-    ids.length === 0 ? 'no model_id in the hook log' : ids.length > 1 ? `more than one model_id: ${ids.join(', ')}` : badSlugs.length > 0 ? `model not the pin ${input.model}: ${badSlugs.join(', ')}` : slugs.length === 0 ? 'no model slug in the hook log' : `model ${input.model} (model_id ${ids[0] ?? '?'})`,
+    declared !== undefined && ids.length > 0 && badIds.length === 0 && badSlugs.length === 0,
+    declared === undefined
+      ? `${input.model} has no declared model_id`
+      : ids.length === 0
+        ? 'no model_id in the hook log'
+        : badIds.length > 0
+          ? `model_id not ${declared.modelId} (the pin ${input.model}): ${badIds.join(', ')}`
+          : badSlugs.length > 0
+            ? `model slug not the pin ${input.model}: ${badSlugs.join(', ')}`
+            : `model_id ${declared.modelId} for ${input.model}`,
   );
   const efforts = payloads.map((p) => effortOf(p['model_params'])).filter((e): e is string => e !== null);
-  const badEfforts = input.effort === null ? [] : [...new Set(efforts.filter((e) => e !== input.effort))];
-  check('effort', input.effort === null || (efforts.length > 0 && badEfforts.length === 0), input.effort === null ? 'effort is in the slug' : efforts.length === 0 ? 'no model_params effort in the hook log' : badEfforts.length === 0 ? `effort ${input.effort}` : `effort not the pin ${input.effort}: ${badEfforts.join(', ')}`);
+  const want = declared?.effort;
+  const badEfforts = [...new Set(efforts.filter((e) => e !== want || (input.effort !== null && e !== input.effort)))];
+  check(
+    'effort',
+    declared === undefined || (efforts.length > 0 && badEfforts.length === 0),
+    declared === undefined ? 'no declared effort for the pin (model fails)' : efforts.length === 0 ? 'no model_params effort in the hook log' : badEfforts.length === 0 ? `effort ${declared.effort} on ${efforts.length} event(s)` : `effort not ${declared.effort}: ${badEfforts.join(', ')}`,
+  );
 
-  const ran = stream.calls.filter((c) => c.subtype === 'completed');
-  const hookTools = hooks.entries.filter((e) => e.event === 'postToolUse').map((e) => String(e.payload['tool_name'] ?? '').toLowerCase());
-  const badCalls = [...new Set([...ran.map((c) => c.kind).filter((k) => !(CURSOR_READ_CALLS as readonly string[]).includes(k)), ...hookTools.filter((t) => !(CURSOR_READ_TOOLS as readonly string[]).includes(t))])];
-  check('tools-used', badCalls.length === 0, badCalls.length === 0 ? `${ran.length} completed call(s), all reads` : `ran beyond the read set: ${badCalls.join(', ')}`);
+  // Every call is judged, started or completed (claude F4): a call's kinds over all its events, and the union of
+  // every argument snapshot. A read with no judgeable path is not judged as the root (round 1 row 1).
+  const calls = new Map<string, { kinds: Set<string>; subtypes: Set<string>; args: Json[] }>();
+  stream.calls.forEach((c, i) => {
+    const key = c.id ?? `#${i}`;
+    const entry = calls.get(key) ?? { kinds: new Set<string>(), subtypes: new Set<string>(), args: [] };
+    entry.kinds.add(c.kind);
+    if (c.subtype !== null) entry.subtypes.add(c.subtype);
+    if (Object.keys(c.args).length > 0) entry.args.push(c.args);
+    calls.set(key, entry);
+  });
+  const isRead = (k: string): boolean => (CURSOR_READ_CALLS as readonly string[]).includes(k);
+  const readTool = (t: string): boolean => (CURSOR_READ_TOOLS as readonly string[]).includes(t.toLowerCase());
+  const badCalls = new Set<string>();
+  for (const [id, c] of calls) for (const k of c.kinds) if (!isRead(k)) badCalls.add(`${k} (${[...c.subtypes].join('/') || 'no subtype'}, ${id})`);
+  for (const e of hooks.entries) {
+    const tool = String(e.payload['tool_name'] ?? '');
+    if (e.event === 'postToolUse' && !readTool(tool)) badCalls.add(`postToolUse ${tool || '(no tool name)'}`);
+    if (e.event === 'preToolUse' && e.decision !== 'deny' && !readTool(tool)) badCalls.add(`preToolUse ${tool || '(no tool name)'} not denied`);
+    if ((e.event === 'beforeShellExecution' || e.event === 'beforeMCPExecution') && e.decision !== 'deny') badCalls.add(`${e.event} not denied`);
+  }
+  check('tools-used', badCalls.size === 0, badCalls.size === 0 ? `${calls.size} call(s), all reads` : `beyond the read set: ${[...badCalls].join('; ')}`);
   const outside: string[] = [];
-  for (const c of ran) {
-    const found = collectPaths([{ rawInput: c.args }]).paths;
-    for (const p of found.length > 0 ? found : ['.']) {
+  const unknown: string[] = [];
+  const judge = (label: string, values: readonly Json[]): void => {
+    const found = collectPaths(values.map((v) => ({ rawInput: v })));
+    if (found.problems.length > 0) unknown.push(`${label}: ${found.problems.join('; ')}`);
+    if (found.paths.length === 0) unknown.push(`${label}: no path the ratifier can judge`);
+    for (const p of found.paths) {
       const j = judgePath(p, input.root, aliases);
-      if (!j.inside) outside.push(`${c.kind} ${p} (${j.why})`);
+      if (!j.inside) outside.push(`${label} ${p} (${j.why})`);
+    }
+  };
+  for (const [id, c] of calls) judge(`${[...c.kinds].join('/')} ${id}`, c.args);
+  // The hook inputs of every tool the hook let through, and of every tool that ran (claude F5).
+  for (const e of hooks.entries) {
+    if ((e.event === 'preToolUse' && e.decision !== 'deny') || e.event === 'postToolUse') {
+      const toolInput = isObject(e.payload['tool_input']) ? e.payload['tool_input'] : {};
+      judge(`${e.event} ${String(e.payload['tool_name'] ?? '?')}`, [toolInput]);
     }
   }
   for (const e of hooks.entries.filter((x) => x.event === 'beforeReadFile' && x.decision !== 'deny')) {
     const p = str(e.payload['file_path']) ?? str(e.payload['filePath']);
     if (p === null || !judgePath(p, input.root, aliases).inside) outside.push(`beforeReadFile ${String(p)} allowed`);
   }
-  check('read-paths', outside.length === 0, outside.length === 0 ? 'every read that ran named paths inside the root' : [...new Set(outside)].join('; '));
+  check('read-paths', outside.length === 0, outside.length === 0 ? 'every call and every hook input named paths inside the root' : [...new Set(outside)].join('; '));
+  check('read-paths-known', unknown.length === 0, unknown.length === 0 ? 'every call and hook input names a path the ratifier can judge' : [...new Set(unknown)].join('; '));
   const edits = hooks.entries.filter((e) => e.event === 'afterFileEdit');
   check('edits', edits.length === 0, edits.length === 0 ? 'no afterFileEdit event' : `${edits.length} file edit(s): ${edits.map((e) => String(e.payload['file_path'] ?? '?')).join(', ')}`);
   check('result', result !== null && result['is_error'] === false && str(result['subtype']) === 'success', result === null ? 'no result line' : `is_error ${String(result['is_error'])}, subtype ${String(result['subtype'])}`);
@@ -207,12 +256,12 @@ export function ratifyCursorLeg(input: CursorRatifyInput): Ratification {
     recordPath: input.hookLog,
     sessionId: sid,
     cliVersion: versions[0] ?? input.cliVersion,
-    modelObserved: slugs[0] ?? ids[0] ?? null,
+    modelObserved: ids[0] ?? slugs[0] ?? null,
     effortObserved: efforts[0] ?? null,
     cwdObserved: init ? str(init['cwd']) : null,
     cwdOk: checks.find((c) => c.name === 'cwd')?.ok ?? false,
     toolsOffered: [],
-    toolsUsed: [...new Set(ran.map((c) => c.kind))].sort(),
+    toolsUsed: [...new Set([...calls.values()].flatMap((c) => [...c.kinds]))].sort(),
     tokensIn: num(usage['inputTokens']),
     tokensOut: num(usage['outputTokens']),
     costUsd: null,

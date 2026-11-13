@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { FailureClass } from '../../config/vocab.js';
 import type { CommandRunner } from '../../transport/headless.js';
 import type { Occupant, Preflight, PreflightCheck } from '../types.js';
-import { CURSOR_FLOOR, CURSOR_LABEL, CURSOR_TESTED_VERSIONS, compareCursorVersions, parseCursorVersion } from './known.js';
+import { CURSOR_FLOOR, CURSOR_LABEL, CURSOR_MODEL_MAP, CURSOR_TESTED_VERSIONS, CURSOR_USER_IMPORTS, compareCursorVersions, parseCursorVersion } from './known.js';
 import { cursorEnv, cursorLegFiles, cursorVersionsDir, hasCursorKey, prepareCursorConfig } from './launch.js';
 
 /*
@@ -29,7 +29,6 @@ export interface CursorPreflightOptions {
 }
 
 const ROOT_AGENT_CONFIG = /^(?:\.cursor|\.claude|AGENTS.*\.md|CLAUDE\.md|\.cursorignore|\.mcp\.json)$/i;
-const USER_IMPORTS = ['.claude/settings.json', '.claude/settings.local.json', '.cursor/hooks.json', '.cursor/mcp.json', '.cursor/rules'];
 
 export async function cursorPreflight(o: Occupant, options: CursorPreflightOptions): Promise<Preflight> {
   const checks: PreflightCheck[] = [];
@@ -56,8 +55,13 @@ export async function cursorPreflight(o: Occupant, options: CursorPreflightOptio
     fail('occupant', `model "${o.model}" is not a Cursor model slug a seat can pin (auto routes per request)`);
     return result(false, 'setup', 'bad model slug', null);
   }
-  if (o.effort !== undefined && !o.model.endsWith(`-${o.effort}`)) {
-    fail('occupant', `Cursor encodes effort in the slug; ${o.model} does not end in -${o.effort} (leave effort unset or pick the matching slug)`);
+  const declared = CURSOR_MODEL_MAP[o.model];
+  if (declared === undefined) {
+    fail('model', `${o.model} has no declared model_id and effort to ratify against (declared: ${Object.keys(CURSOR_MODEL_MAP).join(', ')})`);
+    return result(false, 'model', `no declared model_id for ${o.model}`, null);
+  }
+  if (o.effort !== undefined && o.effort !== declared.effort) {
+    fail('occupant', `Cursor encodes effort in the slug; ${o.model} is effort ${declared.effort}, not ${o.effort} (leave effort unset or pick the matching slug)`);
     return result(false, 'setup', 'effort not in the slug', null);
   }
   const versionsDir = cursorVersionsDir(options.env);
@@ -93,6 +97,15 @@ export async function cursorPreflight(o: Occupant, options: CursorPreflightOptio
   if (apiKey) {
     checks.push({ name: 'auth', status: 'ok', detail: 'CURSOR_API_KEY (the leg HOME is its own empty dir)' });
   } else {
+    // The keychain route keeps the user's HOME: Cursor would import its Claude Code hooks and settings (no documented
+    // key turns that off for the CLI) and the workspace read boundary would include its ~/.cursor. Refused wherever
+    // that HOME holds any of it (round 1 row 3).
+    const home = options.env['HOME'] ?? '';
+    const present = CURSOR_USER_IMPORTS.filter((p) => home !== '' && existsSync(join(home, p)));
+    if (present.length > 0) {
+      fail('isolation', `the keychain route runs on your HOME, which holds ${present.map((p) => `~/${p}`).join(', ')}: Cursor would import or read them. Set CURSOR_API_KEY so the leg runs on its own HOME`);
+      return result(false, 'setup', `user HOME holds Cursor imports: ${present.join(', ')}`, cliVersion);
+    }
     const status = await run(['status']);
     const text = `${status.stdout}\n${status.stderr}`;
     if (status.exitCode !== 0 || /not (?:logged in|authenticated)|authentication is invalid|log in again|run '?(?:agent|cursor-agent) login/i.test(text)) {
@@ -115,11 +128,6 @@ export async function cursorPreflight(o: Occupant, options: CursorPreflightOptio
     return result(false, 'setup', 'root not sanitized', cliVersion);
   }
   checks.push({ name: 'isolation', status: 'note', detail: `council config dir ${files.configDir} (deny rules, sandbox, the deny-all-but-reads hook), outside the root` });
-  if (!apiKey) {
-    const home = options.env['HOME'] ?? '';
-    const present = USER_IMPORTS.filter((p) => home !== '' && existsSync(join(home, p)));
-    for (const p of present) userOwned.push(`~/${p} (Cursor imports it on the keychain login)`);
-    if (present.length > 0) checks.push({ name: 'user-owned', status: 'warn', detail: `the user HOME holds ${present.map((p) => `~/${p}`).join(', ')}, which Cursor may import; set CURSOR_API_KEY to run the leg on its own HOME` });
-  }
+  userOwned.push(apiKey ? 'CURSOR_API_KEY' : 'the Cursor keychain login (the user HOME holds nothing Cursor imports)');
   return result(true, null, null, cliVersion);
 }

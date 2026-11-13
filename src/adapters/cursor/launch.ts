@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { CURSOR_PERMISSIONS, CURSOR_READ_TOOLS, compareCursorVersions } from './known.js';
+import { CURSOR_PERMISSIONS, CURSOR_READ_BOUNDARY, CURSOR_READ_TOOLS, compareCursorVersions } from './known.js';
 import { CURSOR_GATE_EVENTS, CURSOR_LOG_EVENTS, councilHookScript } from './hook.js';
 
 /*
@@ -9,10 +9,11 @@ import { CURSOR_GATE_EVENTS, CURSOR_LOG_EVENTS, councilHookScript } from './hook
  *   - `-p --output-format stream-json --trust --mode ask --sandbox enabled --workspace <root> --model <slug>`, the
  *     brief as the prompt argument (print mode reads no file), never `--force`, `--yolo` or `--approve-mcps`;
  *   - `CURSOR_CONFIG_DIR` is a council-owned dir outside the root holding `cli-config.json` (allowlist approvals,
- *     the deny rules, the sandbox with network off and a workspace read boundary) and `hooks.json` (the council
- *     hook on every gate and log event); nothing is written into the root at launch, so the residue sweep holds;
- *   - with `CURSOR_API_KEY`, `HOME` is the leg's own empty dir (no `~/.claude` hooks or `~/.cursor` config can
- *     load); on the keychain login the user's HOME stays, and preflight lists what it holds as user-owned.
+ *     the deny rules, a workspace read boundary) and `hooks.json` (the council hook on every gate and log event);
+ *     both are also written to the leg HOME's `.cursor/`; nothing is written into the root at launch;
+ *   - with `CURSOR_API_KEY`, `HOME` is the leg's own dir (no `~/.claude` hooks or user `~/.cursor` config can load,
+ *     and the workspace read boundary's `~/.cursor` is the leg's own); the keychain route keeps the user's HOME, and
+ *     preflight refuses it wherever that HOME holds anything Cursor imports or would read.
  */
 
 export const CURSOR_ENV_ALLOW = [
@@ -87,12 +88,14 @@ export function cursorLegFiles(legDir: string): CursorLegFiles {
   };
 }
 
+/** The council's `cli-config.json`, by the documented keys only (see CURSOR_READ_BOUNDARY). */
 export function cursorCliConfig(): Record<string, unknown> {
   return {
     version: 1,
+    editor: { vimMode: false },
     approvalMode: 'allowlist',
     permissions: { allow: [...CURSOR_PERMISSIONS.allow], deny: [...CURSOR_PERMISSIONS.deny] },
-    sandbox: { mode: 'enabled', networkAccess: 'disabled', readBoundary: 'workspace' },
+    sandbox: { readBoundary: CURSOR_READ_BOUNDARY },
   };
 }
 
@@ -101,13 +104,22 @@ export function cursorHooks(files: CursorLegFiles, root: string, node: string): 
   return { version: 1, hooks: Object.fromEntries([...CURSOR_GATE_EVENTS, ...CURSOR_LOG_EVENTS].map((e) => [e, hook(e)])) };
 }
 
-/** Writes the council-owned config dir (outside the root) and the leg's empty HOME. */
+/**
+ * Writes the council-owned config dir (outside the root) and the leg's own HOME. `CURSOR_CONFIG_DIR` is documented to
+ * relocate `cli-config.json` only, so the same config and the council `hooks.json` also go to the leg HOME's
+ * `.cursor/`, the user-level location, which on the API-key route is the leg's own. A leg whose hooks did not load
+ * leaves no hook log and fails ratification.
+ */
 export function prepareCursorConfig(files: CursorLegFiles, root: string, node = process.execPath): void {
   mkdirSync(files.configDir, { recursive: true });
-  mkdirSync(files.home, { recursive: true });
-  writeFileSync(files.cliConfig, `${JSON.stringify(cursorCliConfig(), null, 2)}\n`);
+  mkdirSync(join(files.home, '.cursor'), { recursive: true });
+  const config = `${JSON.stringify(cursorCliConfig(), null, 2)}\n`;
+  const hooks = `${JSON.stringify(cursorHooks(files, root, node), null, 2)}\n`;
+  writeFileSync(files.cliConfig, config);
   writeFileSync(files.hookScript, councilHookScript(CURSOR_READ_TOOLS), { mode: 0o755 });
-  writeFileSync(files.hooksJson, `${JSON.stringify(cursorHooks(files, root, node), null, 2)}\n`);
+  writeFileSync(files.hooksJson, hooks);
+  writeFileSync(join(files.home, '.cursor', 'cli-config.json'), config);
+  writeFileSync(join(files.home, '.cursor', 'hooks.json'), hooks);
 }
 
 export function cursorArgs(input: { root: string; model: string; prompt: string }): string[] {

@@ -41,5 +41,46 @@ export const CURSOR_PERMISSIONS = {
   deny: ['Write(**)', 'Write(/**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'],
 } as const;
 
+/**
+ * The model each pinnable slug must be served as (round 1 row 2): the hook's `model_id` and the effort in its
+ * `model_params`. Cursor encodes effort in the slug; the hook reports the model and the effort apart. From the
+ * documentation's slug examples (`gpt-5.5-high`, `claude-opus-5-high`, `claude-opus-4-7-thinking-max` with
+ * `effort=max`); the `model_id` values are the slug without its effort suffix, as the documented hook example shows,
+ * and are unmeasured until a Cursor live run (D14). A slug not in this table cannot be pinned: preflight refuses
+ * it, and a leg whose hook names another `model_id` or effort fails `model`.
+ */
+export const CURSOR_MODEL_MAP: Readonly<Record<string, { modelId: string; effort: string }>> = {
+  'gpt-5.5-low': { modelId: 'gpt-5.5', effort: 'low' },
+  'gpt-5.5-medium': { modelId: 'gpt-5.5', effort: 'medium' },
+  'gpt-5.5-high': { modelId: 'gpt-5.5', effort: 'high' },
+  'gpt-5.3-codex-high': { modelId: 'gpt-5.3-codex', effort: 'high' },
+  'claude-opus-5-high': { modelId: 'claude-opus-5', effort: 'high' },
+  'claude-opus-4-7-thinking-max': { modelId: 'claude-opus-4-7', effort: 'max' },
+};
+
+/**
+ * What the council's `cli-config.json` holds, by the documented keys only (cursor.com/docs/cli/reference/
+ * configuration): `version`, `editor.vimMode` and `permissions` are required; `approvalMode` takes `allowlist`,
+ * `auto-review` or `unrestricted`; `sandbox.readBoundary` takes `system` (the default) or `workspace`, the narrowest
+ * value (it still includes `~/.cursor`, which on the API-key route is the leg's own empty HOME). No documented key
+ * turns off third-party (Claude Code) imports: that toggle is a Cursor app setting only, so the leg's own HOME is the
+ * isolation, and the keychain route is refused wherever the user's HOME holds anything Cursor would import or read.
+ */
+export const CURSOR_READ_BOUNDARY = 'workspace';
+
+/** Files in a HOME that Cursor imports (Claude Code hooks, Cursor hooks, MCP, rules, skills, plugins) or reads. */
+export const CURSOR_USER_IMPORTS = [
+  '.claude/settings.json',
+  '.claude/settings.local.json',
+  '.claude/skills',
+  '.claude/plugins',
+  '.cursor/hooks.json',
+  '.cursor/mcp.json',
+  '.cursor/rules',
+  '.cursor/skills',
+  '.cursor/plugins',
+  '.cursor/projects',
+] as const;
+
 /** Flags a leg never passes. */
 export const CURSOR_FORBIDDEN_FLAGS = ['-f', '--force', '--yolo', '--approve-mcps'] as const;
