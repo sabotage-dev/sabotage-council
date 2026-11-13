@@ -78,8 +78,17 @@ function editAll(dir: string, c: CaseFile, match: (r: Record<string, unknown>) =
   edit(join(dir, 'stream.jsonl'), match, change);
   edit(logOf(dir, c.sessionId), match, change);
   editJson(join(dir, 'export.json'), (v) => {
-    for (const e of v['events'] as Array<Record<string, unknown>>) if (match(e['envelope'] as Record<string, unknown>)) change(e['envelope'] as Record<string, unknown>);
+    for (const e of (v['events'] as Array<Record<string, unknown>> | undefined) ?? []) if (match(e['envelope'] as Record<string, unknown>)) change(e['envelope'] as Record<string, unknown>);
   });
+}
+
+/**
+ * Synthetic, never a recorded shape: the export gains `events[]` built from the stream's session envelopes, for
+ * the tests of the optional corroboration (the recorded 1.4.15 export has only `first_events`).
+ */
+function withSyntheticEvents(dir: string): void {
+  const rows = readJsonl(join(dir, 'stream.jsonl')).filter((r) => (r['stream'] as Record<string, unknown>)['kind'] === 'session');
+  editJson(join(dir, 'export.json'), (v) => (v['events'] = rows.map((envelope) => ({ kind: 'record', synthetic: true, envelope }))));
 }
 
 const event = (r: Record<string, unknown>): Record<string, unknown> => payload(r)['event'] as Record<string, unknown>;
@@ -108,7 +117,7 @@ function addTask(dir: string, c: CaseFile, kind: string, input: Record<string, u
   }));
   writeJsonl(join(dir, 'stream.jsonl'), [...readJsonl(join(dir, 'stream.jsonl')), ...rows]);
   writeJsonl(logOf(dir, c.sessionId), [...readJsonl(logOf(dir, c.sessionId)), ...rows]);
-  editJson(join(dir, 'export.json'), (v) => (v['events'] as unknown[]).push(...rows.map((envelope) => ({ kind: 'record', envelope }))));
+  editJson(join(dir, 'export.json'), (v) => (v['events'] as unknown[] | undefined)?.push(...rows.map((envelope) => ({ kind: 'record', envelope }))));
 }
 
 describe('muse replay: the recorded offline runs (echo provider) and their logged-in shape', () => {
@@ -123,6 +132,17 @@ describe('muse replay: the recorded offline runs (echo provider) and their logge
     const r = ratifyMuseLeg(legFor('echo-review', loggedIn).input);
     expect(failedNames(r)).toEqual([]);
     expect(r).toMatchObject({ status: 'PASS', modelObserved: 'muse-spark-1.3', cliVersion: '1.4.15', tokensIn: 1200, tokensOut: 300, cwdOk: true, enforcement: 'weak' });
+  });
+
+  it('ratifies the recorded export shape (a summary with first_events, no events[]) on the stream and the session log', () => {
+    for (const name of ['echo-review', 'echo-canary']) {
+      const recorded = JSON.parse(readFileSync(join(fixtureDir('muse', name), 'export.json'), 'utf8')) as Record<string, unknown>;
+      expect(Object.keys(recorded).sort()).toEqual(['diagnostics', 'export_schema_version', 'exporter_version', 'first_events', 'session_build', 'session_terminated_abnormally', 'sessions']);
+      const r = ratifyMuseLeg(legFor(name, loggedIn).input);
+      expect(r.checks.find((c) => c.name === 'export')).toMatchObject({ ok: true });
+      expect(r.checks.find((c) => c.name === 'export')?.detail).toContain('no events[]');
+      expect(failedNames(r)).toEqual([]);
+    }
   });
 });
 
@@ -156,10 +176,19 @@ describe('muse ratification: each check fails on its own (mutation coverage)', (
       const keep = (r: Record<string, unknown>) => !String(r['payload_type']).startsWith('task.lifecycle.');
       writeJsonl(join(dir, 'stream.jsonl'), readJsonl(join(dir, 'stream.jsonl')).filter(keep));
       writeJsonl(logOf(dir, c.sessionId), readJsonl(logOf(dir, c.sessionId)).filter(keep));
-      editJson(join(dir, 'export.json'), (v) => (v['events'] = (v['events'] as Array<Record<string, unknown>>).filter((e) => keep(e['envelope'] as Record<string, unknown>))));
+      editJson(join(dir, 'export.json'), (v) => {
+        if (Array.isArray(v['events'])) v['events'] = (v['events'] as Array<Record<string, unknown>>).filter((e) => keep(e['envelope'] as Record<string, unknown>));
+      });
     }, ['activity']],
-    ['an export with no events (incomplete)', (dir) => editJson(join(dir, 'export.json'), (v) => delete v['events']), ['export']],
-    ['contributor mode "enabled" in the export only', (dir) => editJson(join(dir, 'export.json'), (v) => (((v['events'] as Array<Record<string, unknown>>)[0] as Record<string, Record<string, unknown>>)['envelope'] as Record<string, unknown>)['contributor_mode'] = 'enabled'), ['contributor']],
+    ['an export whose events carry no envelope (synthetic events)', (dir) => {
+      withSyntheticEvents(dir);
+      editJson(join(dir, 'export.json'), (v) => delete ((v['events'] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)['envelope']);
+    }, ['export']],
+    ['contributor mode "enabled" in the export events only (synthetic events)', (dir) => {
+      withSyntheticEvents(dir);
+      editJson(join(dir, 'export.json'), (v) => (((v['events'] as Array<Record<string, unknown>>)[0] as Record<string, Record<string, unknown>>)['envelope'] as Record<string, unknown>)['contributor_mode'] = 'enabled');
+    }, ['contributor']],
+    ['synthetic export events that agree with the stream', (dir) => withSyntheticEvents(dir), []],
     ['a permission profile other than read-only in a record', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('run.lifecycle.started'), (r) => (payload(r)['permission_profile'] = ':auto-review')), ['flags']],
     ['a terminal record that did not complete', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('run.terminal.completed'), (r) => (payload(r)['terminal'] = 'cancelled')), ['terminal']],
     ['an empty answer', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('run.terminal.completed'), (r) => (payload(r)['text'] = '')), ['answer', 'nonce']],

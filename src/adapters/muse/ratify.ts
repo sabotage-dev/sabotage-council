@@ -152,14 +152,22 @@ export function ratifyMuseLeg(input: MuseRatifyInput): Ratification {
   const sessions = exp && Array.isArray(exp['sessions']) ? exp['sessions'].filter(isObject) : [];
   const diag = exp && isObject(exp['diagnostics']) ? exp['diagnostics'] : {};
   const badDiag = ['unparseable_lines', 'unknown_payload_kinds', 'gaps', 'duplicate_records'].filter((k) => (num(diag[k]) ?? 0) !== 0);
+  // The recorded 1.4.15 export is a summary (sessions, diagnostics, `first_events` without envelopes): the stdout
+  // stream and the session log are the record. An export that does carry `events[]` (round 2: optional
+  // corroboration) must give every event its envelope, and those envelopes are audited with the rest.
   const exportEvents = exp && Array.isArray(exp['events']) ? exp['events'].filter(isObject) : null;
   const exported = (exportEvents ?? []).map((e) => (isObject(e['envelope']) ? e['envelope'] : null)).filter((e): e is Json => e !== null);
   check(
     'export',
-    exp !== null && exp['export_schema_version'] === 1 && sessions.length === 1 && str(sessions[0]?.['session_id']) === input.sessionId && badDiag.length === 0 && exported.length > 0 && exported.length === (exportEvents ?? []).length,
+    exp !== null &&
+      exp['export_schema_version'] === 1 &&
+      sessions.length === 1 &&
+      str(sessions[0]?.['session_id']) === input.sessionId &&
+      badDiag.length === 0 &&
+      (exportEvents === null || exported.length === exportEvents.length),
     exp === null
       ? `no export at ${input.exportFile}`
-      : `${sessions.length} session(s) (${sessions.map((s) => String(s['session_id'])).join(', ')}); diagnostics ${badDiag.length === 0 ? 'clean' : badDiag.join(', ')}; ${exportEvents === null ? 'no events (an incomplete export)' : `${exported.length} of ${exportEvents.length} event(s) carry an envelope`}`,
+      : `${sessions.length} session(s) (${sessions.map((s) => String(s['session_id'])).join(', ')}); diagnostics ${badDiag.length === 0 ? 'clean' : badDiag.join(', ')}; ${exportEvents === null ? 'no events[] (a summary export: the stream and the session log are the record)' : `${exported.length} of ${exportEvents.length} event(s) carry an envelope`}`,
   );
   const none = exp === null;
   const noExport = 'no export (export fails)';

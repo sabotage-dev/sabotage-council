@@ -14,5 +14,5 @@
       "nonce"
     ]
   },
-  "note": "Recorded offline probe run (muse 1.4.15, --provider echo: no model call, not logged in), sanitized. The echo provider records no model id and echoes the brief, so model, model-steps (its model step names no model) and nonce fail. export.json is the recorded export summary with its events[] rebuilt from the stream session envelopes (the shape the export documentation gives); the session log is the stream session envelopes (the stream is the session-log envelope stream). The flags are the probe run, which added --provider echo."
+  "note": "Recorded offline probe run (muse 1.4.15, --provider echo: no model call, not logged in), sanitized. The echo provider records no model id and echoes the brief, so model, model-steps (its model step names no model) and nonce fail. export.json is the recorded export summary; the session log is the stream session envelopes (the stream is the session-log envelope stream). The flags are the probe run, which added --provider echo."
 }
