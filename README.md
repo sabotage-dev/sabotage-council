@@ -36,11 +36,11 @@ the antigravity, kiro and opencode seats. There are no review rounds yet. The v1
 
 Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322 and 2.1.323, the
 versions its canary ran on) and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their
-promotion canaries ran and did not prove every action was refused before it ran (plan 14). grok is `weak` with `--sandbox off` (it would be
-`pending` with its sandbox running, a label no recorded run backs: no sandbox-on leg has run). cursor and muse
-are `weak`: no live canary runs for them in v1. With the default `untrusted_seat_policy = "fallback"`, a round on
-a PR from an author without write access needs `strong` fallbacks for those seats, or it fails below quorum,
-visibly.
+promotion canaries ran and did not prove every action was refused before it ran (plan 14). grok is `weak` with
+`--sandbox off` (it would be `pending` with its sandbox running, a label no recorded run backs: no sandbox-on leg
+has run). cursor and muse are `weak`: no live canary runs for them in v1. With the default
+`untrusted_seat_policy = "fallback"`, a round on a PR from an author without write access needs `strong`
+fallbacks for those seats, or it fails below quorum, visibly.
 
 `doctor --deep` runs every seat's preflight, with no model call, against its own canary root of planted hooks,
 rules and MCP config for every backend (top level and nested). Every planted hook event, MCP server and plugin
@@ -80,7 +80,10 @@ unless every seat is proven `isolated`.
 - **opencode.** Seats run `opencode acp` with a council agent, on per-leg XDG dirs and database, so saved
   opencode accounts never reach a leg: credentials come from provider environment variables, or use the free
   `opencode/*` models. opencode refused an outside read by path itself; a read through a symlink inside the root
-  ran in the canary (the review root replaces such links with text files, but the label stays `pending`).
+  ran in the canary (the review root replaces such links with text files, but the label stays `pending`). On
+  2.2.7 the council agent is still offered the `skill` tool: opencode appends its own `skill` rule after the
+  council's, so no council rule removes it. A leg must be offered only reads, so preflight refuses every opencode
+  seat on 2.2.7.
 - **Cursor (`cursor-agent`).** Seats call the newest release under `~/.local/share/cursor-agent/versions/` by
   path, never `agent` on PATH (the Cursor installer repoints that name). Print mode needs `--trust`; the council
   config and its deny-all-but-reads hook live in a per-leg `CURSOR_CONFIG_DIR`. With `CURSOR_API_KEY` the leg also
