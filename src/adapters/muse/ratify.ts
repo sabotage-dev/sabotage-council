@@ -4,6 +4,8 @@ import type { FailureClass } from '../../config/vocab.js';
 import { isObject, num, readJsonl, str, type Json } from '../codex/records.js';
 import { rootAliases } from '../paths.js';
 import { nonceOnFirstLine, verdictOf, type Ratification, type RatificationCheck } from '../types.js';
+import { collectPaths, judgePath } from '../acp/policy.js';
+import { MUSE_READ_TOOLS, modelOfOperation, museDecl } from './known.js';
 
 /*
  * Muse failure signatures (plan 4.4) and ratification (plan 4.5), from the `--json` envelope stream, the session
@@ -54,9 +56,13 @@ export const MUSE_CLASS_OF_CHECK: Readonly<Record<string, FailureClass>> = {
   workspace: 'contaminated',
   contributor: 'contaminated',
   flags: 'contaminated',
+  mcp: 'contaminated',
+  'tools-used': 'contaminated',
+  'read-paths': 'contaminated',
+  activity: 'setup',
   model: 'model',
   effort: 'model',
-  'side-effects': 'contaminated',
+  'model-steps': 'model',
   subagents: 'contaminated',
   terminal: 'transport',
   answer: 'empty',
@@ -146,10 +152,14 @@ export function ratifyMuseLeg(input: MuseRatifyInput): Ratification {
   const sessions = exp && Array.isArray(exp['sessions']) ? exp['sessions'].filter(isObject) : [];
   const diag = exp && isObject(exp['diagnostics']) ? exp['diagnostics'] : {};
   const badDiag = ['unparseable_lines', 'unknown_payload_kinds', 'gaps', 'duplicate_records'].filter((k) => (num(diag[k]) ?? 0) !== 0);
+  const exportEvents = exp && Array.isArray(exp['events']) ? exp['events'].filter(isObject) : null;
+  const exported = (exportEvents ?? []).map((e) => (isObject(e['envelope']) ? e['envelope'] : null)).filter((e): e is Json => e !== null);
   check(
     'export',
-    exp !== null && exp['export_schema_version'] === 1 && sessions.length === 1 && str(sessions[0]?.['session_id']) === input.sessionId && badDiag.length === 0,
-    exp === null ? `no export at ${input.exportFile}` : `${sessions.length} session(s) (${sessions.map((s) => String(s['session_id'])).join(', ')}); diagnostics ${badDiag.length === 0 ? 'clean' : badDiag.join(', ')}`,
+    exp !== null && exp['export_schema_version'] === 1 && sessions.length === 1 && str(sessions[0]?.['session_id']) === input.sessionId && badDiag.length === 0 && exported.length > 0 && exported.length === (exportEvents ?? []).length,
+    exp === null
+      ? `no export at ${input.exportFile}`
+      : `${sessions.length} session(s) (${sessions.map((s) => String(s['session_id'])).join(', ')}); diagnostics ${badDiag.length === 0 ? 'clean' : badDiag.join(', ')}; ${exportEvents === null ? 'no events (an incomplete export)' : `${exported.length} of ${exportEvents.length} event(s) carry an envelope`}`,
   );
   const none = exp === null;
   const noExport = 'no export (export fails)';
@@ -160,13 +170,28 @@ export function ratifyMuseLeg(input: MuseRatifyInput): Ratification {
   const spawns = sessions[0] && Array.isArray(sessions[0]['accepted_spawns']) ? sessions[0]['accepted_spawns'] : [];
   check('subagents', none || spawns.length === 0, none ? noExport : spawns.length === 0 ? 'no subagent spawned' : `${spawns.length} subagent spawn(s) accepted`);
 
-  const everything = [...rows, ...(logRows?.rows ?? [])];
+  // Every record the leg left, audited together: the stdout stream, the session log and the export's events.
+  const everything = [...rows, ...(logRows?.rows ?? []), ...exported];
+  const decl = museDecl(input.cliVersion);
   const roots = valuesOf(everything, /^(?:canonical_)?workspace_root$/).map((v) => (typeof v === 'string' ? v : JSON.stringify(v)));
   const badRoots = [...new Set(roots.filter((r) => !aliases.includes(r.replace(/\/+$/, ''))))];
   check('workspace', roots.length > 0 && badRoots.length === 0, roots.length === 0 ? 'no workspace_root recorded' : badRoots.length === 0 ? `workspace_root = root (${roots.length})` : `workspace_root not the root: ${badRoots.join(', ')}`);
+  // Any value that is not a clear "off" counts as on (claude F3): `true`, `"enabled"`, `{enabled: true}`, ...
   const contributor = valuesOf(everything, /contributor/i);
-  const on = contributor.filter((v) => v === true || v === 'on' || v === 1);
-  check('contributor', on.length === 0, on.length === 0 ? `contributor mode never on in the records (${contributor.length} field(s))` : `contributor mode on in the records: ${JSON.stringify(on)}`);
+  const off = (v: unknown): boolean => v === false || v === 0 || v === null || (typeof v === 'string' && /^(?:off|false|disabled|no|0)$/i.test(v));
+  const on = contributor.filter((v) => !off(v));
+  const contributorRecorded = decl?.records.contributor ?? true;
+  check(
+    'contributor',
+    on.length === 0 && (contributor.length > 0 || !contributorRecorded),
+    on.length > 0
+      ? `contributor mode on in the records: ${JSON.stringify(on).slice(0, 200)}`
+      : contributor.length > 0
+        ? `contributor mode off in ${contributor.length} record field(s)`
+        : contributorRecorded
+          ? `no contributor-mode field in the records, which ${input.cliVersion === null ? 'an unknown version' : `muse ${input.cliVersion}`} is not declared to omit`
+          : `not recorded by muse ${String(input.cliVersion)} (declared from its records); the leg ran with --contributor-mode off and MUSE_CONTRIBUTOR_MODE=0`,
+  );
   let args: string[] = [];
   try {
     const p: unknown = JSON.parse(readFileSync(input.processFile, 'utf8'));
@@ -174,13 +199,23 @@ export function ratifyMuseLeg(input: MuseRatifyInput): Ratification {
   } catch {
     args = [];
   }
-  const flagProblems = [
+  const flagProblems: string[] = [
     ...(args[args.indexOf('--contributor-mode') + 1] === 'off' && args.includes('--contributor-mode') ? [] : ['--contributor-mode off missing']),
     ...(args.includes('--permission-profile') && args[args.indexOf('--permission-profile') + 1] === ':read-only' ? [] : ['--permission-profile :read-only missing']),
     ...['--disable-write', '--disable-shell', '--disable-web-tools'].filter((f) => !args.includes(f)).map((f) => `${f} missing`),
     ...['--trust-workspace', '--yolo', '--disable-sandbox', '--disable-approval', '--no-session-log'].filter((f) => args.includes(f)).map((f) => `${f} passed`),
   ];
-  check('flags', flagProblems.length === 0, flagProblems.length === 0 ? 'the leg ran with contributor mode off, the read-only profile and write, shell and web tools disabled' : flagProblems.join('; '));
+  const profiles = valuesOf(everything, /^permission_?[Pp]rofile$/);
+  const profileRecorded = decl?.records.profile ?? true;
+  if (profiles.some((p) => p !== ':read-only')) flagProblems.push(`the records name a permission profile other than :read-only: ${JSON.stringify(profiles)}`);
+  if (profileRecorded && profiles.length === 0) flagProblems.push('no permission profile in the records, which this version is not declared to omit');
+  check(
+    'flags',
+    flagProblems.length === 0,
+    flagProblems.length === 0
+      ? `the engine's launch record has contributor mode off, the read-only profile and write, shell and web tools disabled${profiles.length > 0 ? '; the records name :read-only' : '; the profile is not recorded by this version (declared)'}`
+      : flagProblems.join('; '),
+  );
 
   const usage = rows.filter((r) => str(r['payload_type']) === 'run.usage').flatMap((r) => (Array.isArray(payloadOf(r)['models']) ? (payloadOf(r)['models'] as unknown[]) : [])).filter(isObject);
   const models = usage.map((u) => str(u['model']));
@@ -188,13 +223,72 @@ export function ratifyMuseLeg(input: MuseRatifyInput): Ratification {
   check('model', models.length > 0 && badModels.length === 0, models.length === 0 ? 'no run.usage model entry' : badModels.length === 0 ? `model ${input.model} on ${models.length} usage entr(ies)` : `model not the pin ${input.model}: ${badModels.join(', ')}`);
   const efforts = valuesOf(everything, /^reasoning_?[Ee]ffort$/).filter((v) => v !== null);
   const badEfforts = efforts.filter((e) => e !== input.effort);
-  check('effort', badEfforts.length === 0, efforts.length === 0 ? 'the records name no effort (not recorded by this version)' : badEfforts.length === 0 ? `effort ${input.effort} (${efforts.length})` : `effort not the pin ${input.effort}: ${JSON.stringify(badEfforts)}`);
-  const intents = everything
-    .map((r) => payloadOf(r))
-    .map((p) => (isObject(p['event']) && str(p['event']['kind']) === 'side_effect_intent' ? p['event'] : null))
-    .filter((e): e is Json => e !== null);
-  const effects = [...new Set(intents.map((e) => str(e['operation']) ?? '?').filter((op) => !op.startsWith('model.')))];
-  check('side-effects', effects.length === 0, effects.length === 0 ? `${intents.length} side-effect intent(s), all model calls` : `side effects beyond model calls: ${effects.join(', ')}`);
+  const effortRecorded = decl?.records.effort ?? true;
+  check(
+    'effort',
+    badEfforts.length === 0 && (efforts.length > 0 || !effortRecorded),
+    badEfforts.length > 0
+      ? `effort not the pin ${input.effort}: ${JSON.stringify(badEfforts)}`
+      : efforts.length > 0
+        ? `effort ${input.effort} (${efforts.length})`
+        : effortRecorded
+          ? 'no effort in the records, which this version is not declared to omit'
+          : `not recorded by muse ${String(input.cliVersion)} (declared from its records)`,
+  );
+
+  // Every task the records show (round 1 row 4): its kind from `task.lifecycle.proposed` and every side-effect
+  // operation. A model step must name the pinned model; a tool must be a declared read with every path inside the
+  // root; MCP fails; any other shape fails; and a run with model calls but no task records is not evidence.
+  const tasks = new Map<string, { kinds: Set<string>; payloads: Json[] }>();
+  for (const r of everything) {
+    if (!/^task\.lifecycle\./.test(str(r['payload_type']) ?? '')) continue;
+    const p = payloadOf(r);
+    const event = isObject(p['event']) ? p['event'] : {};
+    const id = str(p['task_id']) ?? str(event['task_id']) ?? '?';
+    const t = tasks.get(id) ?? { kinds: new Set<string>(), payloads: [] };
+    for (const k of [str(event['task_kind']), str(event['operation'])]) if (k !== null) t.kinds.add(k);
+    t.payloads.push(event);
+    tasks.set(id, t);
+  }
+  const shapeless = [...tasks].filter(([, t]) => t.kinds.size === 0).map(([id]) => id);
+  const mcp = [...new Set([...tasks.values()].flatMap((t) => [...t.kinds]).filter((k) => /mcp/i.test(k)))];
+  const otherModels: string[] = [];
+  const nonReads: string[] = [];
+  const reads: Array<{ id: string; name: string; payloads: Json[] }> = [];
+  for (const [id, t] of tasks) {
+    for (const k of t.kinds) {
+      if (/mcp/i.test(k)) continue;
+      const model = modelOfOperation(k);
+      if (k.startsWith('model.')) {
+        if (model !== input.model) otherModels.push(k);
+        continue;
+      }
+      const tool = /^tool[.:]([A-Za-z0-9_-]+)$/.exec(k)?.[1];
+      if (tool !== undefined && (MUSE_READ_TOOLS as readonly string[]).includes(tool)) reads.push({ id, name: tool, payloads: t.payloads });
+      else nonReads.push(k);
+    }
+  }
+  check('mcp', mcp.length === 0, mcp.length === 0 ? 'no MCP task' : `MCP use: ${mcp.join(', ')}`);
+  check('model-steps', otherModels.length === 0, otherModels.length > 0 ? `model steps not on the pin ${input.model}: ${[...new Set(otherModels)].join(', ')}` : `${tasks.size} task(s), every model step on ${input.model}`);
+  check('tools-used', nonReads.length === 0, nonReads.length === 0 ? `${reads.length} read task(s), no other tool` : `tasks beyond the read set: ${[...new Set(nonReads)].join(', ')}`);
+  const outside: string[] = [];
+  const unjudged: string[] = [];
+  for (const r of reads) {
+    const found = collectPaths(r.payloads.map((p) => ({ rawInput: p })));
+    if (found.paths.length === 0 || found.problems.length > 0) unjudged.push(`${r.name} ${r.id}`);
+    for (const path of found.paths) {
+      const j = judgePath(path, input.root, aliases);
+      if (!j.inside) outside.push(`${r.name} ${path} (${j.why})`);
+    }
+  }
+  check('read-paths', outside.length === 0, outside.length === 0 ? 'every read task named paths inside the root' : outside.join('; '));
+  const calls = rows.filter((r) => str(r['payload_type']) === 'run.usage').reduce((n, r) => n + (num(payloadOf(r)['calls']) ?? 0), 0);
+  const gaps = [
+    ...(unjudged.length > 0 ? [`read tasks with no path the ratifier can judge: ${unjudged.join(', ')}`] : []),
+    ...(shapeless.length > 0 ? [`tasks with no kind or operation: ${shapeless.join(', ')}`] : []),
+    ...(calls > 0 && tasks.size === 0 ? [`${calls} model call(s) but no task record: no evidence of what the run did`] : []),
+  ];
+  check('activity', gaps.length === 0, gaps.length === 0 ? `${tasks.size} task(s) recorded for ${calls} model call(s), every one classified` : gaps.join('; '));
   const term = terminal ? payloadOf(terminal) : null;
   check('terminal', term !== null && str(term['terminal']) === 'completed' && str(terminal?.['payload_type']) === 'run.terminal.completed', term === null ? 'no terminal record' : `${String(terminal?.['payload_type'])} ${String(term['terminal'])}${term['reason'] ? ` (${JSON.stringify(term['reason'])})` : ''}`);
   const answer = museAnswer(rows);
@@ -222,7 +316,7 @@ export function ratifyMuseLeg(input: MuseRatifyInput): Ratification {
     cwdObserved: roots[0] ?? null,
     cwdOk: checks.find((c) => c.name === 'workspace')?.ok ?? false,
     toolsOffered: [],
-    toolsUsed: [],
+    toolsUsed: [...new Set(reads.map((r) => r.name))].sort(),
     tokensIn: sum('input_tokens'),
     tokensOut: sum('output_tokens'),
     costUsd: null,
@@ -232,6 +326,6 @@ export function ratifyMuseLeg(input: MuseRatifyInput): Ratification {
     durationMs: null,
     nonceSeen: nonce.ok,
     rootMutated: residue === undefined ? null : !residue.unchanged,
-    detail: { intents: intents.map((e) => ({ operation: e['operation'], policy: e['policy_decision'] })), signature, exportFile: input.exportFile },
+    detail: { tasks: [...tasks].map(([id, t]) => ({ id, kinds: [...t.kinds] })), signature, exportFile: input.exportFile },
   };
 }

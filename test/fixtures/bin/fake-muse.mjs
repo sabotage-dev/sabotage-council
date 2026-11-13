@@ -20,7 +20,7 @@ if (args[0] === '--version') {
   process.stdout.write('window: 3% used\n');
 } else if (args[0] === 'exec') {
   const sid = arg('--session-id');
-  writeFileSync(join(config.out, 'muse-argv.json'), JSON.stringify({ args, cwd: process.cwd(), env: Object.keys(process.env).sort(), xdgConfig: process.env.XDG_CONFIG_HOME, auth: process.env.MUSE_AUTH_PATH }, null, 2));
+  writeFileSync(join(config.out, 'muse-argv.json'), JSON.stringify({ args, cwd: process.cwd(), env: Object.keys(process.env).sort(), xdgConfig: process.env.XDG_CONFIG_HOME, auth: process.env.MUSE_AUTH_PATH, home: process.env.HOME }, null, 2));
   const text = subst(readFileSync(join(config.fixture, 'stream.jsonl'), 'utf8'), sid);
   const dir = join(process.env.XDG_DATA_HOME ?? '', 'muse', 'sessions', '2026', '11', '12', sid);
   mkdirSync(dir, { recursive: true });

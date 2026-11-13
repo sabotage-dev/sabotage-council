@@ -6,6 +6,7 @@ import {
   MUSE_SAFETY_FLAGS,
   classifyMuseText,
   createMuseAdapter,
+  defaultMuseBin,
   museArgs,
   museEnv,
   museLegFiles,
@@ -72,10 +73,42 @@ function editJson(path: string, change: (v: Record<string, unknown>) => void): v
   writeFileSync(path, JSON.stringify(v));
 }
 
-/** The recorded echo run as a logged-in run would record it: the pinned model in run.usage, the NONCE answer first. */
+/** Applies one edit to every record source the ratifier reads: the stream, the session log and the export's events. */
+function editAll(dir: string, c: CaseFile, match: (r: Record<string, unknown>) => boolean, change: (r: Record<string, unknown>) => void): void {
+  edit(join(dir, 'stream.jsonl'), match, change);
+  edit(logOf(dir, c.sessionId), match, change);
+  editJson(join(dir, 'export.json'), (v) => {
+    for (const e of v['events'] as Array<Record<string, unknown>>) if (match(e['envelope'] as Record<string, unknown>)) change(e['envelope'] as Record<string, unknown>);
+  });
+}
+
+const event = (r: Record<string, unknown>): Record<string, unknown> => payload(r)['event'] as Record<string, unknown>;
+
+/**
+ * The recorded echo run as a logged-in run would record it: the pinned model in run.usage and in the model step's
+ * kind and operation, the NONCE answer first.
+ */
 function loggedIn(dir: string, c: CaseFile): void {
   edit(join(dir, 'stream.jsonl'), typeIs('run.usage'), (r) => ((payload(r)['models'] as Array<Record<string, unknown>>)[0] = { model: c.model, input_tokens: 1200, cached_tokens: 0, output_tokens: 300, reasoning_tokens: 0, calls: 1 }));
   edit(join(dir, 'stream.jsonl'), typeIs('run.terminal.completed'), (r) => (payload(r)['text'] = `NONCE: ${c.nonce}\nNo findings.\nVERDICT: SHIP\n`));
+  editAll(dir, c, typeIs('task.lifecycle.proposed'), (r) => (event(r)['task_kind'] = `model.${c.model}.response`));
+  editAll(dir, c, typeIs('task.lifecycle.side_effect_intent'), (r) => (event(r)['operation'] = `model.${c.model}.response`));
+}
+
+/** Adds one task (proposed, intent, completed) with the given kind and input to every record source. */
+function addTask(dir: string, c: CaseFile, kind: string, input: Record<string, unknown>): void {
+  const base = { schema_version: 1, stream: { kind: 'session', id: c.sessionId }, record_type: 'event', durability: 'durable', payload_schema_version: 1 };
+  const rows = ['proposed', 'side_effect_intent', 'completed'].map((k, i) => ({
+    ...base,
+    id: `t-${kind}-${i}`,
+    sequence: 900 + i,
+    recorded_at: 1780531400000900 + i,
+    payload_type: `task.lifecycle.${k}`,
+    payload: { kind: 'task_lifecycle', task_id: 'task-x', event: { kind: k, task_id: 'task-x', ...(k === 'proposed' ? { task_kind: kind } : {}), ...(k === 'side_effect_intent' ? { operation: kind, input } : {}) } },
+  }));
+  writeJsonl(join(dir, 'stream.jsonl'), [...readJsonl(join(dir, 'stream.jsonl')), ...rows]);
+  writeJsonl(logOf(dir, c.sessionId), [...readJsonl(logOf(dir, c.sessionId)), ...rows]);
+  editJson(join(dir, 'export.json'), (v) => (v['events'] as unknown[]).push(...rows.map((envelope) => ({ kind: 'record', envelope }))));
 }
 
 describe('muse replay: the recorded offline runs (echo provider) and their logged-in shape', () => {
@@ -108,7 +141,26 @@ describe('muse ratification: each check fails on its own (mutation coverage)', (
     ['a leg run with --trust-workspace', (dir) => editJson(join(dir, 'process.json'), (v) => (v['args'] = [...(v['args'] as string[]), '--trust-workspace'])), ['flags']],
     ['another model in run.usage', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('run.usage'), (r) => (((payload(r)['models'] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)['model'] = 'muse-ember-1.0')), ['model']],
     ['another effort in a record', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('run.lifecycle.started'), (r) => (payload(r)['reasoning_effort'] = 'low')), ['effort']],
-    ['a shell side effect', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('task.lifecycle.side_effect_intent'), (r) => (((payload(r)['event'] as Record<string, unknown>)['operation'] = 'tool.bash'))), ['side-effects']],
+    ['a shell side effect', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('task.lifecycle.side_effect_intent'), (r) => (((payload(r)['event'] as Record<string, unknown>)['operation'] = 'tool.bash'))), ['tools-used']],
+    ['a read task outside the root', (dir, c) => addTask(dir, c, 'tool.read_file', { path: '/etc/hosts' }), ['read-paths']],
+    ['a read task inside the root', (dir, c) => addTask(dir, c, 'tool.read_file', { path: 'planted/calc/rangesum.py' }), []],
+    ['a read task with no path', (dir, c) => addTask(dir, c, 'tool.grep', { pattern: 'x' }), ['activity']],
+    ['an MCP task', (dir, c) => addTask(dir, c, 'mcp.github.search', { query: 'x' }), ['mcp']],
+    ['an unrecognised task shape', (dir, c) => addTask(dir, c, 'agent.spawn', {}), ['tools-used']],
+    ['a model step on another model', (dir, c) => editAll(dir, c, typeIs('task.lifecycle.side_effect_intent'), (r) => (event(r)['operation'] = 'model.muse-ember-1.0.response')), ['model-steps']],
+    ['a task with no kind or operation', (dir, c) => {
+      editAll(dir, c, typeIs('task.lifecycle.proposed'), (r) => delete event(r)['task_kind']);
+      editAll(dir, c, typeIs('task.lifecycle.side_effect_intent'), (r) => delete event(r)['operation']);
+    }, ['activity']],
+    ['model calls with no task record', (dir, c) => {
+      const keep = (r: Record<string, unknown>) => !String(r['payload_type']).startsWith('task.lifecycle.');
+      writeJsonl(join(dir, 'stream.jsonl'), readJsonl(join(dir, 'stream.jsonl')).filter(keep));
+      writeJsonl(logOf(dir, c.sessionId), readJsonl(logOf(dir, c.sessionId)).filter(keep));
+      editJson(join(dir, 'export.json'), (v) => (v['events'] = (v['events'] as Array<Record<string, unknown>>).filter((e) => keep(e['envelope'] as Record<string, unknown>))));
+    }, ['activity']],
+    ['an export with no events (incomplete)', (dir) => editJson(join(dir, 'export.json'), (v) => delete v['events']), ['export']],
+    ['contributor mode "enabled" in the export only', (dir) => editJson(join(dir, 'export.json'), (v) => (((v['events'] as Array<Record<string, unknown>>)[0] as Record<string, Record<string, unknown>>)['envelope'] as Record<string, unknown>)['contributor_mode'] = 'enabled'), ['contributor']],
+    ['a permission profile other than read-only in a record', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('run.lifecycle.started'), (r) => (payload(r)['permission_profile'] = ':auto-review')), ['flags']],
     ['a terminal record that did not complete', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('run.terminal.completed'), (r) => (payload(r)['terminal'] = 'cancelled')), ['terminal']],
     ['an empty answer', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('run.terminal.completed'), (r) => (payload(r)['text'] = '')), ['answer', 'nonce']],
     ['the nonce on the second line', (dir, c) => edit(join(dir, 'stream.jsonl'), typeIs('run.terminal.completed'), (r) => (payload(r)['text'] = `Review.\nNONCE: ${c.nonce}`)), ['nonce']],
@@ -120,6 +172,14 @@ describe('muse ratification: each check fails on its own (mutation coverage)', (
       change(dir, c);
     }, mutated).input);
     expect(failedNames(r)).toEqual([...expected].sort());
+  });
+
+  it('requires effort, contributor mode and the profile in the records of a version not declared to omit them (claude F3)', () => {
+    const { input } = legFor('echo-review', (dir, c) => {
+      loggedIn(dir, c);
+      editJson(join(dir, 'export.json'), (v) => ((v['session_build'] as Record<string, unknown>)['semver'] = '1.4.16'));
+    });
+    expect(failedNames(ratifyMuseLeg({ ...input, cliVersion: '1.4.16' }))).toEqual(['contributor', 'effort', 'flags']);
   });
 
   it('fails closed with no export, as setup', () => {
@@ -147,9 +207,23 @@ describe('muse launch', () => {
   it('isolates XDG config and data per leg, reads the login through MUSE_AUTH_PATH, and pins contributor mode off', () => {
     const files = museLegFiles('/leg');
     const env = museEnv({ HOME: '/u', PATH: '/bin', SECRET: 'no' }, files);
-    expect(env).toMatchObject({ XDG_CONFIG_HOME: '/leg/muse/config', XDG_DATA_HOME: '/leg/muse/data', MUSE_AUTH_PATH: '/u/.config/muse/auth.json', MUSE_CONTRIBUTOR_MODE: '0', MUSE_NO_AUTO_UPDATE: '1', MUSE_LOGIN: '0' });
+    expect(env).toMatchObject({ HOME: '/leg/muse/home', XDG_CONFIG_HOME: '/leg/muse/config', XDG_DATA_HOME: '/leg/muse/data', MUSE_AUTH_PATH: '/u/.config/muse/auth.json', MUSE_CONTRIBUTOR_MODE: '0', MUSE_NO_AUTO_UPDATE: '1', MUSE_LOGIN: '0' });
     expect(env['SECRET']).toBeUndefined();
     expect(museEnv({ HOME: '/u', XDG_CONFIG_HOME: '/x' }, files)['MUSE_AUTH_PATH']).toBe('/x/muse/auth.json');
+  });
+});
+
+describe('muse binary', () => {
+  it('calls the native binary the launcher records, by path, else the launcher', () => {
+    const home = scratch('sc-muse-bin-');
+    const bin = join(home, '.local', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'muse'), '#!/bin/sh\n');
+    expect(defaultMuseBin({ HOME: home })).toBe(join(bin, 'muse'));
+    writeFileSync(join(bin, '.muse-version'), '1.4.15-R8339.1\n');
+    writeFileSync(join(bin, 'muse-bin-1.4.15-R8339.1'), '');
+    expect(defaultMuseBin({ HOME: home })).toBe(join(bin, 'muse-bin-1.4.15-R8339.1'));
+    expect(defaultMuseBin({ HOME: scratch('sc-muse-none-') })).toBe('muse');
   });
 });
 
@@ -234,7 +308,10 @@ describe('muse end to end, through a fake CLI', () => {
     const briefFile = join(legDir, 'BRIEF.md');
     writeFileSync(briefFile, 'brief');
     const ctx: RoundCtx = { root: fixture.root, legDir, nonce: c.nonce, briefFile, timeoutMs: 30_000, env: { HOME: home, PATH: process.env['PATH'] ?? '' }, rootUnchanged: () => ({ unchanged: true, changes: [] }) };
-    const adapter = createMuseAdapter({ bin: FAKE_MUSE });
+    // The leg's HOME is its own, so the fake reads its case from FAKE_MUSE, set by a wrapper (the env is scrubbed).
+    const wrapper = join(out, 'muse');
+    writeFileSync(wrapper, `#!/bin/sh\nFAKE_MUSE=${JSON.stringify(caseFile)} exec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_MUSE)} "$@"\n`, { mode: 0o755 });
+    const adapter = createMuseAdapter({ bin: wrapper });
     const o: Occupant = { backend: 'muse', model: 'muse-spark-1.3', effort: 'high' };
     const pre = await adapter.preflight(o, ctx);
     expect(pre.ok, pre.reason ?? '').toBe(true);
@@ -244,8 +321,9 @@ describe('muse end to end, through a fake CLI', () => {
     const r = await adapter.ratify(h, ctx);
     expect(failedNames(r)).toEqual([]);
     expect(existsSync(join(legDir, 'export.json'))).toBe(true);
-    const argv = JSON.parse(readFileSync(join(out, 'muse-argv.json'), 'utf8')) as { args: string[]; xdgConfig: string; auth: string };
+    const argv = JSON.parse(readFileSync(join(out, 'muse-argv.json'), 'utf8')) as { args: string[]; xdgConfig: string; auth: string; home: string };
     expect(argv.xdgConfig).toBe(join(legDir, 'muse', 'config'));
+    expect(argv.home).toBe(join(legDir, 'muse', 'home'));
     expect(argv.auth).toBe(join(home, '.config', 'muse', 'auth.json'));
     expect(argv.args).toContain('--no-foreign-personal-context');
   });

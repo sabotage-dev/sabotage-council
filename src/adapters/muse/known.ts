@@ -19,10 +19,17 @@ import type { EnforcementLabel } from '../types.js';
 
 export interface MuseVersionDecl {
   enforcement: EnforcementLabel;
+  /**
+   * Which leg settings this version's own records carry (claude F3). A field a version records must be present and
+   * right; "not recorded" is accepted only for a version declared here, from fixtures that show the field absent.
+   * The 1.4.15 records (the probe's echo runs: stream, session log, export) carry no reasoning effort, no
+   * contributor-mode field and no permission profile.
+   */
+  records: { effort: boolean; contributor: boolean; profile: boolean };
 }
 
 export const MUSE_DECLARED: Readonly<Record<string, MuseVersionDecl>> = {
-  '1.4.15': { enforcement: 'weak' },
+  '1.4.15': { enforcement: 'weak', records: { effort: false, contributor: false, profile: false } },
 };
 
 export const MUSE_TESTED_VERSIONS = Object.keys(MUSE_DECLARED);
@@ -61,6 +68,22 @@ export const MUSE_SAFETY_FLAGS = [
   '--contributor-mode',
   'off',
 ] as const;
+
+/**
+ * The read tools a muse task may run, by name, in a `tool.<name>` (or `tool:<name>`) task kind or side-effect
+ * operation. Unmeasured (no logged-in run): any other tool, and any task shape not `model.<model>.<step>` or
+ * `tool.<name>`, fails the leg.
+ */
+export const MUSE_READ_TOOLS = ['read_file', 'list_dir', 'grep', 'glob'] as const;
+
+/**
+ * A model step's task kind and operation (`model.<model>.response`; the echo runs record `model.unknown.response`,
+ * the model slot holding `unknown` where no model ran). A model step must name the pinned model.
+ */
+export function modelOfOperation(op: string): string | null {
+  const m = /^model\.(.+)\.[a-z_]+$/.exec(op);
+  return m?.[1] ?? null;
+}
 
 /** Flags a leg never passes: trust loads project rules and hooks; the rest lift approval or the sandbox. */
 export const MUSE_FORBIDDEN_FLAGS = ['--trust-workspace', '--yolo', '--disable-sandbox', '--disable-approval', '--no-session-log', '--allow-workspace-switch'] as const;
