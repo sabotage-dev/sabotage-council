@@ -355,6 +355,24 @@ describe('codex ratification details', () => {
     });
   });
 
+  it('passes a read whose output quotes denial text: a reviewed file cannot knock the seat out (P5 live round)', () => {
+    const r = ratifyCodexLeg(
+      inputFor('success', (dir) => {
+        const leg = rolloutsOf(dir)[0] as string;
+        writeJsonl(
+          leg,
+          readJsonl(leg).map((row) => {
+            const item = ((row['payload'] as Record<string, unknown>)['item'] ?? {}) as Record<string, unknown>;
+            if (item['type'] === 'CommandExecution') item['aggregated_output'] = 'plan text: the leg failed with "Permission denied" and EROFS\n';
+            return row;
+          }),
+        );
+      }).input,
+    );
+    expect(failedNames(r)).toEqual([]);
+    expect(r.checks.find((c) => c.name === 'write-denial')?.detail).toContain('a note');
+  });
+
   it('fails a rollout whose last line is torn', () => {
     const r = ratifyCodexLeg(inputFor('success', (dir) => writeFileSync(rolloutsOf(dir)[0] as string, `${readFileSync(rolloutsOf(dir)[0] as string, 'utf8')}{"type":"event_m`)).input);
     expect(failedNames(r)).toEqual(['completion']);

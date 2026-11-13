@@ -421,8 +421,12 @@ function ratifyThread(t: ThreadInput, input: CodexRatifyInput, decl: CodexVersio
     })
     .flatMap((l) => outputTexts(l.payload));
   for (const item of executions) outputs.push(str(item['aggregated_output']) ?? '');
+  // Denial text is a note, never a failure (P5 live round). Output text is what the leg read, and a reviewed file
+  // that quotes "permission denied" would otherwise drop the seat: any PR could knock codex out of its own review.
+  // Writes are already impossible to pass: every command must be a declared read with no redirect (`commands`),
+  // write-class nested tools are refused (`calls`, `records`), and the root hash is the boundary (`root-unchanged`).
   const denials = outputs.filter((o) => WRITE_DENIAL.test(o));
-  check(checks, 'write-denial', denials.length === 0, denials.length === 0 ? 'no command was denied a write' : `write denied: ${denials[0]?.slice(0, 160) ?? ''}`);
+  check(checks, 'write-denial', true, denials.length === 0 ? 'no denial text in any command output' : `denial text in a command output (a note: the commands, records and root-unchanged checks decide): ${denials[0]?.slice(0, 160) ?? ''}`);
 
   // Calls on other agents act only on this leg's own agents (N30).
   const acts = activities(r);
