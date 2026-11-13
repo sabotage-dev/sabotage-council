@@ -280,7 +280,7 @@ describe('pr rounds: preparation rules', () => {
     });
     git(offMain.src.repo, ['branch', 'release', offMain.src.shas['BASE']!]);
     expect(preparePrRound(offMain.h.store, offMain.options()).kind).toBe('council');
-  });
+  }, 60_000);
 });
 
 /** Prepares, runs and (optionally) adjudicates a pr round through the fake legs. */
@@ -362,11 +362,11 @@ describe('pr rounds: holds, asks and the post step', () => {
       Object.assign(json(r, `GET ${API_PULL}`), { state: 'open', merged: false, user: { login: 'someone' } });
       r['GET repos/sabotage-dev/sabotage-council/collaborators/someone/permission'] = { json: { permission: 'write' } };
       r['GET search/issues'] = { json: { items: [{ number: 9 }] } };
-      r['GET repos/sabotage-dev/sabotage-council/pulls/9/reviews'] = { json: [{ id: 9101, user: { login: 'repo-owner' }, state: 'APPROVED', commit_id: src.shas['C6'], submitted_at: 'x', body: 'ok' }] };
+      // The login's reviews on PR 9: the approval, in the state the re-check reads.
+      r['GET repos/sabotage-dev/sabotage-council/pulls/9/reviews'] = { json: [{ id: 9101, user: { login: 'repo-owner' }, state, commit_id: src.shas['C6'], submitted_at: 'x', body: 'ok' }] };
       const tree = git(src.repo, ['rev-parse', `${src.shas['C7']!}^{tree}`]);
       r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C6']!}`] = { json: { tree: { sha: tree } } };
       r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C7']!}`] = { json: { tree: { sha: tree } } };
-      r['GET repos/sabotage-dev/sabotage-council/pulls/9/reviews/9101'] = { json: { id: 9101, user: { login: 'repo-owner' }, state, commit_id: src.shas['C6'], submitted_at: 'x', body: 'ok' } };
     };
     const w = await world((r, src) => identityRoutes(r, src, 'APPROVED'));
     const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
@@ -394,6 +394,45 @@ describe('pr rounds: holds, asks and the post step', () => {
     expect([redPost.event, redPost.row]).toEqual(['COMMENT', 4]);
     const off = await world((rr, src) => identityRoutes(rr, src, 'APPROVED'), await config('[github]\nlogin = "repo-owner"\n[auto]\nidentity_approval = false\n'));
     expect(preparePrRound(off.h.store, off.options({ dryRun: false })).kind).toBe('council');
+
+    // Row 1: a PR retargeted off the default branch after preparation takes row 4, never APPROVE.
+    identityRoutes(routes, w.src, 'APPROVED');
+    Object.assign(json(routes, `GET ${API_PULL}`)['base'] as Json, { ref: 'release' });
+    w.gh.setRoutes(routes);
+    const retargeted = post(w, r.roundId, 'dry-run');
+    expect([retargeted.event, retargeted.row]).toEqual(['COMMENT', 4]);
+    expect(retargeted.body).toContain('the live re-check failed: the base is now release, not the default branch main');
+
+    // Row 1: an approval the login later replaced by a change request on PR 9 no longer stands, so it holds the
+    // identity post, and a new preparation does not find it either.
+    const replaced = pr2Routes(w.src.shas);
+    identityRoutes(replaced, w.src, 'APPROVED');
+    jsonList(replaced, 'GET repos/sabotage-dev/sabotage-council/pulls/9/reviews').push({ id: 9102, user: { login: 'repo-owner' }, state: 'CHANGES_REQUESTED', commit_id: w.src.shas['C6'], submitted_at: 'y', body: 'wait' });
+    w.gh.setRoutes(replaced);
+    const superseded = post(w, r.roundId, 'dry-run');
+    expect([superseded.event, superseded.row]).toEqual(['COMMENT', 4]);
+    expect(superseded.body).toContain('the standing review by repo-owner on #9 is now review 9102 (CHANGES_REQUESTED), not approval 9101');
+    expect(preparePrRound(w.h.store, w.options({ dryRun: false })).kind).toBe('council');
+  }, 60_000);
+
+  it('row 10: refuses to prepare or post when gh is logged in as another account than github.login', async () => {
+    const w = await world((r) => {
+      r['GET user'] = { json: { login: 'someone-else' } };
+    });
+    expect(() => preparePrRound(w.h.store, w.options())).toThrow(/gh is logged in as someone-else, but github.login is repo-owner/);
+    expect(w.h.store.db.prepare('SELECT count(*) AS n FROM rounds').get()).toMatchObject({ n: 0 });
+    // The login is compared case-insensitively, as GitHub compares logins.
+    const routes = pr2Routes(w.src.shas);
+    routes['GET user'] = { json: { login: 'Repo-Owner' } };
+    w.gh.setRoutes(routes);
+    const { id } = await councilRound(w, {}, { outcome: 'refuted', verdict: 'SHIP', approve: false });
+    routes['GET user'] = { json: { login: 'someone-else' } };
+    w.gh.setRoutes(routes);
+    const p = post(w, id, 'dry-run');
+    expect(p.outcome).toBe('refused');
+    expect(p.problems.join()).toContain('gh is logged in as someone-else, but github.login is repo-owner');
+    expect(w.gh.requests().filter((q) => q.key !== 'GET user' && q.method === 'GET' && q.path.startsWith('repos/'))).not.toEqual([]);
+    expect(w.gh.requests().filter((q) => q.method !== 'GET' && q.key !== 'graphql')).toEqual([]);
   }, 60_000);
 });
 

@@ -7,7 +7,7 @@ import { ForgeError, type GitHubApi } from '../forge/github.js';
 import { findIdentity, type IdentityMatch } from '../forge/identity.js';
 import { identityMarker, roundMarker } from '../forge/markers.js';
 import { checkPrFiles, ensureMirror, fetchExact, fetchPr, githubUrl, mirrorPath, treeOf, type MirrorSource } from '../forge/mirror.js';
-import { authorTrusted, prLabel, readPr, repoKeyOf, type PrRef, type PrSnapshot } from '../forge/pr.js';
+import { authorTrusted, loginMismatch, prLabel, readPr, repoKeyOf, type PrRef, type PrSnapshot } from '../forge/pr.js';
 import type { PrData } from '../root/data-files.js';
 import { commitExists, type ShadowRepo } from '../root/git.js';
 import type { Store } from '../store/open.js';
@@ -166,6 +166,9 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
   const cfg = markerConfig(o.config);
   const auto = autoOf(o.config);
   const warnings: string[] = [];
+  // Row 10: the round is read and later posted as github.login, so gh must be logged in as that account.
+  const wrongLogin = loginMismatch(o.api, cfg.login);
+  if (wrongLogin !== null) throw new PrRoundError(wrongLogin);
   const pr = readPr(o.api, o.ref);
   if (pr.state === 'closed' && !o.dryRun) throw new PrRoundError(`${prLabel(o.ref)} is ${pr.merged ? 'merged' : 'closed'}: a closed pull request takes only --dry-run`);
   const trusted = authorTrusted(pr);

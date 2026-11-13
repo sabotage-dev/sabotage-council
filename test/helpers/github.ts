@@ -94,6 +94,7 @@ export type Routes = Record<string, Route>;
 export function pr2Routes(shas: Shas): Routes {
   const pulls = `${API}/pulls/${PR}`;
   return {
+    'GET user': { json: { login: 'repo-owner' } },
     [`GET ${pulls}`]: { json: recorded('pull.json', shas) },
     [`GET ${pulls}/reviews`]: { json: recorded('reviews.json', shas) },
     [`GET ${pulls}/comments`]: { json: recorded('review-comments.json', shas) },

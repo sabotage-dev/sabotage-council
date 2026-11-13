@@ -102,6 +102,7 @@ function openWithNewHead(): { routes: Routes; src: SourceRepo; d: string } {
   const pr = ((json(routes, 'graphql')['data'] as Json)['repository'] as Json)['pullRequest'] as Json;
   for (const n of (pr['commits'] as Json)['nodes'] as Json[]) (n['commit'] as Json)['oid'] = d;
   routes[`POST ${PULL}/reviews`] = { echoReview: { id: 990001, login: 'reviewer-x' } };
+  routes['GET user'] = { json: { login: 'reviewer-x' } };
   return { routes, src, d };
 }
 const REVIEWER = '[github]\nlogin = "reviewer-x"\ncouncil_logins = ["repo-owner"]\n';

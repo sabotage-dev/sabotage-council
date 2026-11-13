@@ -8,7 +8,7 @@ import { decideEvent, type EventDecision, type EventFacts, type ReviewEvent } fr
 import { ForgeError, restPath, type GitHubApi } from '../forge/github.js';
 import { apiTreeOf, recheckIdentity, type IdentityMatch } from '../forge/identity.js';
 import { firstLine, namesPr, parseMarker } from '../forge/markers.js';
-import { normalizeReview, readPr, repoKeyOf, sameLogin, type PrRef, type PrSnapshot, type Review } from '../forge/pr.js';
+import { loginMismatch, normalizeReview, readPr, repoKeyOf, sameLogin, type PrRef, type PrSnapshot, type Review } from '../forge/pr.js';
 import { renderBody, validateBody, type BodyLeg } from '../forge/render.js';
 import type { Store } from '../store/open.js';
 import { preparedDetail } from './facts.js';
@@ -129,6 +129,9 @@ export function postRound(store: Store, o: PostOptions): PostResult {
   const ref = refOf(store, round);
   const cfg = markerConfig(o.config);
   const auto = autoOf(o.config);
+  // Row 10: gh posts as whichever account it is logged in as; that must be github.login.
+  const wrongLogin = loginMismatch(o.api, cfg.login);
+  if (wrongLogin !== null) return refuse(wrongLogin);
   const pr: PrSnapshot = readPr(o.api, ref);
   const head = round.head_sha;
   // Guard: head moved (plan 3.7). The round is superseded and nothing posts.
@@ -185,7 +188,7 @@ export function postRound(store: Store, o: PostOptions): PostResult {
     if (!prep?.match) return refuse(`round ${round.id} has no identity record`);
     let recheck: string | null;
     try {
-      const r = recheckIdentity(o.api, ref, prep.match, apiTreeOf(o.api, ref, head));
+      const r = recheckIdentity(o.api, pr, cfg.login, prep.match, apiTreeOf(o.api, ref, head));
       recheck = r.ok ? null : `the live re-check failed: ${r.why}`;
     } catch (error) {
       recheck = `the live re-check could not run: ${error instanceof Error ? error.message : String(error)}`;

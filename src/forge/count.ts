@@ -127,8 +127,8 @@ export function countRounds(input: { ref: PrRef; head: string; reviews: readonly
 /** States that set a reviewer's standing on GitHub; COMMENTED does not change it. */
 const STANDING = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED']);
 
-/** The newest review of a set that sets a standing (by time, then id). */
-function latestStanding(reviews: readonly Review[]): Review | null {
+/** The newest review of a set that sets a standing (by time, then id): a reviewer's standing review on GitHub. */
+export function latestStanding(reviews: readonly Review[]): Review | null {
   const standing = reviews.filter((r) => STANDING.has(r.state)).sort((a, b) => byTime({ at: a.submittedAt, reviewId: a.id }, { at: b.submittedAt, reviewId: b.id }));
   return standing.at(-1) ?? null;
 }

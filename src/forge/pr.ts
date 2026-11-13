@@ -240,3 +240,22 @@ export function authorTrusted(pr: Pick<PrSnapshot, 'authorPermission'>): boolean
 }
 
 export const sameLogin = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+
+/** The login `gh` is authenticated as (`GET user`). */
+export function readLogin(api: GitHubApi): string {
+  const login = obj(api.get('user'), 'the authenticated user')['login'];
+  if (typeof login !== 'string' || login === '') throw new ForgeError('GET user returned no login');
+  return login;
+}
+
+/**
+ * Why `gh` cannot act for `github.login`, or null (P6 round 1 row 10). The round's author checks, its change
+ * request reads and its post are all made as `github.login`; `gh` posts as whichever account it is logged in as, so
+ * the two must be the same account, read before a round is prepared and before a post.
+ */
+export function loginMismatch(api: GitHubApi, configured: string): string | null {
+  const live = readLogin(api);
+  return sameLogin(live, configured)
+    ? null
+    : `gh is logged in as ${live}, but github.login is ${configured}: switch gh to ${configured} (gh auth switch) or set github.login to the account that posts`;
+}
