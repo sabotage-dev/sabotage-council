@@ -255,7 +255,10 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     const { routes, src, d } = openWithNewHead();
     const ours = ghReview(7101, 'reviewer-x', 'CHANGES_REQUESTED', src.shas['C7']!, '2026-11-12T19:00:00Z', `sabotage-council round 3 on sabotage-dev/sabotage-council#2 at ${src.shas['C7']!.slice(0, 7)}\n\n**Verdict: NEEDS-WORK, 1 owed.**`);
     const human = ghReview(7102, 'alice', 'CHANGES_REQUESTED', src.shas['C7']!, '2026-11-12T19:01:00Z', 'Please rename step 7.');
-    jsonList(routes, `GET ${PULL}/reviews`).push(ours, human);
+    // The user's own unmarked change request, on an earlier head: its ask is answered (closed), and it is a human's,
+    // so it is never dismissed either.
+    const mine = ghReview(7104, 'reviewer-x', 'CHANGES_REQUESTED', src.shas['C6']!, '2026-11-12T18:45:00Z', 'Rename the steps.');
+    jsonList(routes, `GET ${PULL}/reviews`).push(ours, human, mine);
     // CI pending: a hold, so a COMMENT (row 8), with nothing owed.
     const pr = ((json(routes, 'graphql')['data'] as Json)['repository'] as Json)['pullRequest'] as Json;
     const rollup = (((pr['commits'] as Json)['nodes'] as Json[])[0]!['commit'] as Json)['statusCheckRollup'] as Json;
@@ -263,7 +266,7 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     routes[`GET ${API}/branches/main`] = { json: { name: 'main', protection: { required_status_checks: { contexts: ['ubuntu-latest / Node 22'], checks: [] } } } };
     routes[`PUT ${PULL}/reviews/7101/dismissals`] = { json: {} };
     const c = cli(routes, src, REVIEWER);
-    const { id, summary } = await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: true });
+    const { id, summary } = await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: true, asks: ['closed'] });
     // Both council reviews at the baseline (neither posted by this store) and Alice's change request are earlier items.
     expect(summary.earlier_items.map((i) => i.id).sort()).toEqual(['R5880199419', 'R7101', 'R7102']);
     const dry = await c.run('post', String(id), '--dry-run');
@@ -278,6 +281,20 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     expect((posts(c.gh)[0]?.body as { body: string; event: string }).event).toBe('COMMENT');
     expect((posts(c.gh)[0]?.body as { body: string }).body).toContain('Approval held: CI pending: ubuntu-latest / Node 22.');
     void d;
+  }, 60_000);
+
+  it('N11: a ruling COMMENT never dismisses our stale REQUEST_CHANGES', async () => {
+    const { routes, src, d } = openWithNewHead();
+    const ours = ghReview(7101, 'reviewer-x', 'CHANGES_REQUESTED', src.shas['C7']!, '2026-11-12T19:00:00Z', `sabotage-council round 3 on sabotage-dev/sabotage-council#2 at ${src.shas['C7']!.slice(0, 7)}`);
+    // The user's own unmarked change request on this head: a hold, so the round needs a ruling (row 2).
+    const hold = ghReview(7103, 'reviewer-x', 'CHANGES_REQUESTED', d, '2026-11-12T19:05:00Z', 'Not this way.');
+    (routes[`GET ${PULL}/reviews`] as { json: Json[] }).json.push(ours, hold);
+    const c = cli(routes, src, REVIEWER);
+    await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: false, needsRuling: true });
+    const r = await c.run('post', '1', '--dry-run');
+    expect(r.lines[0]).toContain('event COMMENT (row 2)');
+    expect(r.lines.join('\n')).not.toContain('would dismiss');
+    expect(r.lines.join('\n')).toContain('## Ruling needed');
   }, 60_000);
 
   it('credit: a vouched-for unmarked review counts at its own head and time (plan 3.6 step 4)', async () => {
