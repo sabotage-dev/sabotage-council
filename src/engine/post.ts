@@ -506,20 +506,21 @@ export function postRound(store: Store, o: PostOptions): PostResult {
   if (round.status !== 'adjudicated' && round.status !== 'identity') return refuse(`round ${round.id} is ${round.status}: a council round posts only once it is adjudicated`);
   if (o.mode === 'post' && round.dry_run === 1) return refuse(`round ${round.id} was started with --dry-run: it can render its post but never post`);
   if (round.marker === null) return refuse(`round ${round.id} has no marker`);
-  if (o.mode === 'dry-run') return step(store, o, round, result, refuse);
+  if (o.mode === 'dry-run') return step(store, o, round, result, refuse, null);
 
   // Row 9: one POST per round. The claim is taken before any network call; the round is read again under it.
   const claim = claimPost(db, round.id);
   if ('why' in claim) return refuse(claim.why);
   try {
     o.hooks?.afterClaim?.();
-    return step(store, o, getRound(db, round.id) ?? round, result, refuse);
+    return step(store, o, getRound(db, round.id) ?? round, result, refuse, claim.owner);
   } finally {
     releaseClaim(db, round.id, claim.owner);
   }
 }
 
-function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult, refuse: Refuse): PostResult {
+/** `owner` is the claim `--post` took (null for a dry run, which takes none). */
+function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult, refuse: Refuse, owner: string | null): PostResult {
   const { db } = store;
   const marker = round.marker ?? '';
   const ref = refOf(store, round);
@@ -733,8 +734,12 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   }
 
   // The intent and the guards it owes, in one transaction before the POST (plan 9.4, row 2). A re-post after an
-  // interrupted POST that did not land replaces the guards that never ran.
-  immediate(db, () => {
+  // interrupted POST that did not land replaces the guards that never ran. The same transaction checks that this
+  // process still holds the claim (P6 round 2 row 4): a claim taken over while it ran (it was held over an hour, so
+  // another post found it stale) fences it, and it posts nothing.
+  const holds = immediate(db, () => {
+    const holder = db.prepare('SELECT post_owner FROM rounds WHERE id = ?').get(round.id) as { post_owner: string | null } | undefined;
+    if (owner === null || holder?.post_owner !== owner) return false;
     db.prepare("DELETE FROM post_guards WHERE round_id = ? AND status = 'pending'").run(round.id);
     insertEvent(db, 'posting', round.id, {
       event: decision.event,
@@ -746,7 +751,11 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     } satisfies Intent);
     if (decision.event === 'APPROVE') addGuard(db, round.id, 'approval-race', null);
     for (const r of stale) addGuard(db, round.id, 'dismiss-stale', r.id);
+    return true;
   });
+  if (!holds) {
+    return refuse(`another post of round ${round.id} took over this one's claim (it was held over an hour): this one records no intent and posts nothing; run post ${round.id} --post again once that one ends`);
+  }
   const posted = normalizeReview(o.api.send('POST', `${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number)}/reviews`, { commit_id: head, event: decision.event, body }));
   o.hooks?.afterPost?.();
   writeFileSync(join(roundDir, 'REVIEW.md'), body);

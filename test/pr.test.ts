@@ -5,7 +5,7 @@ import { adjudicate } from '../src/adjudicate/index.js';
 import { getEvents, getLegs, getRound, roundSummary, runLegs, type RoundSummary } from '../src/engine/index.js';
 import { hostname } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { postRound, type PostOptions, type PostResult } from '../src/engine/post.js';
+import { CLAIM_STALE_MS, claimPost, postRound, type PostOptions, type PostResult } from '../src/engine/post.js';
 import { openStore } from '../src/store/index.js';
 import { preparePrRound, type PrRoundOptions } from '../src/engine/pr.js';
 import { ghApi } from '../src/forge/github.js';
@@ -1054,4 +1054,36 @@ describe('pr rounds: post-step safety (P6 round 2)', () => {
     expect(closed.problems.join()).toContain('sabotage-dev/sabotage-council#2 was closed since the post began: nothing posts');
     expect(writes(c)).toEqual([]);
   }, 120_000);
+
+  it('row 4: a claim taken over while its post ran fences that post at its intent step, which then posts nothing', async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, id, 'dry-run');
+    let takenBy: string | null = null;
+    const fenced = post(w, id, 'post', {
+      afterClaim: () => {
+        // This post stalls for over an hour; another post, with its own connection, finds the claim stale and takes it.
+        w.h.store.db.prepare('UPDATE rounds SET post_claimed_at = ? WHERE id = ?').run(new Date(Date.now() - CLAIM_STALE_MS - 60_000).toISOString(), id);
+        const other = openStore(w.h.layout.dbPath);
+        try {
+          const c = claimPost(other.db, id);
+          if ('owner' in c) takenBy = c.owner;
+        } finally {
+          other.close();
+        }
+      },
+    });
+    expect(takenBy).not.toBeNull();
+    expect(fenced.outcome).toBe('refused');
+    expect(fenced.event).toBe('APPROVE');
+    expect(fenced.problems.join()).toContain(`another post of round ${id} took over this one's claim (it was held over an hour): this one records no intent and posts nothing`);
+    expect(postsSent(w)).toEqual([]);
+    expect(getEvents(w.h.store.db, id).map((e) => e.kind)).not.toContain('posting');
+    // Its end leaves the new holder's claim alone.
+    expect(getRound(w.h.store.db, id)?.post_owner).toBe(takenBy);
+    // Once that post ends (its claim released), the round posts once.
+    w.h.store.db.prepare('UPDATE rounds SET post_owner = NULL, post_claimed_at = NULL WHERE id = ?').run(id);
+    expect(post(w, id, 'post')).toMatchObject({ outcome: 'posted', event: 'APPROVE' });
+    expect(postsSent(w)).toHaveLength(1);
+  }, 60_000);
 });
