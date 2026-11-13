@@ -773,6 +773,18 @@ describe("round 2 row 2: the snapshot honours the repository's effective exclude
     expect(system).toContain('included-only.log');
   });
 
+  it('takes an empty core.excludesFile as no excludes file, as git status does, not as the XDG default', () => {
+    const { repo } = fixtureRepo();
+    const home = scratch('sc-user-home-');
+    mkdirSync(join(home, 'xdg', 'git'), { recursive: true });
+    writeFileSync(join(home, 'xdg', 'git', 'ignore'), 'xdg-only.log\n');
+    writeFileSync(join(repo, 'xdg-only.log'), 'x\n');
+    const env = { PATH: process.env['PATH'], HOME: home, XDG_CONFIG_HOME: join(home, 'xdg') };
+    expect(treeFiles(repo, resolveDiffTarget(repo, undefined, { env }).head)).not.toContain('xdg-only.log');
+    git(repo, ['config', 'core.excludesFile', '']);
+    expect(treeFiles(repo, resolveDiffTarget(repo, undefined, { env }).head)).toContain('xdg-only.log');
+  });
+
   it("fails the snapshot, rather than guessing, when the user's config cannot be read", () => {
     const { repo } = fixtureRepo();
     writeFileSync(join(repo, 'new-module.py'), 'x\n');
