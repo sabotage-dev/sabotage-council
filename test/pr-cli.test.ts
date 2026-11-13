@@ -200,6 +200,21 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     expect(out.body).toContain('Approval held: CI unknown: CI could not be read: GraphQL query failed');
   }, 60_000);
 
+  it('faked --post: a PR closed after the round started takes no post', async () => {
+    const { routes, src } = openWithNewHead();
+    const c = cli(routes, src, REVIEWER);
+    const { id } = await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: true });
+    const closed = structuredClone(json(routes, `GET ${PULL}`));
+    Object.assign(closed, { state: 'closed', merged: true });
+    c.gh.setRoutes({ ...routes, [`GET ${PULL}`]: { json: closed } });
+    const r = await c.run('post', String(id), '--post');
+    expect(r.code).toBe(1);
+    expect(r.lines.join('\n')).toContain('sabotage-dev/sabotage-council#2 is closed: nothing posts');
+    expect(posts(c.gh)).toEqual([]);
+    // A dry run still renders it.
+    expect((await c.run('post', String(id), '--dry-run')).code).toBe(0);
+  }, 60_000);
+
   it('faked --post: the head moved before the post, so the round is superseded and nothing posts', async () => {
     const { routes, src } = openWithNewHead();
     const c = cli(routes, src, REVIEWER);
