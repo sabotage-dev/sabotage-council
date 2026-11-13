@@ -931,6 +931,13 @@ SQLite at `~/.local/share/sabotage-council/council.db`. Raw artifacts go in roun
 Retention: DB rows are kept forever, because the scorecard needs history. Round dirs are kept for 90 days, and
 roots are deleted at round end (failed rounds keep them for 2 days) (Q6). The full schema is in section 8.
 
+Built in P5: a round dir is `rounds/<round id>/` beside the database (the brief, `round.json` with the round's
+inputs, `sealed.json`, the worker's record and log, one dir per leg with its stream, records, `answer.md`,
+`ratification.json` and `reply.json`, then `summary.json` and `ADJUDICATION.json`). Rows are written as the round
+goes: the round at `running`, each leg at `RUNNING` and then its final status, `awaiting-adjudication` (or `failed`
+with no ratified leg) when the legs settle, and `adjudicated` once `adjudicate` stores the verdict. The root is
+deleted when the adjudication is stored; pruning of round dirs and failed rounds' roots is P8.
+
 ## 6. Security model
 
 The tool runs other people's code-review targets through agents that can act on the user's machine. The threats
@@ -1130,10 +1137,9 @@ Cross-checks enforced by code:
   `ruling`. It is also rejected when an earlier item or human ask that is owed-eligible under the round's rule
   (3.5) is `open` or `half-closed` without a linked owed finding (`fix_row`).
 - **Human asks.** Each ask in the brief's change-request section has one `findings` row with
-  `kind: "human_ask"`. `human_asks[]` entries point at that row, and the owed count covers those rows.
+  `kind: "human_ask"` and one `human_asks[]` row pointing at it, and the owed count covers those rows.
 - **Coverage.** Every earlier item has a row, except closed-context items (3.5). A regression in the code they
-  cover is caught by rule (a) of the delta round. Every ask in the brief's change-request section has a `human_asks`
-  row.
+  cover is caught by rule (a) of the delta round.
 - **Refutations.** `refuted` rows have proof. A finding raised by 2+ seats that would be owed under the round's
   rule (3.4 rule 3), and is `refuted`, forces `needs_ruling` in `auto`.
 - **Identity.** Nonce and head match.
@@ -1489,5 +1495,6 @@ a builder should reconcile when building the named phase.
 | N6, N7, N21 | Folded in P3: 4.1 names four conditions and says each ACP backend stays `pending` until its own canary (opencode's in P4) (N6); the P3 row says the adapter-declared mode (N7); 4.1 says a run caught only at ratification fails the canary (N21). | 4.1, 10 | P3 |
 | N22-N25 | Folded in rev 1.5 (council round 5's follow-ups): the codex native list is declared verbatim and enforced as an allowlist, orchestration calls are allowed at use, and P2 replays the exec-only and delegating fixtures. | 4.5, 10 | P2 |
 | N8, N12, N15-N18, N27-N32 | Folded in P2: the P2 row's child case reads "a subagent whose own rollout fails" (N8); 4.2 says how MCP names and child rollouts are found (N12), where a denial shows and what is parsed (N15, N16); 4.5 lists the fail-closed path rules, the reads, the offer-to-call map, exact membership, calls on children and the input stall (N17, N18, N28-N31); N27's delegating leg was recorded fresh with one cheap live run; N32's two references now say D17. | 4.2, 4.5, 3.5 | P2 |
+| N13 | Folded in P5: 7.3's Human asks bullet now carries the `human_asks` row, and Coverage no longer repeats it. | 7.3 | P5 |
 | N26 | 3.2's verdict-line wording vs the P1 split-line test; the P1 findings fixture should also cover YAML; this section's header and intro say "round 3" for items from later rounds. | 3.2, 10, 15 | P1 |
 | N1, N9 | Folded in P4: 5.2 names grok with its sandbox running and no MCP server `pending` (and the adapter labels it so), and `weak` with `--sandbox off` (N1); 4.2's grok read-path audit reads `updates.jsonl` `rawInput` and cross-checks it against the stream's tool uses, not `chat_history.jsonl` (N9). | 4.2, 5.2 | P4 |

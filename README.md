@@ -29,9 +29,10 @@ Planned modes:
 
 ## Status
 
-Building (P4). Built so far: the config schema and loader, the run store, the review root and brief, the reply
-parsers, the headless transport with the codex, claude, grok, cursor and muse seats, and the ACP transport with
-the antigravity, kiro and opencode seats. There are no review rounds yet. The v1 build plan is
+Building (P5). Built so far: the config schema and loader, the run store, the review root and brief, the reply
+parsers, the headless transport with the codex, claude, grok, cursor and muse seats, the ACP transport with the
+antigravity, kiro and opencode seats, and the round runner with the `plan` and `diff` modes, the `adjudicate`
+validator and the Claude Code plugin. `pr` and `auto` come later. The v1 build plan is
 [docs/PLAN.md](docs/PLAN.md).
 
 Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322 and 2.1.323, the
@@ -53,6 +54,40 @@ the planted root by a filename scan), except claude on a version whose label is 
 promotion canary (2.1.322 and 2.1.323): its line says isolation is proven by that canary instead. Exit codes:
 `0` every seat proven (by its load dump or its canary), `1` some seat loaded a planted file (or another doctor
 check failed), `2` nothing loaded but some seat is unproven by `--deep`.
+
+### Running a round
+
+From a git repository:
+
+```sh
+sabotage-council round start plan docs/PLAN.md --json   # or: round start diff [<base>..<head>] --json
+sabotage-council round wait <id>                         # blocks until the legs settle; prints JSON
+sabotage-council round show <id>                         # a readable summary, any time
+sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, print the effective verdict
+```
+
+- `round start plan <file>` reviews a written plan (an uncommitted plan file is snapshotted). `--context
+  <path|repo@ref>` adds other paths or repositories to the root, `--fact <text>` gives the seats an established fact
+  they must not refile, and `--question <text>` (at most 3) replaces the default questions.
+- `round start diff [<base>..<head>]` reviews a branch diff; the default is the merge-base with the default branch
+  to HEAD, with uncommitted work snapshotted to a commit object (your index and branches are never touched).
+- `round start` numbers the round from the store (a head counts once a round on it is adjudicated), builds and
+  seals the root, writes the brief, and starts a detached worker that runs the legs; it prints the round id (or
+  JSON with `--json`) and returns. The worker preflights every seat serially, launches the legs in parallel,
+  moves a seat to its fallback within the round on `usage_limit` or `auth` (or when its primary fails preflight),
+  relaunches a leg once on `capacity`, `transport`, `empty` or `timeout` while the round has time, ratifies every
+  leg, sweeps the root for residue, and settles quorum: 2 or more ratified legs is a council round, 1 is a labelled
+  solo review that never approves, 0 fails the round.
+- `round wait <id> [--timeout <minutes>]` exits 0 when the legs settle, 1 when the round failed (or its worker
+  died), and 3 when the timeout ran out first.
+- `adjudicate <id> <file>` checks `ADJUDICATION.json` (plan 7.3) against the round and stores it only if every
+  check passes; each rejection names its class (`[attribution]`, `[round-rule]`, ...).
+- Every command takes `--config`, `--db` and `--roots`. The store defaults to
+  `~/.local/share/sabotage-council/council.db`, with round dirs in `rounds/<id>/` beside it; roots are built under
+  `~/.cache/sabotage-council/roots/` and deleted once the round is adjudicated.
+
+The Claude Code plugin in [plugin/](plugin/) runs this loop from a session: `/sabotage-council:council plan
+<file>` or `diff`, then the session adjudicates by [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md).
 
 ### Backend notes
 
