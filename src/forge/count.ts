@@ -52,7 +52,7 @@ export interface RoundCount {
   ignored: IgnoredReview[];
 }
 
-const allowlisted = (login: string, cfg: MarkerConfig): boolean => sameLogin(login, cfg.login) || cfg.council_logins.some((l) => sameLogin(l, login));
+export const allowlisted = (login: string, cfg: MarkerConfig): boolean => sameLogin(login, cfg.login) || cfg.council_logins.some((l) => sameLogin(l, login));
 
 /** Whether a stated sha (7 to 40 hex) names this full sha. */
 const shaMatches = (stated: string, full: string): boolean => full.toLowerCase().startsWith(stated.toLowerCase());
@@ -66,6 +66,19 @@ function counted(review: Review, marker: Marker, ref: PrRef): { round: number | 
     return { why: `its marker says ${stated} but it was submitted on ${review.commitId.slice(0, 7)} (commit_id): not counted` };
   }
   return { round: marker.round };
+}
+
+/**
+ * Whether a review is a council review of this PR by the round count's own rules (3.6 steps 1-3): submitted, by an
+ * allowlisted login, its first line our marker for this PR or a `markers_also_count` pattern, with no stated sha that
+ * disagrees with its `commit_id`. An identity approval is not one. The approval race (3.7) withdraws our approval
+ * for any review that landed meanwhile and is not one of these (P6 round 1 row 3): a marker-shaped first line by a
+ * stranger is not.
+ */
+export function countsAsCouncil(review: Review, cfg: MarkerConfig, ref: PrRef): boolean {
+  if (review.state === 'PENDING' || !allowlisted(review.login, cfg)) return false;
+  const marker = parseMarker(review.body, cfg.markers_also_count);
+  return marker !== null && !('why' in counted(review, marker, ref));
 }
 
 const byTime = (a: { at: string; reviewId: number }, b: { at: string; reviewId: number }): number =>

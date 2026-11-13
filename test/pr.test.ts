@@ -3,7 +3,10 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { adjudicate } from '../src/adjudicate/index.js';
 import { getEvents, getLegs, getRound, roundSummary, runLegs, type RoundSummary } from '../src/engine/index.js';
-import { postRound } from '../src/engine/post.js';
+import { hostname } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { postRound, type PostOptions, type PostResult } from '../src/engine/post.js';
+import { openStore } from '../src/store/index.js';
 import { preparePrRound, type PrRoundOptions } from '../src/engine/pr.js';
 import { ghApi } from '../src/forge/github.js';
 import { checkPrFiles } from '../src/forge/mirror.js';
@@ -300,7 +303,8 @@ async function councilRound(
   return { id, summary, adjudicated };
 }
 
-const post = (w: World, id: number, mode: 'dry-run' | 'post') => postRound(w.h.store, { config: w.options().config, layout: w.h.layout, api: w.options().api, roundId: id, mode });
+const postOptions = (w: World, id: number, mode: 'dry-run' | 'post', hooks?: PostOptions['hooks']): PostOptions => ({ config: w.options().config, layout: w.h.layout, api: w.options().api, roundId: id, mode, hooks });
+const post = (w: World, id: number, mode: 'dry-run' | 'post', hooks?: PostOptions['hooks']): PostResult => postRound(w.h.store, postOptions(w, id, mode, hooks));
 
 describe('pr rounds: holds, asks and the post step', () => {
   it("the user's change request on this head forces needs_ruling, and the post is a COMMENT with the ruling section", async () => {
@@ -335,7 +339,7 @@ describe('pr rounds: holds, asks and the post step', () => {
     expect(p.body).toMatch(/\| 1 \| \(no file\) \| MEDIUM: ask H1 \| this \| yes \|/);
   }, 60_000);
 
-  it('an interrupted post adopts the review that landed, and refuses to re-post a body that changed', async () => {
+  it('an interrupted post adopts the review that landed with its body, and refuses to re-post a body that changed', async () => {
     const open = (r: Routes, src: SourceRepo): void => {
       reopen(r);
       moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }), src);
@@ -347,11 +351,16 @@ describe('pr rounds: holds, asks and the post step', () => {
     const changed = post(w, id, 'post');
     expect(changed.outcome).toBe('refused');
     expect(changed.problems.join()).toContain('interrupted');
+    // The intent the post records: its body lands on GitHub, and the next post adopts that review.
+    w.h.store.db.prepare("DELETE FROM events WHERE round_id = ? AND kind = 'posting'").run(id);
+    const rendered = post(w, id, 'dry-run');
+    w.h.store.db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES ('x', 'posting', ?, ?)").run(id, JSON.stringify({ event: 'COMMENT', body_sha256: rendered.bodySha256, body: rendered.body }));
     const routes = pr2Routes(w.src.shas);
     open(routes, w.src);
-    jsonList(routes, `GET ${API_PULL}/reviews`).push({ id: 4242, user: { login: 'repo-owner' }, state: 'COMMENTED', commit_id: w.src.shas['D'], submitted_at: '2026-11-13T00:00:00Z', body: `${marker}\n\nbody` });
+    jsonList(routes, `GET ${API_PULL}/reviews`).push({ id: 4242, user: { login: 'repo-owner' }, state: 'COMMENTED', commit_id: w.src.shas['D'], submitted_at: '2026-11-13T00:00:00Z', body: rendered.body!.trimEnd() });
     w.gh.setRoutes(routes);
     const adopted = post(w, id, 'post');
+    expect(marker).toBe(rendered.body!.split('\n')[0]);
     expect(adopted).toMatchObject({ outcome: 'already-posted', reviewId: 4242, event: 'COMMENT' });
     expect(getRound(w.h.store.db, id)).toMatchObject({ review_id: 4242, event_posted: 'COMMENT' });
     expect(w.gh.requests().filter((q) => q.method === 'POST')).toEqual([]);
@@ -525,4 +534,221 @@ describe("the changed-file cross-check (GitHub's list against the fetched commit
     const many = Array.from({ length: PR_FILES_MAX }, (_, i) => ({ path: `f${i}`, previous: null }));
     expect(checkPrFiles(mirror, src.shas['BASE']!, head, many)).toEqual({ checked: false, note: `GitHub lists ${PR_FILES_MAX} files, its limit: the list was not cross-checked` });
   });
+});
+
+/** PR #2 reopened with a new head D and authored by someone else, so a SHIP round approves (row 5). */
+function approvable(r: Routes, src: SourceRepo): void {
+  reopen(r);
+  moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }), src);
+  Object.assign(json(r, `GET ${API_PULL}`), { user: { login: 'someone' } });
+  r['GET repos/sabotage-dev/sabotage-council/collaborators/someone/permission'] = { json: { permission: 'write' } };
+}
+const APPROVE: AdjOptions = { outcome: 'refuted', verdict: 'SHIP', approve: true };
+const writes = (w: World): Array<{ method: string; path: string; body: unknown }> => w.gh.requests().filter((q) => q.method !== 'GET' && q.key !== 'graphql');
+const postsSent = (w: World): Array<{ body: unknown }> => w.gh.requests().filter((q) => q.method === 'POST');
+const DISMISS_OURS = `PUT ${API_PULL}/reviews/990001/dismissals`;
+
+describe('pr rounds: post-step safety (P6 round 1)', () => {
+  it('row 9: two posts of one round make one POST; the second is refused while the first holds the claim, which a dead process loses', async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    let second: PostResult | undefined;
+    const first = post(w, id, 'post', {
+      afterClaim: () => {
+        // Another process, with its own connection to the store, posts the same round at this moment.
+        const other = openStore(w.h.layout.dbPath);
+        try {
+          second = postRound(other, postOptions(w, id, 'post'));
+        } finally {
+          other.close();
+        }
+      },
+    });
+    expect(first).toMatchObject({ outcome: 'posted', reviewId: 990001, event: 'APPROVE' });
+    expect(second?.outcome).toBe('refused');
+    expect(second?.problems.join()).toContain(`another post of round ${id} holds it (pid ${process.pid}`);
+    expect(postsSent(w)).toHaveLength(1);
+    // The claim ends with the post; a later post finds the round posted.
+    expect(getRound(w.h.store.db, id)).toMatchObject({ post_owner: null, post_claimed_at: null });
+    expect(post(w, id, 'post').outcome).toBe('already-posted');
+    // A claim left by a process that is gone is taken over.
+    const dead = spawnSync(process.execPath, ['-e', '']).pid;
+    w.h.store.db.prepare('UPDATE rounds SET post_owner = ?, post_claimed_at = ? WHERE id = ?').run(JSON.stringify({ host: hostname(), pid: dead, token: 't' }), new Date().toISOString(), id);
+    expect(post(w, id, 'post').outcome).toBe('already-posted');
+    expect(getEvents(w.h.store.db, id).map((e) => e.kind)).toContain('post-claim-taken-over');
+    expect(postsSent(w)).toHaveLength(1);
+  }, 60_000);
+
+  it('row 2: a crash between the POST and the store still runs the guards when the next post adopts the review', async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    expect(() =>
+      post(w, id, 'post', {
+        afterPost: () => {
+          throw new Error('crashed after the POST');
+        },
+      }),
+    ).toThrow('crashed after the POST');
+    expect(getRound(w.h.store.db, id)).toMatchObject({ event_posted: null, review_id: null, post_owner: null });
+    const sent = (postsSent(w)[0]!.body as { body: string }).body;
+    // GitHub holds the approval, and Alice's change request landed meanwhile.
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    jsonList(routes, `GET ${API_PULL}/reviews`).push(
+      { id: 990001, user: { login: 'repo-owner' }, state: 'APPROVED', commit_id: w.src.shas['D'], submitted_at: '2026-11-13T12:00:00Z', body: sent },
+      { id: 990002, user: { login: 'alice' }, state: 'CHANGES_REQUESTED', commit_id: w.src.shas['D'], submitted_at: '2026-11-13T12:00:01Z', body: 'Step 8 is wrong.' },
+    );
+    routes[DISMISS_OURS] = { json: {} };
+    w.gh.setRoutes(routes);
+    const adopted = post(w, id, 'post');
+    expect(adopted).toMatchObject({ outcome: 'already-posted', reviewId: 990001, event: 'APPROVE' });
+    expect(adopted.guards).toEqual([
+      { kind: 'approval-race', reviewId: null, status: 'done', attempts: 1, outcome: 'withdrawn: a review landed while the approval was posted (alice CHANGES_REQUESTED)' },
+    ]);
+    expect(writes(w).map((q) => `${q.method} ${q.path}`)).toEqual([`POST ${API_PULL}/reviews`, DISMISS_OURS]);
+    expect(getRound(w.h.store.db, id)).toMatchObject({ event_posted: 'APPROVE', review_id: 990001 });
+  }, 60_000);
+
+  it("row 2: a withdrawal that fails stays pending, and the next post (already posted) runs it again", async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    const before = jsonList(routes, `GET ${API_PULL}/reviews`);
+    const after = [...before, { id: 990002, user: { login: 'alice' }, state: 'CHANGES_REQUESTED', commit_id: w.src.shas['D'], submitted_at: '2026-11-13T12:00:01Z', body: 'Wait.' }];
+    routes[`GET ${API_PULL}/reviews`] = { seq: [{ json: before }, { json: after }] };
+    routes[DISMISS_OURS] = { seq: [{ fail: 'gh: Server Error (HTTP 502)' }, { json: {} }] };
+    w.gh.setRoutes(routes);
+    const first = post(w, id, 'post');
+    expect(first.outcome).toBe('posted');
+    expect(first.guards).toEqual([expect.objectContaining({ kind: 'approval-race', status: 'pending', attempts: 1, outcome: expect.stringContaining('the withdrawal failed') as unknown })]);
+    expect(roundSummary(w.h.store, w.h.layout, id).pr).toMatchObject({ guards_pending: 1, next: `sabotage-council post ${id} --post (resumes 1 pending guard(s))` });
+    const again = post(w, id, 'post');
+    expect(again.outcome).toBe('already-posted');
+    expect(again.guards).toEqual([expect.objectContaining({ kind: 'approval-race', status: 'done', attempts: 2, outcome: expect.stringContaining('withdrawn: a review landed') as unknown })]);
+    expect(writes(w).map((q) => `${q.method} ${q.path}`)).toEqual([`POST ${API_PULL}/reviews`, DISMISS_OURS, DISMISS_OURS]);
+    expect(roundSummary(w.h.store, w.h.layout, id).pr).toMatchObject({ guards_pending: 0, next: 'posted' });
+  }, 60_000);
+
+  it("row 4: an interrupted round B on round A's head never adopts A's review, even with the same marker and body", async () => {
+    const w = await world(approvable);
+    const a = await councilRound(w, { dryRun: false }, APPROVE);
+    expect(post(w, a.id, 'post')).toMatchObject({ outcome: 'posted', reviewId: 990001 });
+    const sentA = (postsSent(w)[0]!.body as { body: string }).body;
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    jsonList(routes, `GET ${API_PULL}/reviews`).push({ id: 990001, user: { login: 'repo-owner' }, state: 'APPROVED', commit_id: w.src.shas['D'], submitted_at: '2026-11-13T12:00:00Z', body: sentA });
+    routes[`POST ${API_PULL}/reviews`] = { fail: 'gh: connection reset' };
+    w.gh.setRoutes(routes);
+    const b = await councilRound(w, { dryRun: false }, APPROVE);
+    expect(getRound(w.h.store.db, b.id)!.marker).toBe(getRound(w.h.store.db, a.id)!.marker);
+    expect(() => post(w, b.id, 'post')).toThrow(/connection reset/);
+    const sentB = (postsSent(w)[1]!.body as { body: string }).body;
+    // Make A's review on GitHub hold exactly B's body as well: same login, head, marker, event and body. Only the
+    // store knows it is A's (rounds.review_id), and that keeps B from adopting it.
+    jsonList(routes, `GET ${API_PULL}/reviews`).at(-1)!['body'] = sentB;
+    routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990002, login: 'repo-owner' } };
+    w.gh.setRoutes(routes);
+    expect(post(w, b.id, 'post')).toMatchObject({ outcome: 'posted', reviewId: 990002 });
+    expect(getRound(w.h.store.db, b.id)).toMatchObject({ review_id: 990002 });
+    expect(getRound(w.h.store.db, a.id)).toMatchObject({ review_id: 990001 });
+  }, 90_000);
+
+  it('row 4: adoption needs the intended body and event, and refuses when more than one review matches', async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    routes[`POST ${API_PULL}/reviews`] = { fail: 'gh: connection reset' };
+    w.gh.setRoutes(routes);
+    expect(() => post(w, id, 'post')).toThrow(/connection reset/);
+    const intended = (postsSent(w)[0]!.body as { body: string }).body;
+    const marker = getRound(w.h.store.db, id)!.marker!;
+    const ours = (rid: number, state: string, body: string) => ({ id: rid, user: { login: 'repo-owner' }, state, commit_id: w.src.shas['D'], submitted_at: '2026-11-13T12:00:00Z', body });
+    const reviews = jsonList(routes, `GET ${API_PULL}/reviews`);
+    // Two reviews hold exactly what the post meant to send: which one is ours cannot be told.
+    reviews.push(ours(990051, 'APPROVED', intended), ours(990052, 'APPROVED', intended));
+    w.gh.setRoutes(routes);
+    const ambiguous = post(w, id, 'post');
+    expect(ambiguous.outcome).toBe('refused');
+    expect(ambiguous.problems.join()).toContain('2 reviews match what it meant to post (990051, 990052)');
+    expect(postsSent(w)).toHaveLength(1);
+    // Another body under the same marker, or the same body with another event, is not ours: the post goes out.
+    reviews.splice(-2, 2, ours(990053, 'APPROVED', `${marker}\n\nanother run's body`), ours(990054, 'CHANGES_REQUESTED', intended));
+    routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990060, login: 'repo-owner' } };
+    w.gh.setRoutes(routes);
+    expect(post(w, id, 'post')).toMatchObject({ outcome: 'posted', reviewId: 990060 });
+    expect(postsSent(w)).toHaveLength(2);
+  }, 60_000);
+
+  it('row 5: a push during the CI read supersedes the round right before the POST, and nothing posts', async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    const moved = structuredClone(json(routes, `GET ${API_PULL}`));
+    (moved['head'] as Json)['sha'] = 'f'.repeat(40);
+    routes[`GET ${API_PULL}`] = { seq: [{ json: json(routes, `GET ${API_PULL}`) }, { json: moved }] };
+    w.gh.setRoutes(routes);
+    const p = post(w, id, 'post');
+    expect(p.outcome).toBe('superseded');
+    expect(p.problems.join()).toContain('the head moved from');
+    expect(writes(w)).toEqual([]);
+    expect(getRound(w.h.store.db, id)?.status).toBe('superseded');
+  }, 60_000);
+
+  it('row 5: a review GitHub bound to another commit is withdrawn whatever its event; a comment cannot be and is noted', async () => {
+    const changes = await world(approvable);
+    const rc = await councilRound(changes, { dryRun: false }, { outcome: 'owed', verdict: 'NEEDS-WORK', approve: false });
+    const routes = pr2Routes(changes.src.shas);
+    approvable(routes, changes.src);
+    routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990001, login: 'repo-owner', commitId: changes.src.shas['C7']! } };
+    routes[DISMISS_OURS] = { json: {} };
+    changes.gh.setRoutes(routes);
+    const p = post(changes, rc.id, 'post');
+    expect(p).toMatchObject({ outcome: 'posted', event: 'REQUEST_CHANGES' });
+    expect(p.guards).toEqual([{ kind: 'withdraw-off-head', reviewId: 990001, status: 'done', attempts: 1, outcome: 'withdrawn: bound to another commit than the reviewed head' }]);
+    expect(writes(changes).map((q) => `${q.method} ${q.path}`)).toEqual([`POST ${API_PULL}/reviews`, DISMISS_OURS]);
+
+    // On the author's own PR the post is a COMMENT: GitHub dismisses no comment, so the guard says so and sends nothing.
+    const comment = await world((r, src) => {
+      reopen(r);
+      moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }), src);
+    });
+    const cm = await councilRound(comment, { dryRun: false }, APPROVE);
+    const croutes = pr2Routes(comment.src.shas);
+    reopen(croutes);
+    moveHead(croutes, comment.src.shas['D']!, comment.src);
+    croutes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990001, login: 'repo-owner', commitId: comment.src.shas['C7']! } };
+    comment.gh.setRoutes(croutes);
+    const c = post(comment, cm.id, 'post');
+    expect(c).toMatchObject({ outcome: 'posted', event: 'COMMENT' });
+    expect(c.guards).toEqual([expect.objectContaining({ kind: 'withdraw-off-head', status: 'done', outcome: expect.stringContaining('GitHub dismisses only approvals and change requests') as unknown })]);
+    expect(writes(comment).map((q) => q.method)).toEqual(['POST']);
+  }, 90_000);
+
+  it("row 3: a stranger's marker-shaped review and our own pending draft submitted meanwhile both withdraw the approval; a counted council review does not", async () => {
+    const race = async (landed: (src: SourceRepo, marker: string) => Json[], pending: Json[] = []): Promise<PostResult> => {
+      const w = await world(approvable);
+      const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+      const marker = getRound(w.h.store.db, id)!.marker!;
+      const routes = pr2Routes(w.src.shas);
+      approvable(routes, w.src);
+      const before = [...jsonList(routes, `GET ${API_PULL}/reviews`), ...pending];
+      routes[`GET ${API_PULL}/reviews`] = { seq: [{ json: before }, { json: [...jsonList(routes, `GET ${API_PULL}/reviews`), ...landed(w.src, marker)] }] };
+      routes[DISMISS_OURS] = { json: {} };
+      w.gh.setRoutes(routes);
+      return post(w, id, 'post');
+    };
+    const at = '2026-11-13T12:00:01Z';
+    const stranger = await race((src, marker) => [{ id: 990002, user: { login: 'mallory' }, state: 'COMMENTED', commit_id: src.shas['D'], submitted_at: at, body: `${marker}\n\nlooks fine` }]);
+    expect(stranger.guards[0]?.outcome).toBe('withdrawn: a review landed while the approval was posted (mallory COMMENTED)');
+    const draft = await race(
+      (src) => [{ id: 990003, user: { login: 'repo-owner' }, state: 'CHANGES_REQUESTED', commit_id: src.shas['D'], submitted_at: at, body: 'Not this.' }],
+      [{ id: 990003, user: { login: 'repo-owner' }, state: 'PENDING', body: 'Not this.' }],
+    );
+    expect(draft.guards[0]?.outcome).toBe('withdrawn: a review landed while the approval was posted (repo-owner CHANGES_REQUESTED)');
+    const council = await race((src, marker) => [{ id: 990004, user: { login: 'repo-owner' }, state: 'COMMENTED', commit_id: src.shas['D'], submitted_at: at, body: `${marker}\n\nanother council` }]);
+    expect(council.guards[0]).toMatchObject({ status: 'done', outcome: 'kept: no review landed meanwhile and the head held' });
+  }, 120_000);
 });

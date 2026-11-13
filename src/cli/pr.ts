@@ -138,13 +138,17 @@ export function renderPost(r: PostResult): string[] {
   if (r.ci !== null) out.push(`ci ${r.ci.state}: ${r.ci.note}`);
   for (const p of r.problems) out.push(`  ${p}`);
   if (r.reviewId !== null) out.push(`review ${r.reviewId}`);
-  for (const d of r.dismissals) out.push(`${r.mode === 'dry-run' ? 'would dismiss' : d.ok ? 'dismissed' : 'could not dismiss'} our review ${d.reviewId}: ${d.why}`);
-  if (r.approvalDismissed !== null) out.push(`approval ${r.approvalDismissed.ok ? 'dismissed' : 'NOT dismissed'}: ${r.approvalDismissed.why}`);
+  for (const g of r.guards) {
+    out.push(`guard ${g.kind}${g.reviewId !== null ? ` (review ${g.reviewId})` : ''}: ${g.status === 'pending' ? `PENDING after ${g.attempts} attempt(s)` : g.status}: ${g.outcome}`);
+  }
   if (r.body !== null) out.push('----- body -----', ...r.body.replace(/\n$/, '').split('\n'), '----- end -----');
   return out;
 }
 
-/** `post <round> --dry-run | --post`. Exit 0 when rendered or posted; 1 when refused, superseded or failed. */
+/**
+ * `post <round> --dry-run | --post`. Exit 0 when rendered or posted; 1 when refused, superseded or failed, and when a
+ * `--post` leaves a guard pending (run `post --post` again to resume it, P6 round 1 row 2).
+ */
 export async function postCommand(io: PrIo, paths: StorePaths, roundId: number, mode: 'dry-run' | 'post', json: boolean): Promise<void> {
   const cfg = await config(io, paths, false);
   if (cfg === null) return;
@@ -153,7 +157,8 @@ export async function postCommand(io: PrIo, paths: StorePaths, roundId: number, 
     const r = postRound(store, { config: cfg, layout: layoutOf(paths), api: apiOf(io), roundId, mode });
     if (json) io.write(JSON.stringify(r, null, 2));
     else for (const l of renderPost(r)) io.write(l);
-    io.setExitCode(r.outcome === 'rendered' || r.outcome === 'posted' || r.outcome === 'already-posted' ? 0 : 1);
+    const ok = r.outcome === 'rendered' || r.outcome === 'posted' || r.outcome === 'already-posted';
+    io.setExitCode(ok && !(mode === 'post' && r.guards.some((g) => g.status === 'pending')) ? 0 : 1);
   } catch (error) {
     io.write(`error: ${error instanceof Error ? error.message : String(error)}`);
     io.setExitCode(1);

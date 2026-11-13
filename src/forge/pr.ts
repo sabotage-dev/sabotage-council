@@ -207,6 +207,11 @@ export function normalizePull(ref: PrRef, v: unknown): Omit<PrSnapshot, 'reviews
   };
 }
 
+/** The pull request object alone (its head, base and state): the post step's last read before the POST. */
+export function readPull(api: GitHubApi, ref: PrRef): ReturnType<typeof normalizePull> {
+  return normalizePull(ref, api.get(`${restPath('repos', ref.owner, ref.repo)}/${restPath('pulls', ref.number)}`));
+}
+
 /** Reads one pull request with everything `pr` mode needs. Any failed or partial read throws (fail closed). */
 export function readPr(api: GitHubApi, ref: PrRef): PrSnapshot {
   const base = restPath('repos', ref.owner, ref.repo);

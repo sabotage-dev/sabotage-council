@@ -95,6 +95,8 @@ export interface PrSummary {
   event_posted: string | null;
   review_id: number | null;
   posted_at: string | null;
+  /** Guards the post still owes (P6 round 1 row 2): `post --post` again resumes them. */
+  guards_pending: number;
   author: string | null;
   trusted: boolean | null;
   /** Plan 3.6: the count, the baseline, the counted events and the reviews passed over. */
@@ -109,6 +111,7 @@ export interface PrSummary {
 function prSummary(store: Store, round: RoundRow, detail: PrDetail | undefined, identity: Record<string, unknown> | null): PrSummary {
   const posted = round.event_posted !== null;
   const ready = round.status === 'adjudicated' || round.status === 'identity';
+  const pending = (store.db.prepare("SELECT count(*) AS n FROM post_guards WHERE round_id = ? AND status = 'pending'").get(round.id) as { n: number }).n;
   return {
     kind: round.kind,
     marker: round.marker,
@@ -116,6 +119,7 @@ function prSummary(store: Store, round: RoundRow, detail: PrDetail | undefined, 
     event_posted: round.event_posted,
     review_id: round.review_id,
     posted_at: round.posted_at,
+    guards_pending: pending,
     author: detail?.author ?? ((identity?.['pr'] as { author?: string } | undefined)?.author ?? null),
     trusted: detail?.trusted ?? null,
     count: detail?.count ?? identity?.['round_count'] ?? null,
@@ -123,7 +127,9 @@ function prSummary(store: Store, round: RoundRow, detail: PrDetail | undefined, 
     review_items: detail?.review_items ?? [],
     identity: identity?.['match'] ?? null,
     next: posted
-      ? 'posted'
+      ? pending > 0
+        ? `sabotage-council post ${round.id} --post (resumes ${pending} pending guard(s))`
+        : 'posted'
       : !ready
         ? round.status === 'running'
           ? `sabotage-council round wait ${round.id}`

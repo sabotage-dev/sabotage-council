@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // A stub `gh` for the pr-mode tests: it answers `gh api ...` from recorded JSON and logs every request.
 // $FAKE_GH_DIR/routes.json maps "<METHOD> <path without query>" (or "graphql") to a response:
-//   { "json": <value> } | { "file": "<path>" } | { "fail": "<stderr text>" } | { "echoReview": { "id": n, "login": "x" } }
+//   { "json": <value> } | { "file": "<path>" } | { "fail": "<stderr text>" }
+//   | { "echoReview": { "id": n, "login": "x", "commitId"?: "<sha GitHub binds it to, default the request's>" } }
 //   | { "seq": [<response>, ...] }  (one per call, the last repeats)
 // Every call appends one JSON line to $FAKE_GH_DIR/requests.jsonl: method, path, args, and the body read from stdin.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -68,6 +69,6 @@ else if (route.file !== undefined) out = JSON.parse(readFileSync(isAbsolute(rout
 else if (route.echoReview !== undefined) {
   const req = JSON.parse(body);
   const states = { APPROVE: 'APPROVED', REQUEST_CHANGES: 'CHANGES_REQUESTED', COMMENT: 'COMMENTED' };
-  out = { id: route.echoReview.id, user: { login: route.echoReview.login }, state: states[req.event], commit_id: req.commit_id, submitted_at: '2026-11-13T12:00:00Z', body: req.body };
+  out = { id: route.echoReview.id, user: { login: route.echoReview.login }, state: states[req.event], commit_id: route.echoReview.commitId ?? req.commit_id, submitted_at: '2026-11-13T12:00:00Z', body: req.body };
 } else out = {};
 process.stdout.write(JSON.stringify(paginate && slurp ? [out] : out));

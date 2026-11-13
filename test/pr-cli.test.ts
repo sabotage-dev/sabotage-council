@@ -244,7 +244,7 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     c.gh.setRoutes({ ...routes, [`GET ${PULL}/reviews`]: { seq: [{ json: before }, { json: after }] }, [`PUT ${PULL}/reviews/990001/dismissals`]: { json: {} } });
     const r = await c.run('post', String(id), '--post');
     expect(r.code, r.lines.join('\n')).toBe(0);
-    expect(r.lines.join('\n')).toContain('approval dismissed: sabotage-council: approval withdrawn: a review landed while the approval was posted (alice CHANGES_REQUESTED).');
+    expect(r.lines).toContain('guard approval-race: done: withdrawn: a review landed while the approval was posted (alice CHANGES_REQUESTED)');
     expect(posts(c.gh).map((w) => [w.method, w.path])).toEqual([
       ['POST', `${PULL}/reviews`],
       ['PUT', `${PULL}/reviews/990001/dismissals`],
@@ -272,7 +272,7 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     expect(summary.earlier_items.map((i) => i.id).sort()).toEqual(['R5880199419', 'R7101', 'R7102']);
     const dry = await c.run('post', String(id), '--dry-run');
     expect(dry.lines[0]).toContain('event COMMENT (row 8)');
-    expect(dry.lines).toContain('would dismiss our review 7101: would be dismissed: superseded by this round, nothing owed');
+    expect(dry.lines).toContain('guard dismiss-stale (review 7101): would-run: would be dismissed: superseded by this round, nothing owed');
     const r = await c.run('post', String(id), '--post');
     expect(r.code, r.lines.join('\n')).toBe(0);
     expect(posts(c.gh).map((w) => [w.method, w.path])).toEqual([
@@ -281,7 +281,31 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     ]);
     expect((posts(c.gh)[0]?.body as { body: string; event: string }).event).toBe('COMMENT');
     expect((posts(c.gh)[0]?.body as { body: string }).body).toContain('Approval held: CI pending: ubuntu-latest / Node 22.');
+    expect(r.lines).toContain('guard dismiss-stale (review 7101): done: dismissed: superseded by round 4, which owes nothing');
     void d;
+  }, 60_000);
+
+  it('row 2: a stale-request dismissal that fails makes post exit 1 and stays pending; the next post dismisses it', async () => {
+    const { routes, src } = openWithNewHead();
+    const ours = ghReview(7101, 'reviewer-x', 'CHANGES_REQUESTED', src.shas['C7']!, '2026-11-12T19:00:00Z', `sabotage-council round 3 on sabotage-dev/sabotage-council#2 at ${src.shas['C7']!.slice(0, 7)}\n\n**Verdict: NEEDS-WORK, 1 owed.**`);
+    jsonList(routes, `GET ${PULL}/reviews`).push(ours);
+    const pr = ((json(routes, 'graphql')['data'] as Json)['repository'] as Json)['pullRequest'] as Json;
+    const rollup = (((pr['commits'] as Json)['nodes'] as Json[])[0]!['commit'] as Json)['statusCheckRollup'] as Json;
+    (((rollup['contexts'] as Json)['nodes'] as Json[])[0] as Json)['status'] = 'IN_PROGRESS';
+    routes[`GET ${API}/branches/main`] = { json: { name: 'main', protection: { required_status_checks: { contexts: ['ubuntu-latest / Node 22'], checks: [] } } } };
+    routes[`PUT ${PULL}/reviews/7101/dismissals`] = { seq: [{ fail: 'gh: Server Error (HTTP 502)' }, { json: {} }] };
+    const c = cli(routes, src, REVIEWER);
+    const { id } = await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: true });
+    const first = await c.run('post', String(id), '--post');
+    expect(first.code, first.lines.join('\n')).toBe(1);
+    expect(first.lines[0]).toContain('posted, event COMMENT (row 8)');
+    expect(first.lines).toContain('guard dismiss-stale (review 7101): PENDING after 1 attempt(s): the dismissal failed (PUT repos/sabotage-dev/sabotage-council/pulls/2/reviews/7101/dismissals failed: gh: Server Error (HTTP 502))');
+    expect((await c.run('round', 'show', String(id))).lines).toContain(`posted: COMMENT, review 990001 at ${String(JSON.parse((await c.run('round', 'show', String(id), '--json')).lines.join('\n')).pr.posted_at)}; next: sabotage-council post ${id} --post (resumes 1 pending guard(s))`);
+    const second = await c.run('post', String(id), '--post');
+    expect(second.code, second.lines.join('\n')).toBe(0);
+    expect(second.lines[0]).toContain('already-posted');
+    expect(second.lines).toContain('guard dismiss-stale (review 7101): done: dismissed: superseded by round 4, which owes nothing');
+    expect(posts(c.gh).map((w) => `${w.method} ${w.path}`)).toEqual([`POST ${PULL}/reviews`, `PUT ${PULL}/reviews/7101/dismissals`, `PUT ${PULL}/reviews/7101/dismissals`]);
   }, 60_000);
 
   it('N11: a ruling COMMENT never dismisses our stale REQUEST_CHANGES', async () => {
@@ -294,7 +318,7 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: false, needsRuling: true });
     const r = await c.run('post', '1', '--dry-run');
     expect(r.lines[0]).toContain('event COMMENT (row 2)');
-    expect(r.lines.join('\n')).not.toContain('would dismiss');
+    expect(r.lines.join('\n')).not.toContain('dismiss-stale');
     expect(r.lines.join('\n')).toContain('## Ruling needed');
   }, 60_000);
 

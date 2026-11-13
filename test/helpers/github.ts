@@ -87,7 +87,7 @@ export function recorded(name: string, shas: Shas): unknown {
   return JSON.parse(fill(readFileSync(join(PR2_FIXTURE, name), 'utf8'), shas)) as unknown;
 }
 
-export type Route = { json: unknown } | { fail: string } | { echoReview: { id: number; login: string } } | { seq: Route[] };
+export type Route = { json: unknown } | { fail: string } | { echoReview: { id: number; login: string; commitId?: string } } | { seq: Route[] };
 export type Routes = Record<string, Route>;
 
 /** The routes `round start pr` and `post` read for PR #2, from the recorded JSON. */

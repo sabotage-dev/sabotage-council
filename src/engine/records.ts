@@ -98,6 +98,9 @@ export interface RoundRow {
   posted_commit_id: string | null;
   posted_at: string | null;
   posted_body_sha256: string | null;
+  /** Migration 003 (P6 round 1): the post claim. */
+  post_owner: string | null;
+  post_claimed_at: string | null;
 }
 
 export function getRound(db: DatabaseSync, id: number): RoundRow | undefined {

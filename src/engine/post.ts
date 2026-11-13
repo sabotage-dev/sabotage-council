@@ -1,16 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import type { Adjudication } from '../adjudicate/schema.js';
 import type { CouncilConfig } from '../config/schema.js';
 import { readCi, type CiState } from '../forge/ci.js';
-import { userChangeRequest } from '../forge/count.js';
+import { countsAsCouncil, userChangeRequest, type MarkerConfig } from '../forge/count.js';
 import { decideEvent, type EventDecision, type EventFacts, type ReviewEvent } from '../forge/events.js';
 import { ForgeError, restPath, type GitHubApi } from '../forge/github.js';
 import { apiTreeOf, recheckIdentity, type IdentityMatch } from '../forge/identity.js';
 import { firstLine, namesPr, parseMarker } from '../forge/markers.js';
-import { loginMismatch, normalizeReview, readPr, repoKeyOf, sameLogin, type PrRef, type PrSnapshot, type Review } from '../forge/pr.js';
+import { loginMismatch, normalizeReview, readPr, readPull, repoKeyOf, sameLogin, type PrRef, type PrSnapshot, type Review } from '../forge/pr.js';
 import { renderBody, validateBody, type BodyLeg } from '../forge/render.js';
 import type { Store } from '../store/open.js';
+import type { DatabaseSync } from '../store/sqlite.js';
 import { preparedDetail } from './facts.js';
 import { autoOf, markerConfig, participantsOf } from './pr.js';
 import { roundDirOf, type DataLayout } from './prepare.js';
@@ -19,8 +22,19 @@ import { getEvents, getLegs, getRound, insertEvent, now, sha256, type RoundRow }
 /*
  * `sabotage-council post <round> --dry-run | --post` (plan 7.1 step 5, 3.7, 3.10): the post step after adjudication.
  * It re-reads the PR live, maps the round to its event (3.7's table), renders and validates the body, and then either
- * prints it (`--dry-run`, nothing is written to GitHub) or posts exactly one review on the reviewed head, followed by
- * the guards: the approval-race dismissal and the stale-change-request dismissal (only when nothing is owed, N11).
+ * prints it (`--dry-run`, nothing is written to GitHub) or posts exactly one review on the reviewed head.
+ *
+ * P6 round 1 made the post safe against a second process, a crash and a failed call:
+ * - `--post` claims the round in the store (one IMMEDIATE transaction) before any network call; a second `post` on
+ *   a claimed round is refused, and a claim whose process is gone can be taken over (row 9);
+ * - the guards a post owes (the approval race, our stale change request's dismissal, the withdrawal of a review bound
+ *   to another commit) are recorded as pending with the post's intent, before the POST, and each is marked done once
+ *   it ran; the next `post` (already posted, or adopting a review that landed) resumes the pending ones, and a guard
+ *   that is still pending makes `post` exit non-zero (row 2);
+ * - an interrupted post adopts only a review whose body and event are the ones it meant to post and that no other
+ *   round has stored, and refuses when more than one matches (row 4);
+ * - the head is read again right before the POST (row 5), and the approval race withdraws our approval for any
+ *   review that landed meanwhile unless it is a counted council review (row 3).
  */
 
 export interface PostOptions {
@@ -29,9 +43,28 @@ export interface PostOptions {
   api: GitHubApi;
   roundId: number;
   mode: 'dry-run' | 'post';
+  /**
+   * Tests only: stand-ins for another process or a crash at a fixed point of a post. `afterClaim` runs once the
+   * claim is taken (a second `post` at that moment); `afterPost` runs once the POST returned and before the store
+   * records it (a crash there, when it throws).
+   */
+  hooks?: { afterClaim?: (() => void) | undefined; afterPost?: (() => void) | undefined } | undefined;
 }
 
 export type PostOutcome = 'rendered' | 'posted' | 'superseded' | 'refused' | 'already-posted';
+
+export type GuardKind = 'approval-race' | 'dismiss-stale' | 'withdraw-off-head';
+
+/** One guard a post owes: pending until it ran (a failed call leaves it pending), done once it did; in a dry run, would-run. */
+export interface GuardReport {
+  kind: GuardKind;
+  /** The review it dismisses (our stale change request, or our review bound to another commit); null for the approval race. */
+  reviewId: number | null;
+  status: 'pending' | 'done' | 'would-run';
+  /** What it did, why it was not needed, or why its last attempt failed. */
+  outcome: string;
+  attempts: number;
+}
 
 export interface PostResult {
   roundId: number;
@@ -46,10 +79,8 @@ export interface PostResult {
   /** Why it was refused or superseded, or what the body validation found. */
   problems: string[];
   reviewId: number | null;
-  /** Our earlier REQUEST_CHANGES reviews dismissed (or, in a dry run, that would be). */
-  dismissals: Array<{ reviewId: number; ok: boolean; why: string }>;
-  /** The approval race (plan 3.7): our approval was dismissed, and why. */
-  approvalDismissed: { ok: boolean; why: string } | null;
+  /** The round's guards after this call (plan 3.7, row 2). */
+  guards: GuardReport[];
   ci: CiState | null;
 }
 
@@ -100,8 +131,254 @@ export function staleChangeRequests(reviews: readonly Review[], login: string, r
 }
 
 function base(roundId: number, mode: PostOptions['mode'], commitId: string): PostResult {
-  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, problems: [], reviewId: null, dismissals: [], approvalDismissed: null, ci: null };
+  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, problems: [], reviewId: null, guards: [], ci: null };
 }
+
+/* ---------- the claim (row 9) ---------- */
+
+/** A claim older than this is taken over even when its pid looks alive (a reused pid). A post takes minutes at most. */
+export const CLAIM_STALE_MS = 60 * 60 * 1000;
+
+interface ClaimOwner {
+  host: string;
+  pid: number;
+  token: string;
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Whether a stored claim still holds: its process runs (same host), or it is another host's within the hour. */
+function claimLive(ownerJson: string, claimedAt: string | null): boolean {
+  let owner: Partial<ClaimOwner>;
+  try {
+    owner = JSON.parse(ownerJson) as Partial<ClaimOwner>;
+  } catch {
+    return false;
+  }
+  const age = claimedAt === null ? Number.NaN : Date.now() - Date.parse(claimedAt);
+  if (!(age < CLAIM_STALE_MS)) return false;
+  if (owner.host === hostname() && typeof owner.pid === 'number') return pidAlive(owner.pid);
+  return true;
+}
+
+/** Claims a round for posting, atomically; the owner token, or why another post holds it. */
+/** Runs `fn` inside one IMMEDIATE transaction: committed when it returns, rolled back when it throws. */
+function immediate<T>(db: DatabaseSync, fn: () => T): T {
+  db.exec('BEGIN IMMEDIATE');
+  let value: T;
+  try {
+    value = fn();
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  db.exec('COMMIT');
+  return value;
+}
+
+/** Claims a round for posting, atomically; the owner token, or why another post holds it. */
+export function claimPost(db: DatabaseSync, roundId: number): { owner: string } | { why: string } {
+  return immediate(db, () => {
+    const r = db.prepare('SELECT post_owner, post_claimed_at FROM rounds WHERE id = ?').get(roundId) as { post_owner: string | null; post_claimed_at: string | null } | undefined;
+    if (r === undefined) throw new ForgeError(`no round ${roundId} in the store`);
+    if (r.post_owner !== null && claimLive(r.post_owner, r.post_claimed_at)) {
+      const pid = String((JSON.parse(r.post_owner) as Partial<ClaimOwner>).pid ?? '?');
+      return { why: `another post of round ${roundId} holds it (pid ${pid}, since ${String(r.post_claimed_at)}): nothing posts; run post again once it ends` };
+    }
+    const owner = JSON.stringify({ host: hostname(), pid: process.pid, token: randomUUID() } satisfies ClaimOwner);
+    db.prepare('UPDATE rounds SET post_owner = ?, post_claimed_at = ? WHERE id = ?').run(owner, now(), roundId);
+    if (r.post_owner !== null) insertEvent(db, 'post-claim-taken-over', roundId, { previous_claimed_at: r.post_claimed_at });
+    return { owner };
+  });
+}
+
+function releaseClaim(db: DatabaseSync, roundId: number, owner: string): void {
+  db.prepare('UPDATE rounds SET post_owner = NULL, post_claimed_at = NULL WHERE id = ? AND post_owner = ?').run(roundId, owner);
+}
+
+/* ---------- the intent and the guards (rows 2, 4) ---------- */
+
+/** What a post recorded before its POST (plan 9.4): the event, the exact body, and the reviews it had seen. */
+interface Intent {
+  event?: ReviewEvent;
+  row?: number;
+  commit_id?: string;
+  body_sha256?: string;
+  body?: string;
+  /** Submitted review ids on the pre-post read: a review outside it landed meanwhile (the approval race). */
+  reviews_seen?: number[];
+}
+
+function latestIntent(db: DatabaseSync, roundId: number): Intent | undefined {
+  return getEvents(db, roundId)
+    .filter((e) => e.kind === 'posting')
+    .at(-1)?.detail as Intent | undefined;
+}
+
+/** A body as GitHub may hand it back: line endings unified, trailing whitespace dropped. */
+const normalizedBody = (body: string): string => body.replace(/\r\n?/g, '\n').trimEnd();
+
+function bodyMatches(landed: string, intent: Intent): boolean {
+  if (typeof intent.body === 'string') return normalizedBody(landed) === normalizedBody(intent.body);
+  return sha256(landed) === intent.body_sha256 || sha256(`${normalizedBody(landed)}\n`) === intent.body_sha256;
+}
+
+/**
+ * The reviews an interrupted post may adopt (plan 9.4, row 4): ours (github.login), submitted on this head, first
+ * line this round's marker, with the body and the event the post meant to send (a dismissed review's event is
+ * unknown, so only its body is matched), and stored on no other round of this store.
+ */
+function adoptable(db: DatabaseSync, round: RoundRow, pr: PrSnapshot, login: string, intent: Intent): Review[] {
+  const storedElsewhere = db.prepare('SELECT 1 FROM rounds WHERE review_id = ? AND id <> ?');
+  return pr.reviews.filter(
+    (r) =>
+      r.state !== 'PENDING' &&
+      sameLogin(r.login, login) &&
+      r.commitId.toLowerCase() === round.head_sha.toLowerCase() &&
+      firstLine(r.body) === round.marker &&
+      (intent.event === undefined || r.state === 'DISMISSED' || EVENT_OF_STATE[r.state] === intent.event) &&
+      bodyMatches(r.body, intent) &&
+      storedElsewhere.get(r.id, round.id) === undefined,
+  );
+}
+
+interface GuardRow {
+  id: number;
+  kind: GuardKind;
+  review_id: number | null;
+  status: 'pending' | 'done';
+  attempts: number;
+  outcome: string | null;
+}
+
+function guardRows(db: DatabaseSync, roundId: number): GuardRow[] {
+  return db.prepare('SELECT id, kind, review_id, status, attempts, outcome FROM post_guards WHERE round_id = ? ORDER BY id').all(roundId) as unknown as GuardRow[];
+}
+
+function reports(db: DatabaseSync, roundId: number): GuardReport[] {
+  return guardRows(db, roundId).map((g) => ({ kind: g.kind, reviewId: g.review_id, status: g.status, outcome: g.outcome ?? 'not run yet', attempts: g.attempts }));
+}
+
+/** The number of guards a round still owes. */
+export function pendingGuards(db: DatabaseSync, roundId: number): number {
+  return (db.prepare("SELECT count(*) AS n FROM post_guards WHERE round_id = ? AND status = 'pending'").get(roundId) as { n: number }).n;
+}
+
+function addGuard(db: DatabaseSync, roundId: number, kind: GuardKind, reviewId: number | null): void {
+  db.prepare("INSERT INTO post_guards (round_id, kind, review_id, status, created_at) VALUES (?, ?, ?, 'pending', ?)").run(roundId, kind, reviewId, now());
+}
+
+/**
+ * Runs the round's pending guards and records each result. A guard whose call fails stays pending, with why, for the
+ * next `post`; every other guard is marked done with what it did (or why it was not needed).
+ */
+function runGuards(store: Store, api: GitHubApi, round: RoundRow, ref: PrRef, cfg: MarkerConfig): void {
+  const { db } = store;
+  const pending = guardRows(db, round.id).filter((g) => g.status === 'pending');
+  if (pending.length === 0) return;
+  const intent = latestIntent(db, round.id) ?? {};
+  const seen = new Set(intent.reviews_seen ?? []);
+  const head = round.head_sha;
+  let live: PrSnapshot | Error | undefined;
+  const read = (): PrSnapshot => {
+    if (live === undefined) {
+      try {
+        live = readPr(api, ref);
+      } catch (error) {
+        live = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    if (live instanceof Error) throw live;
+    return live;
+  };
+  const withdrawn = new Set<number>();
+  const dismiss = (reviewId: number, message: string): string | null => {
+    try {
+      api.send('PUT', `${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number, 'reviews', reviewId)}/dismissals`, { message, event: 'DISMISS' });
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
+  /** The live state of a review, or null when the read failed or the review is gone. */
+  const stateOf = (reviewId: number): string | null => {
+    try {
+      return read().reviews.find((r) => r.id === reviewId)?.state ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const finish = (g: GuardRow, done: boolean, outcome: string): void => {
+    db.prepare('UPDATE post_guards SET status = ?, attempts = attempts + 1, outcome = ?, done_at = ? WHERE id = ?').run(done ? 'done' : 'pending', outcome, done ? now() : null, g.id);
+    insertEvent(db, 'guard', round.id, { guard: g.id, kind: g.kind, review_id: g.review_id, status: done ? 'done' : 'pending', outcome });
+  };
+
+  for (const g of pending) {
+    if (g.kind === 'approval-race') {
+      const ours = round.review_id;
+      if (ours === null) {
+        finish(g, false, 'the round has no posted review yet');
+        continue;
+      }
+      if (withdrawn.has(ours) || stateOf(ours) === 'DISMISSED') {
+        finish(g, true, 'our approval is already withdrawn');
+        continue;
+      }
+      let why: string | null = null;
+      try {
+        const after = read();
+        // Row 3: any submitted review the pre-post read did not see (a pending draft submitted since counts) that is
+        // not a counted council review of this PR. A stranger's marker-shaped first line is not one.
+        const landed = after.reviews.filter((r) => r.state !== 'PENDING' && r.id !== ours && !seen.has(r.id) && !countsAsCouncil(r, cfg, ref));
+        if (after.headSha.toLowerCase() !== head.toLowerCase()) why = `the head moved to ${after.headSha.slice(0, 7)} while the approval was posted`;
+        else if (landed.length > 0) why = `a review landed while the approval was posted (${landed.map((r) => `${r.login} ${r.state}`).join(', ')})`;
+      } catch (error) {
+        why = `the re-read after the approval failed (${error instanceof Error ? error.message : String(error)}), so the approval is not trusted`;
+      }
+      if (why === null) {
+        finish(g, true, 'kept: no review landed meanwhile and the head held');
+        continue;
+      }
+      const failed = dismiss(ours, `sabotage-council: approval withdrawn: ${why}.`);
+      if (failed === null) withdrawn.add(ours);
+      finish(g, failed === null, failed === null ? `withdrawn: ${why}` : `${why}; the withdrawal failed (${failed}), so the approval still stands`);
+    } else if (g.kind === 'dismiss-stale') {
+      const id = g.review_id ?? 0;
+      const state = stateOf(id);
+      if (state !== null && state !== 'CHANGES_REQUESTED') {
+        finish(g, true, `no longer standing (${state})`);
+        continue;
+      }
+      const failed = dismiss(id, `sabotage-council: superseded by round ${round.round_no} at ${head.slice(0, 7)}, which owes nothing.`);
+      finish(g, failed === null, failed === null ? `dismissed: superseded by round ${round.round_no}, which owes nothing` : `the dismissal failed (${failed})`);
+    } else {
+      // withdraw-off-head (row 5): GitHub bound our review to another commit than the reviewed head.
+      const id = g.review_id ?? 0;
+      if (round.event_posted === 'COMMENT') {
+        finish(g, true, 'a comment sets no approval or block, and GitHub dismisses only approvals and change requests');
+        continue;
+      }
+      if (withdrawn.has(id) || stateOf(id) === 'DISMISSED') {
+        finish(g, true, 'already withdrawn');
+        continue;
+      }
+      const failed = dismiss(id, `sabotage-council: withdrawn: this review is bound to another commit than the reviewed head ${head.slice(0, 7)}.`);
+      if (failed === null) withdrawn.add(id);
+      finish(g, failed === null, failed === null ? 'withdrawn: bound to another commit than the reviewed head' : `the withdrawal failed (${failed})`);
+    }
+  }
+}
+
+/* ---------- the post step ---------- */
+
+type Refuse = (why: string) => PostResult;
 
 /** Runs the post step. Never throws for a guard: every refusal is an outcome with its reasons, and an event. */
 export function postRound(store: Store, o: PostOptions): PostResult {
@@ -109,56 +386,90 @@ export function postRound(store: Store, o: PostOptions): PostResult {
   const round = getRound(db, o.roundId);
   if (!round) throw new ForgeError(`no round ${o.roundId} in the store`);
   const result = base(round.id, o.mode, round.head_sha);
-  const refuse = (why: string): PostResult => {
+  const refuse: Refuse = (why) => {
     result.problems.push(why);
-    insertEvent(db, o.mode === 'post' ? 'post-refused' : 'post-dry-run', round.id, { outcome: 'refused', why });
+    insertEvent(db, o.mode === 'post' ? 'post-refused' : 'post-dry-run', round.id, { outcome: 'refused', why, event: result.event, body_sha256: result.bodySha256 });
     return result;
   };
   if (round.mode !== 'pr') return refuse(`round ${round.id} is a ${round.mode} round: only pr rounds post`);
   if (round.status !== 'adjudicated' && round.status !== 'identity') return refuse(`round ${round.id} is ${round.status}: a council round posts only once it is adjudicated`);
+  if (o.mode === 'post' && round.dry_run === 1) return refuse(`round ${round.id} was started with --dry-run: it can render its post but never post`);
+  if (round.marker === null) return refuse(`round ${round.id} has no marker`);
+  if (o.mode === 'dry-run') return step(store, o, round, result, refuse);
+
+  // Row 9: one POST per round. The claim is taken before any network call; the round is read again under it.
+  const claim = claimPost(db, round.id);
+  if ('why' in claim) return refuse(claim.why);
+  try {
+    o.hooks?.afterClaim?.();
+    return step(store, o, getRound(db, round.id) ?? round, result, refuse);
+  } finally {
+    releaseClaim(db, round.id, claim.owner);
+  }
+}
+
+function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult, refuse: Refuse): PostResult {
+  const { db } = store;
+  const marker = round.marker ?? '';
+  const ref = refOf(store, round);
+  const cfg = markerConfig(o.config);
+  const auto = autoOf(o.config);
+  // Row 10: gh posts (and dismisses) as whichever account it is logged in as; that must be github.login.
+  const wrongLogin = loginMismatch(o.api, cfg.login);
+  if (wrongLogin !== null) return refuse(wrongLogin);
   if (round.event_posted !== null) {
+    // Posted already: a later `post` resumes the guards it still owes (row 2).
     result.outcome = 'already-posted';
     result.event = round.event_posted as ReviewEvent;
     result.reviewId = round.review_id;
     result.problems.push(`round ${round.id} already posted review ${String(round.review_id)} (${round.event_posted})`);
+    if (o.mode === 'post') runGuards(store, o.api, round, ref, cfg);
+    result.guards = reports(db, round.id);
     return result;
   }
-  if (o.mode === 'post' && round.dry_run === 1) return refuse(`round ${round.id} was started with --dry-run: it can render its post but never post`);
-  if (round.marker === null) return refuse(`round ${round.id} has no marker`);
-
-  const ref = refOf(store, round);
-  const cfg = markerConfig(o.config);
-  const auto = autoOf(o.config);
-  // Row 10: gh posts as whichever account it is logged in as; that must be github.login.
-  const wrongLogin = loginMismatch(o.api, cfg.login);
-  if (wrongLogin !== null) return refuse(wrongLogin);
   const pr: PrSnapshot = readPr(o.api, ref);
   const head = round.head_sha;
-  // Guard: head moved (plan 3.7). The round is superseded and nothing posts.
-  if (pr.headSha.toLowerCase() !== head.toLowerCase()) {
+  const superseded = (headNow: string): PostResult => {
     result.outcome = 'superseded';
-    result.problems.push(`the head moved from ${head.slice(0, 7)} to ${pr.headSha.slice(0, 7)}: the round is superseded and nothing posts`);
+    result.problems.push(`the head moved from ${head.slice(0, 7)} to ${headNow.slice(0, 7)}: the round is superseded and nothing posts`);
     if (o.mode === 'post') db.prepare("UPDATE rounds SET status = 'superseded' WHERE id = ?").run(round.id);
-    insertEvent(db, o.mode === 'post' ? 'superseded' : 'post-dry-run', round.id, { outcome: 'superseded', head: pr.headSha });
+    insertEvent(db, o.mode === 'post' ? 'superseded' : 'post-dry-run', round.id, { outcome: 'superseded', head: headNow });
     return result;
-  }
+  };
+  // Guard: head moved (plan 3.7). The round is superseded and nothing posts.
+  if (pr.headSha.toLowerCase() !== head.toLowerCase()) return superseded(pr.headSha);
   if (pr.state === 'closed' && o.mode === 'post') return refuse(`${ref.owner}/${ref.repo}#${ref.number} is closed: nothing posts`);
+
   // Plan 9.4 resume, for a post this round began and did not record (a crash between the POST and the store): a
-  // review of ours with this marker on this head means it landed. Without that intent, such a review is another
-  // council's on the same head (the same round number, 3.6), not ours.
-  const roundEvents = getEvents(db, round.id);
-  const intent = roundEvents.filter((e) => e.kind === 'posting').at(-1)?.detail as { body_sha256?: string } | undefined;
-  const landed = intent === undefined ? undefined : pr.reviews.find((r) => sameLogin(r.login, cfg.login) && r.commitId === head && firstLine(r.body) === round.marker);
-  if (landed !== undefined) {
-    result.outcome = 'already-posted';
-    result.reviewId = landed.id;
-    result.event = EVENT_OF_STATE[landed.state] ?? null;
-    result.problems.push(`review ${landed.id} with this round's marker is already on this head`);
-    if (o.mode === 'post') {
-      db.prepare('UPDATE rounds SET review_id = ?, event_posted = ?, posted_commit_id = ? WHERE id = ?').run(landed.id, result.event, head, round.id);
-      insertEvent(db, 'post-adopted', round.id, { review_id: landed.id, state: landed.state });
+  // review with this round's marker, body and event on this head, that no other round stored, means it landed.
+  const intent = latestIntent(db, round.id);
+  if (intent !== undefined) {
+    const found = adoptable(db, round, pr, cfg.login, intent);
+    if (found.length > 1) {
+      return refuse(`an earlier post of this round was interrupted, and ${found.length} reviews match what it meant to post (${found.map((r) => r.id).join(', ')}): nothing is adopted or posted; check them on GitHub`);
     }
-    return result;
+    const landed = found[0];
+    if (landed !== undefined) {
+      result.outcome = 'already-posted';
+      result.reviewId = landed.id;
+      result.event = intent.event ?? EVENT_OF_STATE[landed.state] ?? null;
+      result.problems.push(`review ${landed.id} with this round's marker and body is already on this head`);
+      if (o.mode === 'post') {
+        db.prepare('UPDATE rounds SET review_id = ?, event_posted = ?, posted_commit_id = ?, posted_at = ?, posted_body_sha256 = ? WHERE id = ?').run(
+          landed.id,
+          result.event,
+          landed.commitId,
+          landed.submittedAt === '' ? now() : landed.submittedAt,
+          intent.body_sha256 ?? sha256(landed.body),
+          round.id,
+        );
+        insertEvent(db, 'post-adopted', round.id, { review_id: landed.id, state: landed.state });
+        // Row 2: the guards recorded with the intent still run.
+        runGuards(store, o.api, getRound(db, round.id) ?? round, ref, cfg);
+      }
+      result.guards = reports(db, round.id);
+      return result;
+    }
   }
 
   const ci = readCi(o.api, ref, head, pr.baseRef, auto.ci_gate);
@@ -195,7 +506,7 @@ export function postRound(store: Store, o: PostOptions): PostResult {
     }
     facts = { ...common, needsRuling: false, verdict: null, owed: 0, legsClear: false, council: false, adjudicatorApprove: false, userChangeRequest: cr !== null, identityRecheck: recheck };
     decision = decideEvent(facts);
-    body = renderBody({ kind: 'identity', marker: round.marker, decision, number: prep.match.number, commitId: prep.match.commitId, reviewId: prep.match.reviewId, ci }, { nonce: null, participants });
+    body = renderBody({ kind: 'identity', marker, decision, number: prep.match.number, commitId: prep.match.commitId, reviewId: prep.match.reviewId, ci }, { nonce: null, participants });
     owed = null;
     holdsDismissal = cr !== null;
   } else {
@@ -219,7 +530,7 @@ export function postRound(store: Store, o: PostOptions): PostResult {
     body = renderBody(
       {
         kind: 'council',
-        marker: round.marker,
+        marker,
         decision,
         adjudication: doc,
         verdict: round.verdict ?? doc.verdict,
@@ -239,7 +550,7 @@ export function postRound(store: Store, o: PostOptions): PostResult {
   result.row = decision.row;
   result.body = body;
   result.bodySha256 = sha256(body);
-  result.problems.push(...validateBody(body, { marker: round.marker, rules: { nonce: round.nonce, participants }, owed }));
+  result.problems.push(...validateBody(body, { marker, rules: { nonce: round.nonce, participants }, owed }));
   if (result.problems.length > 0) {
     insertEvent(db, o.mode === 'post' ? 'post-refused' : 'post-dry-run', round.id, { outcome: 'refused', problems: result.problems, event: decision.event, row: decision.row });
     return result;
@@ -254,15 +565,38 @@ export function postRound(store: Store, o: PostOptions): PostResult {
 
   if (o.mode === 'dry-run') {
     result.outcome = 'rendered';
-    result.dismissals = stale.map((r) => ({ reviewId: r.id, ok: true, why: 'would be dismissed: superseded by this round, nothing owed' }));
+    result.guards = [
+      ...(decision.event === 'APPROVE'
+        ? [{ kind: 'approval-race' as const, reviewId: null, status: 'would-run' as const, outcome: 'would re-read the PR after the approval and withdraw it if the head moved or another review landed', attempts: 0 }]
+        : []),
+      ...stale.map((r) => ({ kind: 'dismiss-stale' as const, reviewId: r.id, status: 'would-run' as const, outcome: 'would be dismissed: superseded by this round, nothing owed', attempts: 0 })),
+    ];
     writeFileSync(join(roundDir, 'REVIEW.dry-run.md'), body);
     insertEvent(db, 'post-dry-run', round.id, { outcome: 'rendered', event: decision.event, row: decision.row, commit_id: head, body_sha256: result.bodySha256, would_dismiss: stale.map((r) => r.id), ci });
     return result;
   }
 
-  insertEvent(db, 'posting', round.id, { event: decision.event, row: decision.row, commit_id: head, body_sha256: result.bodySha256 });
-  const seen = new Set(pr.reviews.map((r) => r.id));
+  // Row 5: the CI and identity reads take time; read the head once more right before the POST.
+  const headNow = readPull(o.api, ref).headSha;
+  if (headNow.toLowerCase() !== head.toLowerCase()) return superseded(headNow);
+
+  // The intent and the guards it owes, in one transaction before the POST (plan 9.4, row 2). A re-post after an
+  // interrupted POST that did not land replaces the guards that never ran.
+  immediate(db, () => {
+    db.prepare("DELETE FROM post_guards WHERE round_id = ? AND status = 'pending'").run(round.id);
+    insertEvent(db, 'posting', round.id, {
+      event: decision.event,
+      row: decision.row,
+      commit_id: head,
+      body_sha256: result.bodySha256 ?? '',
+      body,
+      reviews_seen: pr.reviews.filter((r) => r.state !== 'PENDING').map((r) => r.id),
+    } satisfies Intent);
+    if (decision.event === 'APPROVE') addGuard(db, round.id, 'approval-race', null);
+    for (const r of stale) addGuard(db, round.id, 'dismiss-stale', r.id);
+  });
   const posted = normalizeReview(o.api.send('POST', `${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number)}/reviews`, { commit_id: head, event: decision.event, body }));
+  o.hooks?.afterPost?.();
   writeFileSync(join(roundDir, 'REVIEW.md'), body);
   db.prepare('UPDATE rounds SET event_posted = ?, review_id = ?, posted_commit_id = ?, posted_at = ?, posted_body_sha256 = ? WHERE id = ?').run(
     decision.event,
@@ -273,39 +607,12 @@ export function postRound(store: Store, o: PostOptions): PostResult {
     round.id,
   );
   insertEvent(db, 'posted', round.id, { review_id: posted.id, event: decision.event, row: decision.row, commit_id: posted.commitId, state: posted.state });
+  // Row 5: a review GitHub bound to another commit than the reviewed head is withdrawn, whatever its event.
+  if (posted.commitId.toLowerCase() !== head.toLowerCase()) addGuard(db, round.id, 'withdraw-off-head', posted.id);
   result.outcome = 'posted';
   result.reviewId = posted.id;
-
-  const dismiss = (reviewId: number, message: string): { ok: boolean; why: string } => {
-    try {
-      o.api.send('PUT', `${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number, 'reviews', reviewId)}/dismissals`, { message, event: 'DISMISS' });
-      return { ok: true, why: message };
-    } catch (error) {
-      return { ok: false, why: `${message} (the dismissal failed: ${error instanceof Error ? error.message : String(error)})` };
-    }
-  };
-
-  // Guard: the approval race (plan 3.7). Re-read; a moved head or a review that landed meanwhile dismisses ours.
-  if (decision.event === 'APPROVE') {
-    let why: string | null = null;
-    try {
-      const after = readPr(o.api, ref);
-      const landedMeanwhile = after.reviews.filter((r) => !seen.has(r.id) && r.id !== posted.id && parseMarker(r.body, cfg.markers_also_count) === null);
-      if (after.headSha !== head) why = `the head moved to ${after.headSha.slice(0, 7)} while the approval was posted`;
-      else if (landedMeanwhile.length > 0) why = `a review landed while the approval was posted (${landedMeanwhile.map((r) => `${r.login} ${r.state}`).join(', ')})`;
-    } catch (error) {
-      why = `the re-read after the approval failed (${error instanceof Error ? error.message : String(error)}), so the approval is not trusted`;
-    }
-    if (why !== null) {
-      result.approvalDismissed = dismiss(posted.id, `sabotage-council: approval withdrawn: ${why}.`);
-      insertEvent(db, 'approval-dismissed', round.id, { review_id: posted.id, ...result.approvalDismissed });
-    }
-  }
-  for (const r of stale) {
-    const d = dismiss(r.id, `sabotage-council: superseded by round ${round.round_no} at ${head.slice(0, 7)}, which owes nothing.`);
-    result.dismissals.push({ reviewId: r.id, ...d });
-    insertEvent(db, 'dismissed', round.id, { review_id: r.id, ...d });
-  }
+  runGuards(store, o.api, getRound(db, round.id) ?? round, ref, cfg);
+  result.guards = reports(db, round.id);
   return result;
 }
 
