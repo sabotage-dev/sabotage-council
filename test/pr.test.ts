@@ -552,6 +552,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
   it('row 9: two posts of one round make one POST; the second is refused while the first holds the claim, which a dead process loses', async () => {
     const w = await world(approvable);
     const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, id, 'dry-run');
     let second: PostResult | undefined;
     const first = post(w, id, 'post', {
       afterClaim: () => {
@@ -582,6 +583,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
   it('row 2: a crash between the POST and the store still runs the guards when the next post adopts the review', async () => {
     const w = await world(approvable);
     const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, id, 'dry-run');
     expect(() =>
       post(w, id, 'post', {
         afterPost: () => {
@@ -612,6 +614,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
   it("row 2: a withdrawal that fails stays pending, and the next post (already posted) runs it again", async () => {
     const w = await world(approvable);
     const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, id, 'dry-run');
     const routes = pr2Routes(w.src.shas);
     approvable(routes, w.src);
     const before = jsonList(routes, `GET ${API_PULL}/reviews`);
@@ -633,6 +636,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
   it("row 4: an interrupted round B on round A's head never adopts A's review, even with the same marker and body", async () => {
     const w = await world(approvable);
     const a = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, a.id, 'dry-run');
     expect(post(w, a.id, 'post')).toMatchObject({ outcome: 'posted', reviewId: 990001 });
     const sentA = (postsSent(w)[0]!.body as { body: string }).body;
     const routes = pr2Routes(w.src.shas);
@@ -641,6 +645,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
     routes[`POST ${API_PULL}/reviews`] = { fail: 'gh: connection reset' };
     w.gh.setRoutes(routes);
     const b = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, b.id, 'dry-run');
     expect(getRound(w.h.store.db, b.id)!.marker).toBe(getRound(w.h.store.db, a.id)!.marker);
     expect(() => post(w, b.id, 'post')).toThrow(/connection reset/);
     const sentB = (postsSent(w)[1]!.body as { body: string }).body;
@@ -657,6 +662,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
   it('row 4: adoption needs the intended body and event, and refuses when more than one review matches', async () => {
     const w = await world(approvable);
     const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, id, 'dry-run');
     const routes = pr2Routes(w.src.shas);
     approvable(routes, w.src);
     routes[`POST ${API_PULL}/reviews`] = { fail: 'gh: connection reset' };
@@ -684,6 +690,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
   it('row 5: a push during the CI read supersedes the round right before the POST, and nothing posts', async () => {
     const w = await world(approvable);
     const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, id, 'dry-run');
     const routes = pr2Routes(w.src.shas);
     approvable(routes, w.src);
     const moved = structuredClone(json(routes, `GET ${API_PULL}`));
@@ -700,6 +707,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
   it('row 5: a review GitHub bound to another commit is withdrawn whatever its event; a comment cannot be and is noted', async () => {
     const changes = await world(approvable);
     const rc = await councilRound(changes, { dryRun: false }, { outcome: 'owed', verdict: 'NEEDS-WORK', approve: false });
+    post(changes, rc.id, 'dry-run');
     const routes = pr2Routes(changes.src.shas);
     approvable(routes, changes.src);
     routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990001, login: 'repo-owner', commitId: changes.src.shas['C7']! } };
@@ -716,6 +724,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
       moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }), src);
     });
     const cm = await councilRound(comment, { dryRun: false }, APPROVE);
+    post(comment, cm.id, 'dry-run');
     const croutes = pr2Routes(comment.src.shas);
     reopen(croutes);
     moveHead(croutes, comment.src.shas['D']!, comment.src);
@@ -731,6 +740,7 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
     const race = async (landed: (src: SourceRepo, marker: string) => Json[], pending: Json[] = []): Promise<PostResult> => {
       const w = await world(approvable);
       const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+      post(w, id, 'dry-run');
       const marker = getRound(w.h.store.db, id)!.marker!;
       const routes = pr2Routes(w.src.shas);
       approvable(routes, w.src);

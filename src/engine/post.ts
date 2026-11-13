@@ -44,6 +44,11 @@ export interface PostOptions {
   roundId: number;
   mode: 'dry-run' | 'post';
   /**
+   * `--expect <sha256>` (row 8): the body hash of the dry run the user approved. `--post` then sends only that body,
+   * with the event that dry run showed. Without it, `--post` sends only what the round's latest dry run showed.
+   */
+  expect?: string | undefined;
+  /**
    * Tests only: stand-ins for another process or a crash at a fixed point of a post. `afterClaim` runs once the
    * claim is taken (a second `post` at that moment); `afterPost` runs once the POST returned and before the store
    * records it (a crash there, when it throws).
@@ -82,6 +87,8 @@ export interface PostResult {
   /** The round's guards after this call (plan 3.7, row 2). */
   guards: GuardReport[];
   ci: CiState | null;
+  /** The command that comes next, when there is one: a rendered dry run names the `--post --expect` that sends it. */
+  next: string | null;
 }
 
 /** `owner/name` against `auto.repos_hold` patterns (`*` matches any run of characters), case-insensitively. */
@@ -131,7 +138,7 @@ export function staleChangeRequests(reviews: readonly Review[], login: string, r
 }
 
 function base(roundId: number, mode: PostOptions['mode'], commitId: string): PostResult {
-  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, problems: [], reviewId: null, guards: [], ci: null };
+  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, problems: [], reviewId: null, guards: [], ci: null, next: null };
 }
 
 /* ---------- the claim (row 9) ---------- */
@@ -376,6 +383,38 @@ function runGuards(store: Store, api: GitHubApi, round: RoundRow, ref: PrRef, cf
   }
 }
 
+/* ---------- what the user approved (row 8) ---------- */
+
+/** The renders the round's dry runs printed, oldest first: what the user can have seen and approved. */
+function dryRuns(db: DatabaseSync, roundId: number): Array<{ event: string; sha: string }> {
+  return getEvents(db, roundId)
+    .filter((e) => e.kind === 'post-dry-run')
+    .map((e) => e.detail as { outcome?: string; event?: string; body_sha256?: string } | null)
+    .filter((d) => d?.outcome === 'rendered' && typeof d.event === 'string' && typeof d.body_sha256 === 'string')
+    .map((d) => ({ event: d?.event ?? '', sha: d?.body_sha256 ?? '' }));
+}
+
+/**
+ * Why `--post` may not send this render, or null (row 8, claude F1): the event and body must be those of a dry run of
+ * this round that the user saw, the one `--expect` names or else the latest. A render that changed since (CI turned
+ * green, a review landed) is refused, never sent on the old go.
+ */
+function notApproved(db: DatabaseSync, roundId: number, event: string, sha: string, expect: string | undefined): string | null {
+  const runs = dryRuns(db, roundId);
+  const again = `run post ${roundId} --dry-run, show the user that review, and post it with --expect <its sha256> only on their go`;
+  if (expect !== undefined) {
+    if (expect !== sha) return `the review now differs from the one --expect names (${expect.slice(0, 12)}; now ${event} ${sha.slice(0, 12)}): nothing posts; ${again}`;
+    if (!runs.some((r) => r.sha === expect && r.event === event)) return `no dry run of round ${roundId} printed ${event} with body ${expect.slice(0, 12)}: nothing posts; ${again}`;
+    return null;
+  }
+  const last = runs.at(-1);
+  if (last === undefined) return `round ${roundId} has no dry run: --post sends only a review the user saw; ${again}`;
+  if (last.event !== event || last.sha !== sha) {
+    return `the review differs from the latest dry run (that showed ${last.event} ${last.sha.slice(0, 12)}; now ${event} ${sha.slice(0, 12)}): nothing posts; ${again}`;
+  }
+  return null;
+}
+
 /* ---------- the post step ---------- */
 
 type Refuse = (why: string) => PostResult;
@@ -573,7 +612,15 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     ];
     writeFileSync(join(roundDir, 'REVIEW.dry-run.md'), body);
     insertEvent(db, 'post-dry-run', round.id, { outcome: 'rendered', event: decision.event, row: decision.row, commit_id: head, body_sha256: result.bodySha256, would_dismiss: stale.map((r) => r.id), ci });
+    if (round.dry_run === 0) result.next = `sabotage-council post ${round.id} --post --expect ${result.bodySha256}`;
     return result;
+  }
+
+  // Row 8: --post sends only the review a dry run showed the user.
+  const unapproved = notApproved(db, round.id, decision.event, result.bodySha256, o.expect);
+  if (unapproved !== null) {
+    result.next = `sabotage-council post ${round.id} --dry-run`;
+    return refuse(unapproved);
   }
 
   // Row 5: the CI and identity reads take time; read the head once more right before the POST.

@@ -239,6 +239,7 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     const { routes, src, d } = openWithNewHead();
     const c = cli(routes, src, REVIEWER);
     const { id } = await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: true });
+    expect((await c.run('post', String(id), '--dry-run')).code).toBe(0);
     const before = jsonList(routes, `GET ${PULL}/reviews`);
     const after = [...before, ghReview(990002, 'alice', 'CHANGES_REQUESTED', d, '2026-11-13T12:00:01Z', 'Wait, step 8 is wrong.')];
     c.gh.setRoutes({ ...routes, [`GET ${PULL}/reviews`]: { seq: [{ json: before }, { json: after }] }, [`PUT ${PULL}/reviews/990001/dismissals`]: { json: {} } });
@@ -296,6 +297,7 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     routes[`PUT ${PULL}/reviews/7101/dismissals`] = { seq: [{ fail: 'gh: Server Error (HTTP 502)' }, { json: {} }] };
     const c = cli(routes, src, REVIEWER);
     const { id } = await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: true });
+    expect((await c.run('post', String(id), '--dry-run')).code).toBe(0);
     const first = await c.run('post', String(id), '--post');
     expect(first.code, first.lines.join('\n')).toBe(1);
     expect(first.lines[0]).toContain('posted, event COMMENT (row 8)');
@@ -320,6 +322,57 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     expect(r.lines[0]).toContain('event COMMENT (row 2)');
     expect(r.lines.join('\n')).not.toContain('dismiss-stale');
     expect(r.lines.join('\n')).toContain('## Ruling needed');
+  }, 60_000);
+
+  it('row 8: --post sends only the dry run the user saw; CI turning green since refuses, and a matching --expect posts', async () => {
+    const { routes, src } = openWithNewHead();
+    const green = structuredClone(routes);
+    const pr = ((json(routes, 'graphql')['data'] as Json)['repository'] as Json)['pullRequest'] as Json;
+    const rollup = (((pr['commits'] as Json)['nodes'] as Json[])[0]!['commit'] as Json)['statusCheckRollup'] as Json;
+    (((rollup['contexts'] as Json)['nodes'] as Json[])[0] as Json)['status'] = 'IN_PROGRESS';
+    routes[`GET ${API}/branches/main`] = { json: { name: 'main', protection: { required_status_checks: { contexts: ['ubuntu-latest / Node 22'], checks: [] } } } };
+    green[`GET ${API}/branches/main`] = routes[`GET ${API}/branches/main`]!;
+    const c = cli(routes, src, REVIEWER);
+    const { id } = await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: true });
+    // No dry run yet: nothing the user saw, so nothing posts.
+    const blind = await c.run('post', String(id), '--post');
+    expect(blind.code).toBe(1);
+    expect(blind.lines.join('\n')).toContain(`round ${id} has no dry run: --post sends only a review the user saw`);
+    // The user sees a held approval (CI pending) and says "post it"; CI turns green before the --post.
+    const shown = await c.run('post', String(id), '--dry-run');
+    expect(shown.lines[0]).toContain('event COMMENT (row 8)');
+    const shownSha = shown.lines[1]!.replace('body sha256 ', '');
+    expect(shown.lines).toContain(`next: sabotage-council post ${id} --post --expect ${shownSha}`);
+    c.gh.setRoutes(green);
+    for (const args of [['--post'], ['--post', '--expect', shownSha]]) {
+      const refused = await c.run('post', String(id), ...args);
+      expect(refused.code).toBe(1);
+      expect(refused.lines[0]).toContain('refused, event APPROVE (row 5)');
+      expect(refused.lines.join('\n')).toMatch(/differs from (the latest dry run|the one --expect names)/);
+      // The new render is printed, so the user can be shown it; it posts only after a new dry run and a new go.
+      expect(refused.lines).toContain('----- body -----');
+      expect(refused.lines).toContain(`next: sabotage-council post ${id} --dry-run`);
+    }
+    expect(posts(c.gh)).toEqual([]);
+    const again = await c.run('post', String(id), '--dry-run');
+    const sha = again.lines[1]!.replace('body sha256 ', '');
+    // --expect must name a render a dry run of this round printed, with the same event: a hash taken from elsewhere
+    // (here: the dry runs forgotten) does not stand in for one.
+    const store = openStore(c.paths.dbPath);
+    const kept = store.db.prepare("SELECT detail_json FROM events WHERE round_id = ? AND kind = 'post-dry-run' ORDER BY id").all(id) as Array<{ detail_json: string }>;
+    store.db.prepare("DELETE FROM events WHERE round_id = ? AND kind = 'post-dry-run'").run(id);
+    const unseen = await c.run('post', String(id), '--post', '--expect', sha);
+    expect(unseen.code).toBe(1);
+    expect(unseen.lines.join('\n')).toContain(`no dry run of round ${id} printed APPROVE with body ${sha.slice(0, 12)}`);
+    for (const k of kept) store.db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES ('x', 'post-dry-run', ?, ?)").run(id, k.detail_json);
+    store.close();
+    const posted = await c.run('post', String(id), '--post', '--expect', sha);
+    expect(posted.code, posted.lines.join('\n')).toBe(0);
+    expect(posts(c.gh)).toHaveLength(1);
+    expect((posts(c.gh)[0]?.body as { event: string; body: string })).toMatchObject({ event: 'APPROVE' });
+    expect(createHash('sha256').update((posts(c.gh)[0]?.body as { body: string }).body).digest('hex')).toBe(sha);
+    // --expect goes with --post only, and must look like a sha256.
+    expect((await c.run('post', String(id), '--dry-run', '--expect', sha)).lines).toEqual(['error: --expect goes with --post']);
   }, 60_000);
 
   it('credit: a vouched-for unmarked review counts at its own head and time (plan 3.6 step 4)', async () => {

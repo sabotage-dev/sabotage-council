@@ -135,6 +135,7 @@ export function renderPost(r: PostResult): string[] {
   const out: string[] = [];
   const what = r.mode === 'dry-run' ? 'dry run (nothing posted)' : 'post';
   out.push(`round ${r.roundId} ${what}: ${r.outcome}${r.event !== null ? `, event ${r.event} (row ${String(r.row)})` : ''}, commit_id ${r.commitId}`);
+  if (r.bodySha256 !== null) out.push(`body sha256 ${r.bodySha256}`);
   if (r.ci !== null) out.push(`ci ${r.ci.state}: ${r.ci.note}`);
   for (const p of r.problems) out.push(`  ${p}`);
   if (r.reviewId !== null) out.push(`review ${r.reviewId}`);
@@ -142,6 +143,7 @@ export function renderPost(r: PostResult): string[] {
     out.push(`guard ${g.kind}${g.reviewId !== null ? ` (review ${g.reviewId})` : ''}: ${g.status === 'pending' ? `PENDING after ${g.attempts} attempt(s)` : g.status}: ${g.outcome}`);
   }
   if (r.body !== null) out.push('----- body -----', ...r.body.replace(/\n$/, '').split('\n'), '----- end -----');
+  if (r.next !== null) out.push(`next: ${r.next}`);
   return out;
 }
 
@@ -149,12 +151,12 @@ export function renderPost(r: PostResult): string[] {
  * `post <round> --dry-run | --post`. Exit 0 when rendered or posted; 1 when refused, superseded or failed, and when a
  * `--post` leaves a guard pending (run `post --post` again to resume it, P6 round 1 row 2).
  */
-export async function postCommand(io: PrIo, paths: StorePaths, roundId: number, mode: 'dry-run' | 'post', json: boolean): Promise<void> {
+export async function postCommand(io: PrIo, paths: StorePaths, roundId: number, mode: 'dry-run' | 'post', json: boolean, expect?: string): Promise<void> {
   const cfg = await config(io, paths, false);
   if (cfg === null) return;
   const store = openStore(paths.dbPath);
   try {
-    const r = postRound(store, { config: cfg, layout: layoutOf(paths), api: apiOf(io), roundId, mode });
+    const r = postRound(store, { config: cfg, layout: layoutOf(paths), api: apiOf(io), roundId, mode, expect });
     if (json) io.write(JSON.stringify(r, null, 2));
     else for (const l of renderPost(r)) io.write(l);
     const ok = r.outcome === 'rendered' || r.outcome === 'posted' || r.outcome === 'already-posted';

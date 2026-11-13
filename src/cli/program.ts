@@ -192,21 +192,31 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     adjudicateCommand(roundIo, pathsOf(opts), id, file, opts.json === true, opts.check === true);
   });
 
+  const expectHash = (value: string): string => {
+    if (!/^[0-9a-f]{64}$/.test(value)) throw new InvalidArgumentError('the expected body hash is the 64 lower-case hex sha256 a dry run printed');
+    return value;
+  };
   storeOptions(
     program
       .command('post')
       .argument('<id>', 'the round id of an adjudicated pr round (or an identity round)', roundId)
       .description("render the round's GitHub review (--dry-run) or post it (--post): one review on the reviewed head (plan 3.7)")
       .option('--dry-run', 'print the exact body and event that would be posted; post nothing')
-      .option('--post', 'post the review; refused if the head moved, the round was started with --dry-run, or the body fails validation')
+      .option('--post', 'post the review a dry run showed; refused if it changed since, the head moved, the round was started with --dry-run, or the body fails validation')
+      .option('--expect <sha256>', 'with --post: the body sha256 of the dry run the user approved; only that review posts', expectHash)
       .option('--json', 'print the result as JSON'),
-  ).action(async (id: number, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; post?: boolean; json?: boolean }) => {
+  ).action(async (id: number, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; post?: boolean; expect?: string; json?: boolean }) => {
     if ((opts.dryRun === true) === (opts.post === true)) {
       io.write('error: give exactly one of --dry-run or --post');
       io.setExitCode(1);
       return;
     }
-    await postCommand(prIo, pathsOf(opts), id, opts.post === true ? 'post' : 'dry-run', opts.json === true);
+    if (opts.expect !== undefined && opts.post !== true) {
+      io.write('error: --expect goes with --post');
+      io.setExitCode(1);
+      return;
+    }
+    await postCommand(prIo, pathsOf(opts), id, opts.post === true ? 'post' : 'dry-run', opts.json === true, opts.expect);
   });
 
   const reviewId = (value: string): number => {
