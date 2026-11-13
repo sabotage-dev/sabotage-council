@@ -8,9 +8,9 @@ import type { EarlierItem } from '../root/data-files.js';
 import { prepareRoot } from '../root/seal.js';
 import type { Store } from '../store/open.js';
 import type { PreparedDetail } from './facts.js';
-import { insertEvent, now, numberRound, upsertTarget, type CarriedItem, type RosterSnapshot } from './records.js';
+import { insertEvent, latestCouncilHead, now, numberRound, upsertTarget, type CarriedItem, type RosterSnapshot } from './records.js';
 import { createRootDir, removeOwnedRoot } from './roots.js';
-import type { ResolvedTarget, RoundMode } from './target.js';
+import { baselineIsSnapshot, chainSnapshot, type ResolvedTarget, type RoundMode } from './target.js';
 
 /*
  * Plan 3.1 steps 1-3 for plan and diff rounds: the round number and baseline (3.6), the root built at exact SHAs
@@ -96,9 +96,10 @@ export function rosterOf(config: CouncilConfig): RosterSnapshot {
  */
 export function prepareRound(store: Store, options: PrepareOptions): PreparedRound {
   const { db } = store;
-  const t = options.target;
-  const targetId = upsertTarget(db, t);
-  const numbering = numberRound(db, targetId, t.head);
+  const targetId = upsertTarget(db, options.target);
+  // A follow-up round on uncommitted work builds on the last reviewed snapshot (fold row 10).
+  const t = chainSnapshot(options.target, latestCouncilHead(db, targetId));
+  const numbering = numberRound(db, targetId, t.head, t.revision);
   const roster = rosterOf(options.config);
   const startedAt = now();
   const insert = db
@@ -124,6 +125,8 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
       head: t.head,
       base: t.base ?? undefined,
       baseline: numbering.baseline ?? undefined,
+      foldPaths: t.foldPaths ?? undefined,
+      baselineSnapshot: baselineIsSnapshot(t.repoTop, numbering.baseline, t.head),
       previousReviews: previous,
       context: t.context,
     };
@@ -188,7 +191,7 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
       baseline: numbering.baseline,
       snapshot: t.snapshot,
       warnings: t.warnings,
-      revision: t.head,
+      revision: t.revision,
       tree_hash: prepared.sealed.treeHash,
       brief_text: brief.text,
       brief_promises: [...brief.promises],

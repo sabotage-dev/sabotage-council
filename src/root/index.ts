@@ -24,7 +24,7 @@ export {
   type PrComment,
   type PrData,
 } from './data-files.js';
-export { CHANGED_FILES_UNKNOWN, detectFold, type FallbackKind, type FoldPlan } from './fold.js';
+export { CHANGED_FILES_UNKNOWN, detectFold, pathspec, type FallbackKind, type FoldOptions, type FoldPlan } from './fold.js';
 export {
   FULL_SHA,
   GIT_ISOLATION_CONFIG,

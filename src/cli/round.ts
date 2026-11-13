@@ -78,6 +78,8 @@ export interface StartArgs {
   facts: string[];
   questions: string[];
   json: boolean;
+  /** diff with an explicit range: include the uncommitted work tree (fold row 10). */
+  uncommitted?: boolean | undefined;
   /** Tests pin the nonce. */
   nonce?: string | undefined;
 }
@@ -99,7 +101,7 @@ export async function roundStart(io: RoundIo, paths: StorePaths, args: StartArgs
       target = resolvePlanTarget(cwd, args.target, args.context);
     } else {
       if (args.context.length > 0) throw new Error('--context is a plan-mode option');
-      target = resolveDiffTarget(cwd, args.target, { env: io.env });
+      target = resolveDiffTarget(cwd, args.target, { env: io.env, uncommitted: args.uncommitted });
     }
   } catch (error) {
     io.write(`error: ${error instanceof Error ? error.message : String(error)}`);

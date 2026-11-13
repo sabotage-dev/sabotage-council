@@ -776,3 +776,87 @@ describe('fold rows 5-7: quorum counts distinct occupants, follows the status, a
     expect(next.prepared.inputs).toMatchObject({ roundNo: 1, baseline: null, scope: 'full' });
   }, 60_000);
 });
+
+describe('fold rows 10-11: targets, uncommitted follow-ups, explicit ranges and the plan fold', () => {
+  const adjudicated = async (h: Harness, t: ReturnType<typeof resolveDiffTarget>) => {
+    const r = await runRound(h, t);
+    const res = adjudicate(h.store, h.layout, r.prepared.inputs.roundId, adjudicationFor(h, r.prepared.inputs.roundId));
+    expect(res.outcome.ok, JSON.stringify(res.outcome)).toBe(true);
+    return r;
+  };
+
+  it('briefs a follow-up round on uncommitted work as a delta, not a rebase', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    writeFileSync(join(repo, 'calc', 'rangesum.py'), 'def range_sum(values, start, end):\n    return sum(values[start:end])\n');
+    const r1 = await adjudicated(h, resolveDiffTarget(repo));
+    expect(r1.prepared.inputs.snapshot).toContain('uncommitted work tree');
+    // The same uncommitted work again: the same head, the same round.
+    const same = await runRound(h, resolveDiffTarget(repo));
+    expect(same.prepared.inputs).toMatchObject({ head: r1.prepared.inputs.head, roundNo: 1 });
+    // More uncommitted work: a delta on the last reviewed snapshot.
+    writeFileSync(join(repo, 'calc', 'mean.py'), 'def mean(values):\n    return sum(values) / len(values)\n');
+    const r2 = await runRound(h, resolveDiffTarget(repo));
+    expect(r2.prepared.inputs).toMatchObject({ roundNo: 2, scope: 'delta', baseline: r1.prepared.inputs.head });
+    const fold = readFileSync(join(r2.prepared.inputs.root, 'FOLD.diff'), 'utf8');
+    expect(fold).toContain('calc/mean.py');
+    expect(fold).not.toContain('rangesum.py');
+    expect(git(repo, ['diff', '--cached', '--name-only'])).toBe('');
+  }, 120_000);
+
+  it('briefs reviewed uncommitted work, once committed, as an empty fold, not a rebase', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    writeFileSync(join(repo, 'calc', 'rangesum.py'), 'def range_sum(values, start, end):\n    return sum(values[start:end])\n');
+    await adjudicated(h, resolveDiffTarget(repo));
+    commitChange(repo, 'calc/rangesum.py', 'def range_sum(values, start, end):\n    return sum(values[start:end])\n', 'calc: the reviewed work');
+    const r2 = await runRound(h, resolveDiffTarget(repo));
+    expect(r2.prepared.inputs.roundNo).toBe(2);
+    expect(r2.prepared.inputs.fullRoundReason).toContain('is empty');
+    expect(r2.prepared.inputs.fullRoundReason).not.toContain('not an ancestor');
+  }, 120_000);
+
+  it('includes uncommitted work in an explicit range only when asked, and says so', () => {
+    const { repo } = fixtureRepo();
+    writeFileSync(join(repo, 'calc', 'extra.py'), 'x = 1\n');
+    const plain = resolveDiffTarget(repo, 'main..feature');
+    expect(plain.snapshot).toBeNull();
+    expect(plain.head).toBe(git(repo, ['rev-parse', 'feature']));
+    expect(plain.warnings.join('\n')).toContain('add --uncommitted to include them');
+    const asked = resolveDiffTarget(repo, 'main..feature', { uncommitted: true });
+    expect(asked.snapshot).toContain('uncommitted work tree');
+    expect(git(repo, ['ls-tree', '-r', '--name-only', asked.head])).toContain('calc/extra.py');
+    expect(() => resolveDiffTarget(repo, 'main..main', { uncommitted: true })).toThrow(/checked-out commit/);
+    expect(() => resolveDiffTarget(repo, undefined, { uncommitted: true })).toThrow(/explicit/);
+  });
+
+  it('keys diff targets by branch, never by the ref string HEAD or a raw sha', () => {
+    const { repo } = fixtureRepo();
+    const byDefault = resolveDiffTarget(repo);
+    expect(resolveDiffTarget(repo, 'main..HEAD').targetKey).toBe(byDefault.targetKey);
+    expect(byDefault.targetKey.endsWith(':feature')).toBe(true);
+    const sha = git(repo, ['rev-parse', 'feature']);
+    const base = git(repo, ['rev-parse', 'main']);
+    const raw = resolveDiffTarget(repo, `main..${sha}`);
+    expect(raw.branch).toBe(`from-${base.slice(0, 12)}`);
+    git(repo, ['checkout', '--quiet', '--detach']);
+    expect(resolveDiffTarget(repo).branch).toBe(`detached-from-${base.slice(0, 12)}`);
+  });
+
+  it('folds a plan round on the plan, and an unrelated commit is not a new plan revision', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    await adjudicated(h, resolvePlanTarget(repo, 'docs/PLAN.md'));
+    commitChange(repo, 'calc/unrelated.py', 'y = 2\n', 'unrelated code');
+    const unrelated = await runRound(h, resolvePlanTarget(repo, 'docs/PLAN.md'));
+    expect(unrelated.prepared.inputs).toMatchObject({ roundNo: 1, baseline: null, scope: 'full' });
+    commitChange(repo, 'docs/PLAN.md', '# Plan\n\n1. Sum a range, inclusive of both ends.\n2. Add a mean.\n', 'plan: a mean');
+    commitChange(repo, 'calc/more.py', 'z = 3\n', 'more unrelated code');
+    const r2 = await runRound(h, resolvePlanTarget(repo, 'docs/PLAN.md'));
+    expect(r2.prepared.inputs).toMatchObject({ roundNo: 2, scope: 'delta' });
+    const fold = readFileSync(join(r2.prepared.inputs.root, 'FOLD.diff'), 'utf8');
+    expect(fold).toContain('2. Add a mean.');
+    expect(fold).not.toContain('unrelated');
+    expect(fold).not.toContain('more.py');
+  }, 120_000);
+});

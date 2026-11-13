@@ -184,23 +184,34 @@ export interface RoundNumbering {
  * adjudicated. The round number is the number of distinct counted heads, plus 1 when this head has none. The
  * baseline is the newest counted head other than this one.
  */
-export function numberRound(db: DatabaseSync, targetId: number, head: string): RoundNumbering {
+export function numberRound(db: DatabaseSync, targetId: number, head: string, revision: string = head): RoundNumbering {
   const rounds = all(db, "SELECT id, head_sha, round_no FROM rounds WHERE target_id = ? AND status = 'adjudicated' ORDER BY id", targetId);
-  // Only a head reviewed at council quorum counts (fold row 7): a solo review is never a reviewed baseline.
+  // Only a head reviewed at council quorum counts (fold row 7): a solo review is never a reviewed baseline. Rounds
+  // compare revisions (fold row 11): the head for diff targets, the plan's content for plan targets.
   const council = all(db, COUNCIL_ROUNDS, targetId);
-  const heads = new Set(council.map((r) => String(r['head_sha'])));
-  const roundNo = heads.size + (heads.has(head) ? 0 : 1);
-  const other = [...council].reverse().find((r) => String(r['head_sha']) !== head);
+  const revisions = new Set(council.map((r) => String(r['revision'])));
+  const roundNo = revisions.size + (revisions.has(revision) ? 0 : 1);
+  const other = [...council].reverse().find((r) => String(r['revision']) !== revision);
   const baseline = other === undefined ? null : String(other['head_sha']);
   // Earlier items come from every adjudicated round of the target, a same-head re-run and a solo round included.
   return { roundNo, baseline, items: carriedItems(db, rounds.map((r) => Number(r['id']))) };
 }
 
-/** Adjudicated rounds of a target that settled with two or more counted legs: council rounds. */
-const COUNCIL_ROUNDS = `SELECT id, head_sha, round_no FROM rounds
-  WHERE target_id = ? AND status = 'adjudicated'
+/** The head of the newest council round of a target (the work a follow-up snapshot builds on, fold row 10). */
+export function latestCouncilHead(db: DatabaseSync, targetId: number): string | null {
+  const rows = all(db, COUNCIL_ROUNDS, targetId);
+  const last = rows.at(-1);
+  return last === undefined ? null : String(last['head_sha']);
+}
+
+/** Adjudicated rounds of a target that settled with two or more counted legs: council rounds, with their revision. */
+const COUNCIL_ROUNDS = `SELECT rounds.id, rounds.head_sha, rounds.round_no,
+    coalesce((SELECT json_extract(events.detail_json, '$.revision') FROM events
+               WHERE events.round_id = rounds.id AND events.kind = 'round-prepared' ORDER BY events.id LIMIT 1), rounds.head_sha) AS revision
+  FROM rounds
+  WHERE rounds.target_id = ? AND rounds.status = 'adjudicated'
     AND (SELECT count(*) FROM legs WHERE legs.round_id = rounds.id AND legs.status = 'PASS') >= 2
-  ORDER BY id`;
+  ORDER BY rounds.id`;
 
 /** The text an earlier finding carries into PREVIOUS-REVIEWS.md. Deterministic, so its hash tracks the item. */
 export function itemText(f: Row, roundNo: number): string {

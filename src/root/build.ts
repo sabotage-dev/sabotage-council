@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { extractTree, listTree } from './archive.js';
 import { dataLines, ITEM_ID, renderPreviousReviews, renderPrMd, type EarlierItem, type PrData } from './data-files.js';
-import { CHANGED_FILES_UNKNOWN, detectFold, type FoldPlan } from './fold.js';
+import { CHANGED_FILES_UNKNOWN, detectFold, pathspec, type FoldPlan } from './fold.js';
 import { commitExists, DIFF_ARGS, FULL_SHA, openShadow, resolveCommit, runGit, type ShadowRepo } from './git.js';
 import { FileNameError } from './names.js';
 import { sanitizedPathMap, sanitizeTrees, type SanitizedEntry } from './sanitize.js';
@@ -60,6 +60,10 @@ export interface RootInputs {
   base?: string | undefined;
   /** Delta rounds: the baseline head, reviewed in an earlier round (plan 3.6). */
   baseline?: string | undefined;
+  /** Delta rounds: limit FOLD.diff to these repository paths (a plan round folds the plan, P5 fold row 11). */
+  foldPaths?: readonly string[] | undefined;
+  /** Delta rounds: the baseline is a snapshot of uncommitted work on an ancestor of the head (P5 fold row 10). */
+  baselineSnapshot?: boolean | undefined;
   pr?: PrData | undefined;
   previousReviews?: readonly EarlierItem[] | undefined;
   context?: readonly ContextSource[] | undefined;
@@ -231,9 +235,9 @@ function build(root: string, work: string, inputs: RootInputs, items: readonly E
 
   let fold: FoldPlan | null = null;
   if (inputs.baseline !== undefined) {
-    fold = detectFold(shadow, inputs.baseline, inputs.head);
+    fold = detectFold(shadow, inputs.baseline, inputs.head, { paths: inputs.foldPaths, snapshotBaseline: inputs.baselineSnapshot });
     if (fold.kind === 'delta') {
-      gitToFile(shadow, [...DIFF_ARGS, inputs.baseline, inputs.head], ROOT_NAMES.foldDiff, '(empty fold)\n');
+      gitToFile(shadow, [...DIFF_ARGS, inputs.baseline, inputs.head, ...pathspec(inputs.foldPaths)], ROOT_NAMES.foldDiff, '(empty fold)\n');
     }
   }
 

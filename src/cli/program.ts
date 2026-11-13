@@ -89,11 +89,12 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .command('diff')
       .argument('[range]', '<base>..<head>; default: the merge-base with the default branch .. HEAD, uncommitted work snapshotted')
       .description('the council reviews a branch diff (plan 9.2)')
+      .option('--uncommitted', "with an explicit range whose head is the checked-out commit: include the uncommitted work tree")
       .option('--fact <text>', 'an established fact the seats must not refile (repeatable)', collect, [])
       .option('--question <text>', 'a question for the seats, at most 3 (repeatable)', collect, [])
       .option('--json', 'print the round as JSON instead of the bare id'),
-  ).action(async (range: string | undefined, opts: StartOpts) => {
-    await roundStart(roundIo, pathsOf(opts), { mode: 'diff', target: range, context: [], facts: opts.fact, questions: opts.question, json: opts.json === true });
+  ).action(async (range: string | undefined, opts: StartOpts & { uncommitted?: boolean }) => {
+    await roundStart(roundIo, pathsOf(opts), { mode: 'diff', target: range, context: [], facts: opts.fact, questions: opts.question, json: opts.json === true, uncommitted: opts.uncommitted === true });
   });
 
   const roundId = (value: string): number => {

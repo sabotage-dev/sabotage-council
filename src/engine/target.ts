@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -46,6 +47,14 @@ export interface ResolvedTarget {
   context: ContextSource[];
   /** Things the user must hear before the round runs: for example untracked files left out of the snapshot. */
   warnings: string[];
+  /** The committed head the work sits on (the head itself unless `head` is a snapshot). */
+  headCommit: string;
+  /** The uncommitted work's tree when `head` is a snapshot of it; else null. */
+  snapshotTree: string | null;
+  /** plan: the plan path plus in-repository context paths the fold covers (fold row 11); diff: null (the whole tree). */
+  foldPaths: string[] | null;
+  /** What numbering compares (3.6): the head for diff targets; the content of `foldPaths` for plan targets. */
+  revision: string;
 }
 
 const ROOT_IDENTITY = ['-c', 'user.name=sabotage-council', '-c', 'user.email=sabotage-council@localhost'];
@@ -225,7 +234,9 @@ function insideTop(top: string, abs: string): string | null {
 /**
  * `plan <file>` (plan 9.1): the plan at its repo-relative path. The head is HEAD; when the plan file itself is
  * uncommitted (modified or untracked), the head is a snapshot holding HEAD plus that one file (`git hash-object`),
- * so the plan's revision has a sha. Other uncommitted files are not part of a plan round.
+ * so the plan's revision has a sha. Other uncommitted files are not part of a plan round. The fold and the round
+ * number follow the plan, not the repository (fold row 11): `foldPaths` is the plan plus any `--context` path inside
+ * the repository, and `revision` hashes their content at the head, so an unrelated commit is not a new revision.
  */
 export function resolvePlanTarget(cwd: string, file: string, contexts: readonly string[] = []): ResolvedTarget {
   const top = repoTopOf(cwd);
@@ -234,24 +245,41 @@ export function resolvePlanTarget(cwd: string, file: string, contexts: readonly 
   const real = realpathSync(abs);
   const rel = insideTop(top, real);
   if (rel === null) throw new TargetError(`${file} is not inside the repository at ${top}`);
-  const head = resolveSha(top, 'HEAD');
-  const snapshot = snapshotWorkTree(top, head, [rel]);
+  const headCommit = resolveSha(top, 'HEAD');
+  const snap = snapshotTree(top, headCommit, { paths: [rel] });
+  const head = snap.tree === null ? headCommit : commitSnapshot(top, snap.tree, headCommit);
   const { repoKey, repoName } = repoIdentity(top);
+  const context = contexts.map((c) => parseContext(c, cwd));
+  const inRepo = context.flatMap((c) => ('path' in c ? [insideTop(top, realpathSync(c.path))] : [])).filter((p): p is string => p !== null);
+  const foldPaths = [rel, ...inRepo];
   return {
     mode: 'plan',
     repoTop: top,
     repoKey,
     repoName,
-    head: snapshot ?? head,
-    snapshot: snapshot === null ? null : `HEAD ${head.slice(0, 7)} plus the uncommitted ${rel}`,
+    head,
+    headCommit,
+    snapshotTree: snap.tree,
+    snapshot: snap.tree === null ? null : `HEAD ${headCommit.slice(0, 7)} plus the uncommitted ${rel}`,
     base: null,
     branch: null,
     planPath: rel,
     label: rel,
     targetKey: `plan:${repoKey}:${rel}`,
-    context: contexts.map((c) => parseContext(c, cwd)),
+    context,
     warnings: [],
+    foldPaths,
+    revision: contentRevision(top, head, foldPaths),
   };
+}
+
+/** The content of some repository paths at a commit, as one hash (a missing path counts as missing). */
+export function contentRevision(top: string, commit: string, paths: readonly string[]): string {
+  const parts = paths.map((p) => {
+    const r = git(['rev-parse', '--verify', '--quiet', `${commit}:${p}`], top, undefined, [0, 1, 128]);
+    return `${p}\0${r.status === 0 ? r.out : 'missing'}`;
+  });
+  return `content:${createHash('sha256').update(parts.join('\n')).digest('hex')}`;
 }
 
 /** The default branch: `origin/HEAD`, else a local `main`, else `master`. */
@@ -269,35 +297,71 @@ function currentBranch(top: string): string | null {
   return r.status === 0 && r.out !== '' ? r.out : null;
 }
 
+function refExists(top: string, ref: string): boolean {
+  return git(['show-ref', '--verify', '--quiet', ref], top, undefined, [0, 1, 128]).status === 0;
+}
+
+/**
+ * The branch a diff target is keyed by (fold row 10), never the ref string `HEAD` or a raw sha: `HEAD` (or no range)
+ * is the checked-out branch; a local or remote-tracking branch name is itself; anything else (a sha, a tag, a
+ * detached HEAD) is keyed by the resolved base, so successive rounds on it converge.
+ */
+export function diffBranchKey(top: string, headToken: string | null, base: string): string {
+  if (headToken === null || headToken === 'HEAD' || headToken === '@') return currentBranch(top) ?? `detached-from-${base.slice(0, 12)}`;
+  if (refExists(top, `refs/heads/${headToken}`) || refExists(top, `refs/remotes/${headToken}`)) return headToken;
+  return `from-${base.slice(0, 12)}`;
+}
+
+export interface DiffOptions {
+  env?: NodeJS.ProcessEnv | undefined;
+  /**
+   * With an explicit `<base>..<head>`, include the uncommitted work tree (fold row 10). Only when the range's head is
+   * the checked-out commit. Without a range, uncommitted work is always included.
+   */
+  uncommitted?: boolean | undefined;
+}
+
 /**
  * `diff [<base>..<head>]` (plan 9.2). Default: the merge-base with the default branch .. HEAD, with uncommitted work
- * (tracked changes and untracked, non-ignored files) snapshotted to a commit object. An explicit head is taken as
- * committed. The target is keyed by repo + branch: the current branch, or the head ref as given.
+ * (tracked changes and untracked, non-ignored files) snapshotted to a commit object. An explicit range reviews the
+ * committed head, and includes uncommitted work only with `uncommitted` (the warnings say which). The target is
+ * keyed by `diffBranchKey`.
  */
-export function resolveDiffTarget(cwd: string, range?: string, options: { env?: NodeJS.ProcessEnv } = {}): ResolvedTarget {
+export function resolveDiffTarget(cwd: string, range?: string, options: DiffOptions = {}): ResolvedTarget {
   const top = repoTopOf(cwd);
   const { repoKey, repoName } = repoIdentity(top);
+  const checkedOut = resolveSha(top, 'HEAD');
   let base: string;
-  let head: string;
-  let branch: string;
-  let snapshot: string | null = null;
-  const warnings: string[] = [];
+  let headCommit: string;
+  let headToken: string | null = null;
+  let include: boolean;
   if (range === undefined || range === '') {
-    const headSha = resolveSha(top, 'HEAD');
+    if (options.uncommitted === true) throw new TargetError('--uncommitted applies to an explicit <base>..<head> range; without one, uncommitted work is always included');
     base = resolveSha(top, defaultBranch(top));
-    const snap = snapshotTree(top, headSha, { env: options.env });
-    warnings.push(...snap.warnings);
-    head = snap.tree === null ? headSha : commitSnapshot(top, snap.tree, headSha);
-    if (snap.tree !== null) snapshot = `HEAD ${headSha.slice(0, 7)} plus the uncommitted work tree`;
-    branch = currentBranch(top) ?? `detached-${headSha.slice(0, 7)}`;
+    headCommit = checkedOut;
+    include = true;
   } else {
     const parts = range.split('..');
     const [from, to] = parts;
     if (parts.length !== 2 || range.includes('...') || !from || !to) throw new TargetError(`a diff range is <base>..<head>, got "${range}"`);
     base = resolveSha(top, from);
-    head = resolveSha(top, to);
-    branch = to;
+    headCommit = resolveSha(top, to);
+    headToken = to;
+    include = options.uncommitted === true;
+    if (include && headCommit !== checkedOut) throw new TargetError(`--uncommitted needs the range's head to be the checked-out commit ${checkedOut.slice(0, 7)}; ${to} is ${headCommit.slice(0, 7)}`);
   }
+  const warnings: string[] = [];
+  let snap: SnapshotTree = { tree: null, skipped: [], warnings: [] };
+  if (headCommit === checkedOut) {
+    snap = snapshotTree(top, headCommit, { env: options.env });
+    if (include) warnings.push(...snap.warnings);
+    else if (snap.tree !== null) {
+      warnings.push(`the work tree has uncommitted changes this round does not include: an explicit range reviews committed history (add --uncommitted to include them)`);
+    }
+  }
+  const tree = include ? snap.tree : null;
+  const head = tree === null ? headCommit : commitSnapshot(top, tree, headCommit);
+  const branch = diffBranchKey(top, headToken, base);
   if (/\s/.test(branch)) throw new TargetError(`branch "${branch}" holds whitespace`);
   return {
     mode: 'diff',
@@ -305,7 +369,9 @@ export function resolveDiffTarget(cwd: string, range?: string, options: { env?: 
     repoKey,
     repoName,
     head,
-    snapshot,
+    headCommit,
+    snapshotTree: tree,
+    snapshot: tree === null ? null : `${headCommit.slice(0, 7)} plus the uncommitted work tree`,
     base,
     branch,
     planPath: null,
@@ -313,7 +379,51 @@ export function resolveDiffTarget(cwd: string, range?: string, options: { env?: 
     targetKey: `diff:${repoKey}:${branch}`,
     context: [],
     warnings,
+    foldPaths: null,
+    revision: head,
   };
+}
+
+/**
+ * When `sha` is a snapshot commit the engine made (its identity, message and one parent), its parent; else null.
+ */
+export function snapshotParent(top: string, sha: string): string | null {
+  const r = git(['cat-file', 'commit', sha], top, undefined, [0, 1, 128]);
+  if (r.status !== 0) return null;
+  const [header = '', ...rest] = r.out.split('\n\n');
+  const parents = header.split('\n').filter((l) => l.startsWith('parent ')).map((l) => l.slice('parent '.length));
+  const ours = /^author sabotage-council <sabotage-council@localhost> /m.test(header) && rest.join('\n\n').trim() === SNAPSHOT_MESSAGE;
+  return ours && parents.length === 1 ? (parents[0] ?? null) : null;
+}
+
+export function treeOf(top: string, sha: string): string | null {
+  const r = git(['rev-parse', '--verify', '--quiet', `${sha}^{tree}`], top, undefined, [0, 1, 128]);
+  return r.status === 0 ? r.out : null;
+}
+
+export function isAncestorIn(top: string, ancestor: string, head: string): boolean {
+  return git(['merge-base', '--is-ancestor', ancestor, head], top, undefined, [0, 1, 128]).status === 0;
+}
+
+/**
+ * A follow-up round on uncommitted work (fold row 10). Every snapshot used to sit on HEAD, so the next one was a
+ * sibling of the last reviewed one and the round was briefed as a rebase. When the newest reviewed head is a
+ * snapshot on the same HEAD, the new snapshot is parented on it (the same tree is the same head), so the fold is the
+ * delta of the work.
+ */
+export function chainSnapshot(t: ResolvedTarget, lastReviewed: string | null): ResolvedTarget {
+  if (t.snapshotTree === null || lastReviewed === null) return t;
+  if (snapshotParent(t.repoTop, lastReviewed) !== t.headCommit) return t;
+  const head = treeOf(t.repoTop, lastReviewed) === t.snapshotTree ? lastReviewed : commitSnapshot(t.repoTop, t.snapshotTree, lastReviewed);
+  const revision = t.mode === 'plan' && t.foldPaths !== null ? contentRevision(t.repoTop, head, t.foldPaths) : head;
+  return { ...t, head, revision };
+}
+
+/** The baseline is a snapshot whose parent is an ancestor of the head: its tree is still the reviewed content. */
+export function baselineIsSnapshot(top: string, baseline: string | null, head: string): boolean {
+  if (baseline === null) return false;
+  const parent = snapshotParent(top, baseline);
+  return parent !== null && isAncestorIn(top, parent, head);
 }
 
 export { GitError };
