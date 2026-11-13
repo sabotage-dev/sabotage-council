@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { configValues } from '../../transport/acp.js';
-import { isObject, num, str } from './policy.js';
+import { isObject, num, requestPaths, str } from './policy.js';
 
 /*
  * The reader for an ACP leg's update log (written by the transport): every message both ways, verbatim, and every
@@ -24,6 +24,10 @@ export interface AcpToolCall {
   rejectedAt: number | null;
   /** The permission request's own tool-call fields, if the agent asked. */
   asked: Json | null;
+  /** Every snapshot the call was reported with (each update, and each permission request's `toolCall`), in order. */
+  snapshots: Json[];
+  /** Paths a permission request named outside its `toolCall` (`_meta.fsReadPaths`). */
+  extraPaths: string[];
   /** Position of the first update for the call in the log (ordering with the prompt). */
   firstLine: number;
 }
@@ -240,6 +244,7 @@ export function readAcpLog(path: string): AcpLog {
         call.asked = toolCall;
         // The request's own status is the agent's view while it waits, not progress: it is not merged.
         mergeInto(call, { ...toolCall, status: undefined });
+        call.extraPaths.push(...requestPaths(params));
         log.toolCalls.set(toolCallId, call);
       }
       return;
@@ -258,7 +263,11 @@ export function readAcpLog(path: string): AcpLog {
     } else if (kind === 'tool_call' || kind === 'tool_call_update') {
       closeSegment();
       const toolCallId = str(update['toolCallId']);
-      if (toolCallId === null) return;
+      // A tool update the ratifier cannot attribute to a call is a malformed record line: it fails `log`.
+      if (toolCallId === null) {
+        log.malformed++;
+        return;
+      }
       const call = log.toolCalls.get(toolCallId) ?? newCall(toolCallId, i);
       mergeInto(call, update);
       log.toolCalls.set(toolCallId, call);
@@ -276,10 +285,11 @@ export function readAcpLog(path: string): AcpLog {
 }
 
 function newCall(id: string, line: number): AcpToolCall {
-  return { id, fields: {}, kinds: [], titles: [], statuses: [], decision: null, rejectedAt: null, asked: null, firstLine: line };
+  return { id, fields: {}, kinds: [], titles: [], statuses: [], decision: null, rejectedAt: null, asked: null, snapshots: [], extraPaths: [], firstLine: line };
 }
 
 function mergeInto(call: AcpToolCall, update: Json): void {
+  call.snapshots.push(update);
   for (const [k, v] of Object.entries(update)) if (v !== undefined && v !== null) call.fields[k] = v;
   const kind = str(update['kind']);
   if (kind !== null && !call.kinds.includes(kind)) call.kinds.push(kind);
@@ -289,17 +299,40 @@ function mergeInto(call: AcpToolCall, update: Json): void {
   if (status !== null) call.statuses.push(status);
 }
 
+/** Whether a value holds non-empty text at any depth. A `type` tag (`"content"`, `"text"`) is structure, not text. */
+function hasText(v: unknown): boolean {
+  if (typeof v === 'string') return v.trim() !== '';
+  if (Array.isArray(v)) return v.some(hasText);
+  if (isObject(v)) return Object.entries(v).some(([k, x]) => k !== 'type' && hasText(x));
+  return false;
+}
+
+/** ACP content blocks that only exist once a tool acted: a diff (a write) or a terminal (a command). */
+function actionBlock(v: unknown): boolean {
+  return Array.isArray(v) && v.some((b) => isObject(b) && (b['type'] === 'diff' || b['type'] === 'terminal'));
+}
+
 /**
- * Whether a tool call ran.
- *   - A call the client rejected ran only if the agent reported it `completed` after the rejection. agy reports
- *     `in_progress` when a call starts, before it asks, and again after a rejection on its way to `failed`
- *     (measured on 1.5.7, where the canary's secret never reached the stream), so `in_progress` proves nothing there.
- *   - Any other call ran once it was reported `in_progress` or `completed`. A call that only ever went to `failed`
- *     (agy drops the rest of a batch that way after a rejection) did not start.
+ * Whether a call carries tool output: non-empty text in `rawOutput` or `content`, or a diff or terminal block, in any
+ * snapshot. A snapshot in which the agent reports its own refusal (`denialNotice`) carries a notice, not output.
  */
-export function executed(call: AcpToolCall): boolean {
-  if (call.rejectedAt !== null) return call.statuses.slice(call.rejectedAt).includes('completed');
-  return call.statuses.includes('in_progress') || call.statuses.includes('completed');
+export function hasOutput(call: AcpToolCall, denialNotice?: (snapshot: Json) => boolean): boolean {
+  return call.snapshots.some((s) => !(denialNotice?.(s) ?? false) && (hasText(s['rawOutput']) || hasText(s['content']) || actionBlock(s['content'])));
+}
+
+/**
+ * Whether a tool call ran, on the evidence of every snapshot:
+ *   - `completed` at any position, or tool output at any position, before or after a rejection: it ran;
+ *   - a call the client never rejected that was reported `in_progress`: it ran;
+ *   - the one measured exception: a rejected call whose only progress is a bare `in_progress` with no output. agy
+ *     1.5.7 reports `in_progress` when a call starts, before it asks, and again on its way to `failed` after a
+ *     rejection; the canary's secret never reached the stream.
+ * A call that only ever went to `failed` with no output (agy drops the rest of a batch that way) did not start.
+ */
+export function executed(call: AcpToolCall, denialNotice?: (snapshot: Json) => boolean): boolean {
+  if (call.statuses.includes('completed') || hasOutput(call, denialNotice)) return true;
+  if (call.rejectedAt !== null) return false;
+  return call.statuses.includes('in_progress');
 }
 
 /**

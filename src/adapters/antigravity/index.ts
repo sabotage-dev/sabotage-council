@@ -3,7 +3,7 @@ import type { ModelInfo } from '../../config/registry.js';
 import type { FailureClass } from '../../config/vocab.js';
 import { runCommand, scrubEnv, type CommandRunner } from '../../transport/headless.js';
 import { createAcpAdapter, type AcpRecordResult } from '../acp/adapter.js';
-import { ACP_READ_KINDS } from '../acp/policy.js';
+import { str, type ReadSet } from '../acp/policy.js';
 import type { AcpCommonResult } from '../acp/ratify.js';
 import type { LegHandle, Occupant, Preflight, RatificationCheck, RoundCtx, SeatAdapter } from '../types.js';
 import { AGY_CONFIG, AGY_FLOOR, AGY_MODE, AGY_MODELS, AGY_TESTED_VERSIONS, agyDecl } from './known.js';
@@ -52,6 +52,17 @@ export interface AntigravityAdapterOptions {
    */
   settingsOverlay?: Record<string, unknown> | undefined;
 }
+
+/**
+ * agy's read tools (1.5.7): the offered list holds one read tool, `read_file` (kind `read`; its name is the
+ * update's `name`). Every other offered tool (`run_command`, `write_file`, `edit_file`, `search_web`, subagent,
+ * swarm and task tools) is not a read.
+ */
+export const AGY_READS: ReadSet = {
+  kinds: ['read'],
+  names: ['read_file'],
+  nameOf: (s) => str(s['name']),
+};
 
 const RECORD_CLASS: Readonly<Record<string, FailureClass>> = {
   'agy-log': 'setup',
@@ -144,7 +155,7 @@ export function createAntigravityAdapter(options: AntigravityAdapterOptions = {}
         data: { slug: pre.data['slug'] ?? null, label: pre.data['label'] ?? null, apiKey, geminiDir: files.geminiDir },
       };
     },
-    readKinds: ACP_READ_KINDS,
+    reads: AGY_READS,
     ratifyRecords: agyRecords,
     classifyText: classifyAgyText,
   });

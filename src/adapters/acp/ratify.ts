@@ -2,19 +2,22 @@ import type { FailureClass } from '../../config/vocab.js';
 import { rootAliases } from '../paths.js';
 import { nonceOnFirstLine, type RatificationCheck } from '../types.js';
 import { acpAnswer, executed, readAcpLog, stopReason, type AcpLog, type AcpToolCall } from './log.js';
-import { isObject, judgeRead, mergeToolCall, str } from './policy.js';
+import { decodeFileUri, isObject, judgeCall, str, type ReadSet } from './policy.js';
 
 /*
  * The checks every ACP leg must pass (plan 4.1, 4.5), read from the update log. Adapters add the checks from their
  * own records (model label, session record, credits) and build the Ratification.
  *
- * The four execution checks do not overlap, so each one is mutation-checked on its own:
+ * The execution checks do not overlap, so each one is mutation-checked on its own. A call is judged on every
+ * snapshot it was reported with, and a read is a declared read tool by name as well as by kind:
  *   - `permissions`: every grant the client gave is, judged again from the record, an in-root read;
- *   - `tools-used`: no tool that is not a read ran unless the client was asked and allowed it (so a tool that ran
- *     with no permission request at all is caught here, and recorded in `unasked`);
+ *   - `tools-used`: no tool that is not a declared read ran unless the client was asked and allowed it (so a tool
+ *     that ran with no permission request at all is caught here, and recorded in `unasked`);
  *   - `denials-held`: no tool the client rejected ran anyway;
- *   - `read-paths`: every read that ran (asked or not: a user rule can auto-allow reads) names a path, and every
- *     path is inside the root by realpath.
+ *   - `read-paths`: every path of every read that ran (asked or not: a user rule can auto-allow reads) is inside
+ *     the root by realpath;
+ *   - `read-paths-known`: every read that ran names paths the client can judge. A path-less or unjudgeable read
+ *     fails the leg (FAIL), but it is not proof of an outside read, so it is not CONTAMINATED.
  */
 
 export interface AcpPinExpect {
@@ -31,7 +34,9 @@ export interface AcpCommonInput {
   root: string;
   nonce: string;
   pins: readonly AcpPinExpect[];
-  readKinds: readonly string[];
+  reads: ReadSet;
+  /** The transport's own write failures (the exit record's `recordError`): a lost log line is never a PASS. */
+  transportError?: string | null | undefined;
   timedOut: boolean;
   rootUnchanged: (() => { unchanged: boolean; changes: string[] }) | undefined;
 }
@@ -62,6 +67,7 @@ export const ACP_CLASS_OF_CHECK: Readonly<Record<string, FailureClass>> = {
   'tools-used': 'contaminated',
   'denials-held': 'contaminated',
   'read-paths': 'contaminated',
+  'read-paths-known': 'setup',
   prompt: 'transport',
   answer: 'empty',
   nonce: 'empty',
@@ -84,8 +90,8 @@ export function acpFailureClass(failed: readonly string[], classOf: Readonly<Rec
   return 'setup';
 }
 
-function judged(call: AcpToolCall, root: string, readKinds: readonly string[], aliases: string[]) {
-  return judgeRead(call.fields, call.kinds, root, readKinds, aliases);
+function judged(call: AcpToolCall, root: string, reads: ReadSet, aliases: string[]) {
+  return judgeCall(call.snapshots, call.extraPaths, root, reads, aliases);
 }
 
 export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
@@ -96,12 +102,16 @@ export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
   const aliases = rootAliases(input.root);
   const log = readAcpLog(input.logFile);
 
+  // The log is complete only when the transport wrote its exit record into it and reported no write failure, in
+  // the log or on the handle: a line lost to a failed append must never leave a passing log behind.
+  const logged = log.exit !== null ? log.exit['recordError'] : undefined;
+  const writeErrors = [typeof logged === 'string' ? logged : null, input.transportError ?? null].filter((e): e is string => e !== null && e !== '');
   check(
     'log',
-    log.exists && log.malformed === 0 && log.rawLines.length === 0 && log.tornLine === null,
+    log.exists && log.malformed === 0 && log.rawLines.length === 0 && log.tornLine === null && log.exit !== null && writeErrors.length === 0,
     !log.exists
       ? `no update log at ${input.logFile}`
-      : `${log.malformed} malformed log line(s), ${log.rawLines.length} non-JSON stdout line(s)${log.tornLine !== null ? ', a torn last line' : ''}`,
+      : `${log.malformed} malformed log line(s), ${log.rawLines.length} non-JSON stdout line(s)${log.tornLine !== null ? ', a torn last line' : ''}${log.exit === null ? ', no exit record (the log is incomplete)' : ''}${writeErrors.length > 0 ? `, write failures: ${writeErrors.join('; ')}` : ''}`,
   );
 
   const init = log.initialize;
@@ -155,11 +165,10 @@ export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
     .filter((p) => p.decision === 'allow')
     .map((p) => {
       const call = p.toolCallId !== null ? log.toolCalls.get(p.toolCallId) : undefined;
-      const fields = mergeToolCall(call?.fields, p.toolCall);
-      const kinds = [...new Set([...(call?.kinds ?? []), ...(str(p.toolCall['kind']) !== null ? [String(p.toolCall['kind'])] : [])])];
-      return { p, j: judgeRead(fields, kinds, input.root, input.readKinds, aliases) };
+      const j = call ? judged(call, input.root, input.reads, aliases) : judgeCall([p.toolCall], [], input.root, input.reads, aliases);
+      return { p, j };
     })
-    .filter(({ j }) => !(j.read && j.inside));
+    .filter(({ j }) => !(j.read && j.judgeable && j.inside));
   check(
     'permissions',
     badGrants.length === 0,
@@ -169,23 +178,23 @@ export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
   );
 
   const calls = [...log.toolCalls.values()];
-  const ran = calls.filter(executed);
-  const unasked = ran.filter((c) => c.asked === null && !judged(c, input.root, input.readKinds, aliases).read);
-  const nonReadRan = ran.filter((c) => c.decision !== 'reject' && !judged(c, input.root, input.readKinds, aliases).read);
+  const ran = calls.filter((c) => executed(c, input.reads.denialNotice));
+  const unasked = ran.filter((c) => c.asked === null && !judged(c, input.root, input.reads, aliases).read);
+  const nonReadRan = ran.filter((c) => c.decision !== 'reject' && !judged(c, input.root, input.reads, aliases).read);
   check(
     'tools-used',
     nonReadRan.length === 0,
     nonReadRan.length === 0
       ? `${ran.length} tool call(s) ran, all reads`
-      : `ran beyond the read set: ${nonReadRan.map((c) => `${c.titles[0] ?? c.id} [${c.kinds.join(',') || 'no kind'}]${c.asked === null ? ' with no permission request' : ' after an allow'}`).join('; ')}`,
+      : `ran beyond the read set: ${nonReadRan.map((c) => `${c.titles[0] ?? c.id} [${c.kinds.join(',') || 'no kind'}] (${judged(c, input.root, input.reads, aliases).why})${c.asked === null ? ' with no permission request' : ' after an allow'}`).join('; ')}`,
   );
   const deniedRan = ran.filter((c) => c.decision === 'reject');
   check('denials-held', deniedRan.length === 0, deniedRan.length === 0 ? `${calls.filter((c) => c.decision === 'reject').length} rejected call(s), none ran` : `ran after the client rejected it: ${deniedRan.map((c) => c.titles[0] ?? c.id).join('; ')}`);
-  const outside = ran
-    .filter((c) => c.decision !== 'reject')
-    .map((c) => ({ c, j: judged(c, input.root, input.readKinds, aliases) }))
-    .filter(({ j }) => j.read && !j.inside);
-  check('read-paths', outside.length === 0, outside.length === 0 ? 'every read that ran named paths inside the root' : outside.map(({ c, j }) => `${c.titles[0] ?? c.id}: ${j.why}`).join('; '));
+  const readsRan = ran.filter((c) => c.decision !== 'reject').map((c) => ({ c, j: judged(c, input.root, input.reads, aliases) }));
+  const outside = readsRan.filter(({ j }) => j.read && j.judgeable && !j.inside);
+  check('read-paths', outside.length === 0, outside.length === 0 ? 'every judgeable read that ran named paths inside the root' : outside.map(({ c, j }) => `${c.titles[0] ?? c.id}: ${j.why}`).join('; '));
+  const unknown = readsRan.filter(({ j }) => j.read && !j.judgeable);
+  check('read-paths-known', unknown.length === 0, unknown.length === 0 ? 'every read that ran named paths the client can judge' : unknown.map(({ c, j }) => `${c.titles[0] ?? c.id}: ${j.why}`).join('; '));
 
   const reason = stopReason(log);
   check(
@@ -207,8 +216,11 @@ export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
     answer,
     nonceSeen: nonce.ok,
     rootMutated: residue === undefined ? null : !residue.unchanged,
-    // The tool's own name when the agent sends one (agy: `name`), else its kinds.
-    toolsUsed: [...new Set(ran.flatMap((c) => (typeof c.fields['name'] === 'string' ? [c.fields['name']] : c.kinds)))].sort(),
+    // The tool's own name as the backend reports it, else its kinds.
+    toolsUsed: [...new Set(ran.flatMap((c) => {
+      const names = [...new Set(c.snapshots.map((s) => input.reads.nameOf(s)).filter((n): n is string => n !== null))];
+      return names.length > 0 ? names : c.kinds;
+    }))].sort(),
     unasked: unasked.map((c) => ({ id: c.id, title: c.titles[0] ?? '', kinds: c.kinds })),
   };
 }
@@ -216,6 +228,7 @@ export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
 /** Whether a path in an adapter record is the root (any spelling, `file://` or not). */
 export function isRoot(path: string | null, root: string): boolean {
   if (path === null) return false;
-  const p = decodeURIComponent(path.replace(/^file:\/\//, '')).replace(/\/+$/, '');
+  // An agent-controlled value: a `file:` URI that does not decode is judged as written, never a throw.
+  const p = decodeFileUri(path).replace(/\/+$/, '');
   return rootAliases(root).includes(p);
 }

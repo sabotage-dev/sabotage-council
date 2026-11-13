@@ -193,6 +193,16 @@ describe('antigravity through the fake agent (synthetic, every conformance case)
     expect(failedNames(r)).toEqual([]);
   });
 
+  it('run_command reported with kind read and an in-root location: rejected when asked, contaminated when it ran', async () => {
+    const step = (ask: boolean) => ({ tool: { toolCallId: 'c', name: 'run_command', title: 'cat inside.txt', kind: 'read', args: { CommandLine: 'cat inside.txt' }, locations: [{ path: '__ROOT__/inside.txt' }] }, ask });
+    const asked = await launch({ steps: [step(true), ...REVIEW] });
+    expect((asked.r.detail['permissions'] as Array<{ decision: string; why: string }>)[0]?.why).toContain('not a declared read');
+    expect(failedNames(asked.r)).toEqual([]);
+    const ran = await launch({ steps: [step(false), ...REVIEW] });
+    expect(failedNames(ran.r)).toEqual(['tools-used']);
+    expect(ran.r.status).toBe('CONTAMINATED');
+  });
+
   it('a tool executed without asking ratifies contaminated', async () => {
     const { r } = await launch({ steps: [{ tool: { toolCallId: 'x', name: 'run_command', title: 'echo canary', kind: 'execute', args: { CommandLine: 'echo canary' } }, ask: false }, ...REVIEW] });
     expect(failedNames(r)).toEqual(['tools-used']);

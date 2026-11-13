@@ -2,16 +2,17 @@ import type { ModelInfo } from '../../config/registry.js';
 import type { FailureClass } from '../../config/vocab.js';
 import { runCommand, type CommandRunner } from '../../transport/headless.js';
 import { createAcpAdapter, type AcpRecordResult } from '../acp/adapter.js';
-import { ACP_READ_KINDS } from '../acp/policy.js';
+import { isObject, type ReadSet } from '../acp/policy.js';
 import { isRoot, type AcpCommonResult } from '../acp/ratify.js';
+import { pathInsideRoot, rootAliases } from '../paths.js';
 import type { LegHandle, Occupant, Preflight, RatificationCheck, RoundCtx, SeatAdapter } from '../types.js';
 import { KIRO_AGENT, KIRO_FLOOR, KIRO_MODELS, KIRO_TESTED_VERSIONS, kiroDecl } from './known.js';
-import { KIRO_KILL_ON, kiroArgs, kiroEnv, kiroHome, kiroLegFiles, writeKiroProfile } from './launch.js';
+import { KIRO_KILL_ON, kiroArgs, kiroEnv, kiroEnvAllow, kiroHome, kiroLegFiles, writeKiroProfile } from './launch.js';
 import { kiroPreflight } from './preflight.js';
 import { readKiroRecord } from './records.js';
 
 export { KIRO_AGENT, KIRO_DECLARED, KIRO_MODELS, kiroDecl, kiroProfile, profileHash } from './known.js';
-export { KIRO_ENV_ALLOW, KIRO_KILL_ON, kiroArgs, kiroEnv, kiroHome, kiroLegFiles, kiroTokenStore } from './launch.js';
+export { KIRO_ENV_ALLOW, KIRO_KILL_ON, kiroArgs, kiroCredential, kiroEnv, kiroEnvAllow, kiroHome, kiroLegFiles, kiroTokenStore } from './launch.js';
 export { kiroPreflight, parseKiroModels, readTokenState } from './preflight.js';
 export { readKiroRecord } from './records.js';
 
@@ -50,6 +51,30 @@ export interface KiroAdapterOptions {
   profileOverlay?: Record<string, unknown> | undefined;
 }
 
+const kiroMeta = (s: Record<string, unknown>): Record<string, unknown> => {
+  const meta = s['_meta'];
+  const kiro = isObject(meta) ? meta['kiro'] : undefined;
+  return isObject(kiro) ? kiro : {};
+};
+
+/**
+ * kiro's read tools (3.2.1, v2 engine): the council profile offers `fs_read`, `grep` and `glob`, reported as
+ * `_meta.kiro.toolName` `read` (kind `read`), `grep` and `glob` (kind `search`) in the recorded legs. grep and glob
+ * search the cwd when given no path, as kiro documents. A refused call reports
+ * `_meta.kiro.toolCallFailureReason: "permission_denied"` with the text "User denied tool execution", which is a
+ * notice, not output.
+ */
+export const KIRO_READS: ReadSet = {
+  kinds: ['read', 'search'],
+  names: ['read', 'grep', 'glob'],
+  nameOf: (s) => {
+    const name = kiroMeta(s)['toolName'];
+    return typeof name === 'string' ? name : null;
+  },
+  cwdDefault: ['grep', 'glob'],
+  denialNotice: (s) => kiroMeta(s)['toolCallFailureReason'] === 'permission_denied',
+};
+
 const RECORD_CLASS: Readonly<Record<string, FailureClass>> = {
   'session-record': 'setup',
   'record-cwd': 'contaminated',
@@ -85,11 +110,17 @@ function kiroRecords(h: LegHandle, common: AcpCommonResult): AcpRecordResult {
   const badModels = [...new Set(models.filter((m) => m !== pin))];
   check('record-model', none || (rec.modelInfo !== null && rec.turnModels.length > 0 && badModels.length === 0), none ? noRecord : badModels.length === 0 ? `model ${pin} in model_info and ${rec.turnModels.length} turn(s)` : `model not the pin ${pin}: ${badModels.map(String).join(', ')}`);
   check('record-effort', none || rec.effort === effort, none ? noRecord : `effort ${String(rec.effort)}, pinned ${String(effort)}`);
-  check(
-    'record-permissions',
-    rec.trustedTools.length === 0 && rec.allowedWritePaths.length === 0,
-    rec.trustedTools.length === 0 && rec.allowedWritePaths.length === 0 ? 'no trusted tools, no write paths' : `trusted ${rec.trustedTools.join(', ') || 'none'}; write paths ${rec.allowedWritePaths.join(', ') || 'none'}`,
-  );
+  // The session's own grants: no trusted tool, no write path, no allowed command, and every read path realpaths
+  // inside the root (a wider read grant would let a read run outside it with no permission request).
+  const aliases = rootAliases(h.root);
+  const wideReads = rec.allowedReadPaths.filter((p) => !pathInsideRoot(p, h.root, aliases, { literalDollar: true }).inside);
+  const granted = [
+    ...(rec.trustedTools.length > 0 ? [`trusted tools ${rec.trustedTools.join(', ')}`] : []),
+    ...(rec.allowedWritePaths.length > 0 ? [`write paths ${rec.allowedWritePaths.join(', ')}`] : []),
+    ...(rec.allowedCommands.length > 0 ? [`allowed commands ${rec.allowedCommands.join(', ')}`] : []),
+    ...(wideReads.length > 0 ? [`read paths outside the root ${wideReads.join(', ')}`] : []),
+  ];
+  check('record-permissions', granted.length === 0, granted.length === 0 ? 'no trusted tools, write paths or commands; read paths inside the root' : granted.join('; '));
   return {
     checks,
     classOf: RECORD_CLASS,
@@ -123,7 +154,7 @@ export function createKiroAdapter(options: KiroAdapterOptions = {}): SeatAdapter
       return {
         command: bin,
         args: kiroArgs(o.model, o.effort),
-        env: kiroEnv(sourceEnv, home, files),
+        env: kiroEnv(sourceEnv, home, files, kiroEnvAllow(o.authHome)),
         // The v2 engine takes the agent, model and effort as launch flags and reports the first two back.
         pins: [
           { via: 'launch', configId: 'mode', value: KIRO_AGENT },
@@ -138,7 +169,7 @@ export function createKiroAdapter(options: KiroAdapterOptions = {}): SeatAdapter
         killOn: KIRO_KILL_ON,
       };
     },
-    readKinds: ACP_READ_KINDS,
+    reads: KIRO_READS,
     ratifyRecords: kiroRecords,
     classifyText: classifyKiroText,
   });

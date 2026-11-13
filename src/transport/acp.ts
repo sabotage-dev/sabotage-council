@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { appendFileSync, closeSync, openSync, writeFileSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { groupAlive, killGroupNow, terminateGroup, type DoneBy, type HeadlessExit, type HeadlessProcess } from './headless.js';
 
 /*
@@ -31,8 +32,11 @@ export type AcpPin =
 
 /** What the `tool_call` and `tool_call_update` notifications said about one tool call so far. */
 export interface KnownToolCall {
+  /** Merged fields (later values win): for display only. */
   fields: Record<string, unknown>;
   kinds: string[];
+  /** Every update as reported, in order. The policy judges all of them: an earlier path is never erased. */
+  snapshots: Array<Record<string, unknown>>;
 }
 
 export interface PermissionDecision {
@@ -64,6 +68,8 @@ export interface AcpSpec {
   timeoutMs: number;
   /** Default 5000. */
   killGraceMs?: number | undefined;
+  /** After the agent exits, how long the client waits for its stdio to close (late output). Default 3000. */
+  closeGraceMs?: number | undefined;
   /** On the wall-clock cap, how long after `session/cancel` the group is killed. Default 2000. */
   cancelGraceMs?: number | undefined;
   /** After the prompt response, how long the agent may take to exit once stdin closes. Default 10000. */
@@ -120,6 +126,7 @@ export function startAcp(spec: AcpSpec): AcpProcess {
   const killGraceMs = spec.killGraceMs ?? 5000;
   const exitGraceMs = spec.exitGraceMs ?? 10_000;
   const cancelGraceMs = spec.cancelGraceMs ?? 2000;
+  const closeGraceMs = spec.closeGraceMs ?? 3000;
   const startedAt = new Date();
   const t0 = startedAt.getTime();
 
@@ -275,9 +282,10 @@ export function startAcp(spec: AcpSpec): AcpProcess {
       }
       const options = Array.isArray(params['options']) ? params['options'].filter(isObject) : [];
       const byKind = (kind: string): Record<string, unknown> | undefined => options.find((o) => o['kind'] === kind);
-      // Never an "always" grant: it would persist a rule in the agent's settings.
+      // Never an "always" option, grant or reject: either would persist a rule in the agent's settings (for a kiro
+      // seat on the user's HOME, the user's own). With no `_once` option on offer the answer is `cancelled`.
       const allowOnce = decision.allow ? byKind('allow_once') : undefined;
-      const pick = allowOnce ?? byKind('reject_once') ?? byKind('reject_always');
+      const pick = allowOnce ?? byKind('reject_once');
       const allow = allowOnce !== undefined;
       const outcome = pick ? { outcome: 'selected', optionId: pick['optionId'] } : { outcome: 'cancelled' };
       const toolCall = isObject(params['toolCall']) ? params['toolCall'] : {};
@@ -317,7 +325,8 @@ export function startAcp(spec: AcpSpec): AcpProcess {
       const update = msg['params']['update'];
       if (update['sessionUpdate'] === 'config_option_update') absorb(update);
       if ((update['sessionUpdate'] === 'tool_call' || update['sessionUpdate'] === 'tool_call_update') && typeof update['toolCallId'] === 'string') {
-        const prior = toolCalls.get(update['toolCallId']) ?? { fields: {}, kinds: [] };
+        const prior = toolCalls.get(update['toolCallId']) ?? { fields: {}, kinds: [], snapshots: [] };
+        prior.snapshots.push(update);
         for (const [k, v] of Object.entries(update)) if (v !== undefined && v !== null) prior.fields[k] = v;
         if (typeof update['kind'] === 'string' && !prior.kinds.includes(update['kind'])) prior.kinds.push(update['kind']);
         toolCalls.set(update['toolCallId'], prior);
@@ -338,9 +347,12 @@ export function startAcp(spec: AcpSpec): AcpProcess {
     }
   };
 
+  // A multibyte character split across two chunks must not be decoded per chunk (it would corrupt a path).
+  const stdoutText = new StringDecoder('utf8');
+  const stderrText = new StringDecoder('utf8');
   let buffer = '';
   child?.stdout?.on('data', (chunk: Buffer) => {
-    buffer += chunk.toString('utf8');
+    buffer += stdoutText.write(chunk);
     let nl: number;
     while ((nl = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, nl);
@@ -357,7 +369,7 @@ export function startAcp(spec: AcpSpec): AcpProcess {
         // Supervision goes on without the stderr copy.
       }
     }
-    stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4096);
+    stderrTail = (stderrTail + stderrText.write(chunk)).slice(-4096);
     for (const line of stderrTail.split('\n')) watchKill(line, 'stderr');
   });
   child?.stdin?.on('error', () => {
@@ -449,6 +461,7 @@ export function startAcp(spec: AcpSpec): AcpProcess {
       finished = true;
       alive = false;
       clearTimeout(cap);
+      buffer += stdoutText.end();
       if (buffer.trim() !== '') log({ dir: 'recv-torn', line: buffer });
       for (const [id, p] of pending) {
         pending.delete(id);
@@ -524,9 +537,15 @@ export function startAcp(spec: AcpSpec): AcpProcess {
     child.once('error', (e) => {
       spawnError = e.message;
     });
+    // The leg ends on `close` (the agent exited and every holder of its stdio closed), so trailing stdout is kept.
+    // A process of the group that holds stdout open is given `closeGraceMs`, then the leg ends and the group goes.
     child.once('exit', (code, signal) => {
-      // Let buffered stdout drain before the leg is closed.
-      setTimeout(() => void finish(code, signal, spawnError), 50);
+      const grace = setTimeout(() => void finish(code, signal, spawnError), closeGraceMs);
+      grace.unref();
+      child.once('close', () => {
+        clearTimeout(grace);
+        void finish(code, signal, spawnError);
+      });
     });
 
     void drive()

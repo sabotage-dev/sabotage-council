@@ -90,7 +90,14 @@ function sessionRecord(over: { agent?: string; model?: string; turnModel?: strin
 }
 
 const REVIEW = [{ text: `NONCE: ${NONCE}\nVERDICT: SHIP\n` }];
-const readStep = (id: string, path: string, ask = false) => ({ tool: { toolCallId: id, title: `Reading ${path}`, kind: 'read', rawInput: { operations: [{ mode: 'Line', path }] }, locations: [{ path }] }, ask });
+/** The recorded kiro shape: the name in `_meta.kiro.toolName`, the path in `rawInput.operations[]`. */
+const kiroMeta = (toolName: string) => ({ kiro: { toolName } });
+const DENIED = { content: [{ type: 'content', content: { type: 'text', text: 'User denied tool execution' } }], _meta: { kiro: { toolName: 'read', toolCallFailureReason: 'permission_denied' } } };
+const readStep = (id: string, path: string, ask = false) => ({
+  tool: { toolCallId: id, title: `Reading ${path}`, kind: 'read', rawInput: { operations: [{ mode: 'Line', path }] }, locations: [{ path }], _meta: kiroMeta('read') },
+  ask,
+  denied: DENIED,
+});
 
 interface Run {
   r: Ratification;
@@ -100,7 +107,10 @@ interface Run {
   cls: ReturnType<ReturnType<typeof createKiroAdapter>['classify']>;
 }
 
-async function launch(kase: Record<string, unknown>, opts: { o?: Partial<Occupant>; record?: Record<string, unknown> | null; plant?: (root: string, outside: string) => void; startedAt?: (ms: number) => void } = {}): Promise<Run> {
+async function launch(
+  kase: Record<string, unknown>,
+  opts: { o?: Partial<Occupant>; record?: Record<string, unknown> | null; plant?: (root: string, outside: string) => void; startedAt?: (ms: number) => void; env?: Record<string, string> } = {},
+): Promise<Run> {
   const home = tokenHome(GOOD_TOKEN);
   const o: Occupant = { backend: 'kiro', model: MODEL, effort: 'low', authHome: home, ...opts.o };
   const record = opts.record === undefined ? sessionRecord({ effort: o.effort ?? null }) : opts.record;
@@ -112,7 +122,7 @@ async function launch(kase: Record<string, unknown>, opts: { o?: Partial<Occupan
     records: record === null ? [] : [{ path: '${KIRO_HOME}/sessions/cli/${SESSION}.json', json: record }],
     ...kase,
   };
-  const ctx = ctxFor();
+  const ctx = ctxFor(opts.env);
   opts.plant?.(ctx.root, ctx.outside);
   writeFileSync(join(home, 'fake-acp.json'), JSON.stringify(full).split('__ROOT__').join(ctx.root).split('__OUTSIDE__').join(ctx.outside));
   const adapter = createKiroAdapter({ bin: FAKE_ACP, runner: runner().run, platform: 'darwin' });
@@ -153,8 +163,9 @@ describe('kiro replay: recorded live legs (sanitized)', () => {
 });
 
 describe('kiro through the fake agent (synthetic, every conformance case)', () => {
-  it('a clean review on the auth_home login: PASS; flags, homes and the council profile', async () => {
-    const { r, handle, home, ctx } = await launch({ steps: [readStep('t1', '__ROOT__/inside.txt'), ...REVIEW] });
+  it('a clean review on the auth_home login: PASS; flags, homes and the council profile; KIRO_API_KEY not passed', async () => {
+    const { r, handle, home, ctx } = await launch({ steps: [readStep('t1', '__ROOT__/inside.txt'), ...REVIEW] }, { env: { KIRO_API_KEY: 'k' } });
+    expect((JSON.parse(readFileSync(join(home, 'fake-acp-argv.json'), 'utf8')) as { env: string[] }).env).not.toContain('KIRO_API_KEY');
     expect(failedNames(r)).toEqual([]);
     expect(r.status).toBe('PASS');
     expect(r.credits).toBe(0.05);
@@ -168,13 +179,13 @@ describe('kiro through the fake agent (synthetic, every conformance case)', () =
   });
 
   it('a permission asked and refused, and a write asked and refused: the leg ratifies', async () => {
-    const { r } = await launch({ steps: [readStep('t', '__OUTSIDE__/secret.txt', true), { tool: { toolCallId: 'w', title: 'Writing CANARY.txt', kind: 'edit', rawInput: { path: '__ROOT__/CANARY.txt' } }, ask: true }, ...REVIEW] });
+    const { r } = await launch({ steps: [readStep('t', '__OUTSIDE__/secret.txt', true), { tool: { toolCallId: 'w', title: 'Writing CANARY.txt', kind: 'edit', rawInput: { path: '__ROOT__/CANARY.txt' }, _meta: kiroMeta('write') }, ask: true, denied: DENIED }, ...REVIEW] });
     expect(failedNames(r)).toEqual([]);
     expect((r.detail['permissions'] as Array<{ decision: string }>).map((p) => p.decision)).toEqual(['reject', 'reject']);
   });
 
   it('a tool executed without asking ratifies contaminated', async () => {
-    const { r } = await launch({ steps: [{ tool: { toolCallId: 'x', title: 'Running echo', kind: 'execute', rawInput: { command: 'echo canary' } }, ask: false }, ...REVIEW] });
+    const { r } = await launch({ steps: [{ tool: { toolCallId: 'x', title: 'Running echo', kind: 'execute', rawInput: { command: 'echo canary' }, _meta: kiroMeta('shell') }, ask: false }, ...REVIEW] });
     expect(failedNames(r)).toEqual(['tools-used']);
     expect(r.status).toBe('CONTAMINATED');
   });
@@ -240,6 +251,38 @@ describe('kiro through the fake agent (synthetic, every conformance case)', () =
     expect(r.failureClass).toBe(cls);
   });
 
+  it('a recorded-shape grep with only a pattern searches the cwd: PASS', async () => {
+    const grep = { tool: { toolCallId: 'g', title: "Searching for 'range'", kind: 'search', rawInput: { pattern: 'range', __tool_use_purpose: 'find the loop' }, _meta: kiroMeta('grep') }, ask: false };
+    const { r } = await launch({ steps: [grep, ...REVIEW] });
+    expect(failedNames(r)).toEqual([]);
+  });
+
+  it('a path-less read that ran is unjudgeable: FAIL, not CONTAMINATED', async () => {
+    const read = { tool: { toolCallId: 'p', title: 'Reading', kind: 'read', rawInput: { operations: [{ mode: 'Line' }] }, _meta: kiroMeta('read') }, ask: false };
+    const { r } = await launch({ steps: [read, ...REVIEW] });
+    expect(failedNames(r)).toEqual(['read-paths-known']);
+    expect(r.status).toBe('FAIL');
+  });
+
+  it('an unknown kiro tool name with kind read: rejected when asked, contaminated when it ran', async () => {
+    const step = (ask: boolean) => ({ tool: { toolCallId: 'u', title: 'Reading', kind: 'read', rawInput: { operations: [{ mode: 'Line', path: '__ROOT__/inside.txt' }] }, _meta: kiroMeta('introspect') }, ask, denied: DENIED });
+    const asked = await launch({ steps: [step(true), ...REVIEW] });
+    expect((asked.r.detail['permissions'] as Array<{ decision: string; why: string }>)[0]).toMatchObject({ decision: 'reject' });
+    expect(failedNames(asked.r)).toEqual([]);
+    const ran = await launch({ steps: [step(false), ...REVIEW] });
+    expect(failedNames(ran.r)).toEqual(['tools-used']);
+    expect(ran.r.status).toBe('CONTAMINATED');
+  });
+
+  it('record-permissions: an allowed command, or a read path outside the root', async () => {
+    const withCommands = sessionRecord({ effort: 'low' });
+    ((withCommands['session_state'] as Record<string, Record<string, unknown>>)['permissions'] as Record<string, unknown>)['allowed_commands'] = ['git status'];
+    expect(failedNames((await launch({ steps: REVIEW }, { record: withCommands })).r)).toEqual(['record-permissions']);
+    const wideRead = sessionRecord({ effort: 'low' });
+    (((wideRead['session_state'] as Record<string, Record<string, unknown>>)['permissions'] as Record<string, Record<string, unknown>>)['filesystem'] as Record<string, unknown>)['allowed_read_paths'] = ['${CWD}', '/'];
+    expect(failedNames((await launch({ steps: REVIEW }, { record: wideRead })).r)).toEqual(['record-permissions']);
+  });
+
   it('a missing session record fails closed', async () => {
     const { r } = await launch({ steps: REVIEW }, { record: null });
     expect(failedNames(r)).toEqual(['session-record']);
@@ -281,9 +324,23 @@ describe('kiro preflight (no model call, no browser risk)', () => {
     const refreshable = await createKiroAdapter({ runner: runner().run, platform: 'darwin' }).preflight(o(tokenHome({ expires_at: PAST, refresh_token: 'never-read' })), ctxFor());
     expect(refreshable.ok).toBe(true);
   });
-  it('KIRO_API_KEY skips the token store', async () => {
-    const pre = await createKiroAdapter({ runner: runner().run, platform: 'darwin' }).preflight(o(tokenHome(null)), ctxFor({ KIRO_API_KEY: 'k' }));
+  it('KIRO_API_KEY skips the token store only when no auth_home is set', async () => {
+    const pre = await createKiroAdapter({ runner: runner().run, platform: 'darwin' }).preflight(
+      { backend: 'kiro', model: MODEL, effort: 'low' },
+      { ...ctxFor({ KIRO_API_KEY: 'k' }), env: { PATH: '/usr/bin', HOME: tokenHome(null), KIRO_API_KEY: 'k' } },
+    );
     expect(pre.ok).toBe(true);
+    expect(pre.data['credential']).toBe('KIRO_API_KEY');
+  });
+  it('with auth_home set, KIRO_API_KEY is not passed and the home store is the credential', async () => {
+    const { run, calls } = runner();
+    const homeless = await createKiroAdapter({ runner: run, platform: 'darwin' }).preflight(o(tokenHome(null)), ctxFor({ KIRO_API_KEY: 'k' }));
+    expect(homeless).toMatchObject({ ok: false, failureClass: 'auth' });
+    expect(calls).toEqual([]);
+    const pre = await createKiroAdapter({ runner: run, platform: 'darwin' }).preflight(o(tokenHome(GOOD_TOKEN)), ctxFor({ KIRO_API_KEY: 'k' }));
+    expect(pre.ok).toBe(true);
+    expect(pre.data['credential']).toBe('auth_home store');
+    expect(pre.checks.find((c) => c.name === 'token')?.detail).toContain('KIRO_API_KEY is set but not passed');
   });
   it('a browser prompt in the model listing is auth', async () => {
     const pre = await createKiroAdapter({ runner: runner(out('Opening browser... | Press (^) + C to cancel')).run, platform: 'darwin' }).preflight(o(tokenHome(GOOD_TOKEN)), ctxFor());

@@ -7,6 +7,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 
 const home = process.env.HOME ?? '';
 const caseFile = process.env.FAKE_ACP_CASE ?? join(home, 'fake-acp.json');
@@ -96,7 +97,8 @@ async function runSteps(steps) {
         update({ sessionUpdate: 'tool_call_update', toolCallId: tc.toolCallId, status: 'in_progress' });
         update({ sessionUpdate: 'tool_call_update', toolCallId: tc.toolCallId, status: 'completed', rawOutput: step.output ?? 'ok' });
       } else {
-        update({ sessionUpdate: 'tool_call_update', toolCallId: tc.toolCallId, status: 'failed', rawOutput: 'denied' });
+        // A refused call reports failed with no output (agy), or with the case's own denial snapshot (kiro).
+        update({ sessionUpdate: 'tool_call_update', toolCallId: tc.toolCallId, status: 'failed', ...(step.denied ?? {}) });
       }
     } else if (step.clientRequest) {
       const res = await requestClient(step.clientRequest.method, step.clientRequest.params ?? { sessionId });
@@ -107,6 +109,19 @@ async function runSteps(steps) {
     } else if (step.modeUpdate) update({ sessionUpdate: 'current_mode_update', currentModeId: step.modeUpdate });
     else if (step.usage) update({ sessionUpdate: 'usage_update', ...step.usage });
     else if (step.raw !== undefined) process.stdout.write(step.noNewline ? step.raw : `${step.raw}\n`);
+    else if (step.update) update(step.update);
+    else if (step.askFor) {
+      const res = await requestClient('session/request_permission', { sessionId, toolCall: step.askFor, options: step.options ?? OPTIONS, ...(step.requestMeta ? { _meta: step.requestMeta } : {}) });
+      if (home !== '') writeFileSync(join(home, 'fake-acp-ask-response.json'), JSON.stringify(res));
+    } else if (step.splitInside) {
+      // One update line written in two pieces, split inside the first byte sequence of `splitInside` (a multibyte
+      // character), with a pause between, so the client receives the character across two chunks.
+      const line = Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: step.line } })}\n`, 'utf8');
+      const at = line.indexOf(Buffer.from(step.splitInside, 'utf8')) + 1;
+      await new Promise((r) => process.stdout.write(line.subarray(0, at), r));
+      await sleep(100);
+      await new Promise((r) => process.stdout.write(line.subarray(at), r));
+    }
     else if (step.stderr !== undefined) process.stderr.write(step.stderr);
     else if (step.sleep) await sleep(step.sleep);
     else if (step.exit !== undefined) process.exit(step.exit);
@@ -150,6 +165,13 @@ async function onRequest(msg) {
     const result = { stopReason: kase.stopReason ?? 'end_turn' };
     if (kase.usage) result.usage = kase.usage;
     send({ jsonrpc: '2.0', id, result });
+    if (kase.lateAfterExit) {
+      // A process of the group that keeps stdout open and writes after this agent has exited.
+      const late = `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: kase.lateAfterExit } } } })}\n`;
+      spawn(process.execPath, ['-e', `setTimeout(() => process.stdout.write(${JSON.stringify(late)}), 300)`], { stdio: ['ignore', 'inherit', 'ignore'] });
+      setTimeout(() => process.exit(0), 20);
+      return undefined;
+    }
     if (kase.exitAfterPrompt !== undefined) process.exit(kase.exitAfterPrompt);
     return undefined;
   }

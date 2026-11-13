@@ -5,7 +5,7 @@ import { sqlite } from '../../store/sqlite.js';
 import type { CommandRunner } from '../../transport/headless.js';
 import type { Occupant, Preflight, PreflightCheck } from '../types.js';
 import { KIRO_EFFORTS, KIRO_FLOOR, KIRO_NO_EFFORT, KIRO_TESTED_VERSIONS, compareVersions, kiroDecl, profileHash } from './known.js';
-import { KIRO_ENV_ALLOW, KIRO_KILL_ON, hasKiroKey, kiroHome, kiroTokenStore } from './launch.js';
+import { KIRO_KILL_ON, hasKiroKey, kiroCredential, kiroEnvAllow, kiroHome, kiroTokenStore } from './launch.js';
 
 /*
  * Kiro preflight (plan 4.3), with no model call and without risking the browser sign-in:
@@ -82,7 +82,8 @@ export async function kiroPreflight(o: Occupant, options: KiroPreflightOptions):
   const checks: PreflightCheck[] = [];
   const userOwned: string[] = [];
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const apiKey = hasKiroKey(options.env);
+  const credential = kiroCredential(o.authHome, options.env);
+  const apiKey = credential === 'KIRO_API_KEY';
   const home = kiroHome(o.authHome, options.env);
   const result = (ok: boolean, failureClass: FailureClass | null, reason: string | null, cliVersion: string | null, data: Record<string, unknown> = {}): Preflight => ({
     ok,
@@ -93,7 +94,7 @@ export async function kiroPreflight(o: Occupant, options: KiroPreflightOptions):
     userOwned,
     failureClass,
     reason,
-    data: { home, authHome: o.authHome ?? null, ...data },
+    data: { home, authHome: o.authHome ?? null, credential, ...data },
   });
   const fail = (name: string, detail: string): void => {
     checks.push({ name, status: 'fail', detail });
@@ -116,7 +117,7 @@ export async function kiroPreflight(o: Occupant, options: KiroPreflightOptions):
   }
   checks.push({ name: 'home', status: 'ok', detail: o.authHome !== undefined ? `kiro-cli runs with HOME=${home} (the seat's auth_home)` : `kiro-cli runs with the user's HOME (${home})` });
   const env: Record<string, string> = {};
-  for (const name of KIRO_ENV_ALLOW) {
+  for (const name of kiroEnvAllow(o.authHome)) {
     const value = options.env[name];
     if (value !== undefined) env[name] = value;
   }
@@ -137,7 +138,9 @@ export async function kiroPreflight(o: Occupant, options: KiroPreflightOptions):
   checks.push({
     name: 'token',
     status: 'ok',
-    detail: apiKey ? 'KIRO_API_KEY is set' : `token store present; expires ${String(token.expiresAt)}${token.expired ? ' (expired, refresh token present)' : ''}; values not read`,
+    detail: apiKey
+      ? 'credential: KIRO_API_KEY (no auth_home is set)'
+      : `credential: the ${credential}${o.authHome !== undefined && hasKiroKey(options.env) ? ' (KIRO_API_KEY is set but not passed: auth_home wins)' : ''}; expires ${String(token.expiresAt)}${token.expired ? ' (expired, refresh token present)' : ''}; values not read`,
   });
 
   const run = (args: readonly string[]) => options.runner(options.bin, args, { cwd: options.root, env, timeoutMs });

@@ -8,7 +8,9 @@ import { createCodexAdapter } from '../src/adapters/codex/index.js';
 import { createAntigravityAdapter } from '../src/adapters/antigravity/index.js';
 import { createKiroAdapter } from '../src/adapters/kiro/index.js';
 import { readAcpLog, executed } from '../src/adapters/acp/log.js';
-import { judgeRead } from '../src/adapters/acp/policy.js';
+import { judgeCall, type ReadSet } from '../src/adapters/acp/policy.js';
+import { AGY_READS } from '../src/adapters/antigravity/index.js';
+import { KIRO_READS } from '../src/adapters/kiro/index.js';
 import type { LegHandle, Occupant, Ratification, RoundCtx, SeatAdapter } from '../src/adapters/types.js';
 import { renderBrief } from '../src/brief/index.js';
 import { parseLegReply } from '../src/parse/index.js';
@@ -260,15 +262,15 @@ function canaryBrief(nonce: string, outside: string): string {
   ].join('\n');
 }
 
-function canaryActions(logFile: string, root: string, outside: string): CanaryAction[] {
+function canaryActions(logFile: string, root: string, outside: string, reads: ReadSet): CanaryAction[] {
   const log = readAcpLog(logFile);
   const calls = [...log.toolCalls.values()].map((c) => {
-    const j = judgeRead(c.fields, c.kinds, root, ['read', 'search']);
+    const j = judgeCall(c.snapshots, c.extraPaths, root, reads);
     const text = JSON.stringify(c.fields);
     return { c, j, text };
   });
   const pick = (test: (x: (typeof calls)[number]) => boolean) =>
-    calls.filter(test).map(({ c, j }) => ({ id: c.id, title: c.titles[0] ?? '', kinds: c.kinds, asked: c.asked !== null, decision: c.decision, ran: executed(c), paths: j.paths }));
+    calls.filter(test).map(({ c, j }) => ({ id: c.id, title: c.titles[0] ?? '', kinds: c.kinds, asked: c.asked !== null, decision: c.decision, ran: executed(c, reads.denialNotice), paths: j.paths }));
   // Matched by kind first: a read-kind search for CANARY.txt is a read, not a write attempt.
   const has = (x: (typeof calls)[number], kinds: string[]): boolean => x.c.kinds.some((k) => kinds.includes(k));
   return [
@@ -321,7 +323,7 @@ async function acpCanary(
   const logText = readFileSync(handle.files['log'] ?? '', 'utf8');
   const leaked = logText.split('\n').some((l) => l.includes('"dir":"recv"') && l.includes(secret));
   const canaryFiles = [root, outside].flatMap((d) => readdirSync(d).filter((n) => /canary\.txt/i.test(n)).map((n) => join(d, n)));
-  const actions = canaryActions(handle.files['log'] ?? '', root, outside);
+  const actions = canaryActions(handle.files['log'] ?? '', root, outside, o.backend === 'kiro' ? KIRO_READS : AGY_READS);
   const ranViolation = actions.flatMap((a) => a.attempts.filter((t) => t.ran).map((t) => `${a.action}: ${t.title}`));
   const notAttempted = actions.filter((a) => a.attempts.length === 0).map((a) => a.action);
   const summary = {

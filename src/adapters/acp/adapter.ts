@@ -18,7 +18,7 @@ import {
   type SemverRange,
 } from '../types.js';
 import { acpAnswer, promptUsage, readAcpLog } from './log.js';
-import { readOnlyPolicy } from './policy.js';
+import { readOnlyPolicy, type ReadSet } from './policy.js';
 import { ACP_CLASS_OF_CHECK, acpFailureClass, ratifyAcpCommon, type AcpCommonResult, type AcpPinExpect } from './ratify.js';
 
 /*
@@ -53,7 +53,8 @@ export interface AcpAdapterDef {
   preflight: (o: Occupant, ctx: RoundCtx) => Promise<Preflight>;
   /** Builds the launch and writes the leg's own files (settings, agent profile) into the leg dir. */
   plan: (o: Occupant, ctx: RoundCtx, pre: Preflight) => AcpLaunchPlan;
-  readKinds: readonly string[];
+  /** What this backend counts as a read: kinds and declared tool names (plan 4.1, 4.5). */
+  reads: ReadSet;
   /** Checks from the backend's own records (model label, session record, credits). */
   ratifyRecords: (h: LegHandle, common: AcpCommonResult) => AcpRecordResult;
   /** Failure signature from stderr, error responses and non-JSON stdout, never the answer (plan 4.4). */
@@ -101,7 +102,7 @@ export function createAcpAdapter(def: AcpAdapterDef): SeatAdapter {
         sessionCwd: ctx.root,
         promptText: brief,
         pins: plan.pins,
-        onPermission: readOnlyPolicy(ctx.root, def.readKinds),
+        onPermission: readOnlyPolicy(ctx.root, def.reads),
         timeoutMs: ctx.timeoutMs,
         killOn: plan.killOn,
         clientName: 'sabotage-council',
@@ -139,7 +140,8 @@ export function createAcpAdapter(def: AcpAdapterDef): SeatAdapter {
         root: h.root,
         nonce: h.nonce,
         pins: (h.data['expect'] as AcpPinExpect[] | undefined) ?? [],
-        readKinds: def.readKinds,
+        reads: def.reads,
+        transportError: h.exit?.recordError ?? null,
         timedOut: h.exit?.timedOut ?? false,
         rootUnchanged: ctx.rootUnchanged,
       });

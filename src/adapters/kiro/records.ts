@@ -26,6 +26,8 @@ export interface KiroRecord {
   turns: number;
   trustedTools: string[];
   allowedWritePaths: string[];
+  allowedReadPaths: string[];
+  allowedCommands: string[];
   durationMs: number | null;
   malformed: boolean;
 }
@@ -69,6 +71,8 @@ export function readKiroRecord(kiroHome: string, sessionId: string | null): Kiro
     turns: 0,
     trustedTools: [],
     allowedWritePaths: [],
+    allowedReadPaths: [],
+    allowedCommands: [],
     durationMs: null,
     malformed: false,
   };
@@ -119,7 +123,9 @@ export function readKiroRecord(kiroHome: string, sessionId: string | null): Kiro
   record.durationMs = duration > 0 ? duration : null;
   const perms = isObject(state['permissions']) ? state['permissions'] : {};
   record.trustedTools = Array.isArray(perms['trusted_tools']) ? perms['trusted_tools'].map(String) : [];
-  const fsPerms = get(perms, 'filesystem', 'allowed_write_paths');
-  record.allowedWritePaths = Array.isArray(fsPerms) ? fsPerms.map(String) : [];
+  const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
+  record.allowedWritePaths = list(get(perms, 'filesystem', 'allowed_write_paths'));
+  record.allowedReadPaths = list(get(perms, 'filesystem', 'allowed_read_paths'));
+  record.allowedCommands = list(perms['allowed_commands']);
   return record;
 }

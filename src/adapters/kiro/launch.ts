@@ -44,6 +44,22 @@ export function hasKiroKey(env: NodeJS.ProcessEnv): boolean {
   return v !== undefined && v !== '';
 }
 
+/**
+ * The variables a kiro leg may see. A seat with `auth_home` runs on that home's login only: `KIRO_API_KEY` is
+ * dropped, since kiro would otherwise use the key's account while `doctor` shows the home (round 1).
+ */
+export function kiroEnvAllow(authHome: string | undefined): readonly string[] {
+  return authHome !== undefined ? KIRO_ENV_ALLOW.filter((n) => n !== 'KIRO_API_KEY') : KIRO_ENV_ALLOW;
+}
+
+export type KiroCredential = 'auth_home store' | 'user HOME store' | 'KIRO_API_KEY';
+
+/** Which credential a leg signs in with: the key only when no `auth_home` is set and the key is present. */
+export function kiroCredential(authHome: string | undefined, env: NodeJS.ProcessEnv): KiroCredential {
+  if (authHome !== undefined) return 'auth_home store';
+  return hasKiroKey(env) ? 'KIRO_API_KEY' : 'user HOME store';
+}
+
 /** The HOME kiro-cli runs with: the seat's `auth_home`, else the user's own. */
 export function kiroHome(authHome: string | undefined, env: NodeJS.ProcessEnv): string | null {
   if (authHome !== undefined) return authHome;
