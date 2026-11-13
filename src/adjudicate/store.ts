@@ -1,9 +1,12 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LegReply } from '../parse/index.js';
+import type { Severity } from '../parse/severity.js';
 import type { Store } from '../store/open.js';
-import { readRoundInputs, roundDirOf, type DataLayout, type RoundInputs } from '../engine/prepare.js';
+import { roundFacts, type RoundFacts } from '../engine/facts.js';
+import { roundDirOf, type DataLayout } from '../engine/prepare.js';
 import { countedLegs, getRound, insertEvent, now, sha256, type LegRow } from '../engine/records.js';
+import { removeRoundRoots } from '../engine/roots.js';
 import type { LegVerdict } from './schema.js';
 import { validateAdjudicationText, type AdjudicationContext, type ValidationOutcome } from './validate.js';
 
@@ -28,37 +31,46 @@ export function readReply(legDir: string): LegReply | null {
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as LegReply) : null;
 }
 
-/** The round as the engine recorded it, for the cross-checks. */
-export function adjudicationContext(store: Store, layout: DataLayout, roundId: number): { ctx: AdjudicationContext; inputs: RoundInputs; legs: LegRow[] } {
-  const round = getRound(store.db, roundId);
-  if (!round) throw new AdjudicateError(`no round ${roundId} in the store`);
-  const roundDir = roundDirOf(layout, roundId);
-  const inputs = readRoundInputs(roundDir);
+/**
+ * Whether each ratified leg's findings block parsed, from the `legs-settled` event (fold row 3: the store, not the
+ * leg dir's reply.json, decides what the adjudicator must map).
+ */
+function extractionNeeded(store: Store, roundId: number): Set<number> {
+  const row = store.db.prepare("SELECT detail_json FROM events WHERE round_id = ? AND kind = 'legs-settled' ORDER BY id DESC LIMIT 1").get(roundId) as
+    | { detail_json: string | null }
+    | undefined;
+  const detail = row?.detail_json ? (JSON.parse(row.detail_json) as { legs?: Array<{ id: number; findings?: string }> }) : {};
+  return new Set((detail.legs ?? []).filter((l) => l.findings === 'adjudicator-needed').map((l) => l.id));
+}
+
+/** The round as the engine recorded it in the store, for the cross-checks. round.json is never read. */
+export function adjudicationContext(store: Store, layout: DataLayout, roundId: number): { ctx: AdjudicationContext; facts: RoundFacts; legs: LegRow[] } {
+  const facts = roundFacts(store, layout, roundId);
   const legs = countedLegs(store.db, roundId);
+  const needed = extractionNeeded(store, roundId);
+  const legFindings = store.db.prepare("SELECT local_id, severity FROM leg_findings WHERE leg_id = ? AND extracted_by = 'leg' ORDER BY id");
   const known = store.db
     .prepare('SELECT findings.id FROM findings JOIN rounds ON rounds.id = findings.round_id WHERE rounds.target_id = ? AND rounds.id <> ?')
-    .all(round.target_id, roundId) as Array<{ id: string }>;
+    .all(facts.targetId, roundId) as Array<{ id: string }>;
   const ctx: AdjudicationContext = {
-    roundNo: round.round_no,
-    nonce: round.nonce ?? '',
-    headSha: round.head_sha,
-    mode: round.mode as AdjudicationContext['mode'],
-    rule: inputs.rule,
-    targetKey: inputs.targetKey,
-    legs: legs.map((l) => {
-      const reply = readReply(legDirOf(roundDir, l));
-      const f = reply?.findings;
-      return {
-        seat: l.seat_id,
-        verdictRaw: (l.verdict_raw ?? 'none') as LegVerdict,
-        findings: f?.extracted_by === 'leg' ? f.findings.map((x) => ({ id: x.id, severity: x.severity })) : null,
-      };
-    }),
-    earlierItems: inputs.earlierItems.map((i) => ({ id: i.id, severity: i.severity, kind: i.kind, closedContext: i.closedContext })),
-    humanAsks: inputs.humanAsks,
+    roundNo: facts.roundNo,
+    nonce: facts.nonce,
+    headSha: facts.head,
+    mode: facts.mode,
+    rule: facts.rule,
+    targetKey: facts.targetKey,
+    legs: legs.map((l) => ({
+      seat: l.seat_id,
+      verdictRaw: (l.verdict_raw ?? 'none') as LegVerdict,
+      findings: needed.has(l.id)
+        ? null
+        : (legFindings.all(l.id) as Array<{ local_id: string; severity: Severity }>).map((x) => ({ id: x.local_id, severity: x.severity })),
+    })),
+    earlierItems: facts.detail.earlier_items.map((i) => ({ id: i.id, severity: i.severity, kind: i.kind, closedContext: i.closedContext })),
+    humanAsks: facts.detail.human_asks,
     knownFindingIds: new Set(known.map((k) => k.id)),
   };
-  return { ctx, inputs, legs };
+  return { ctx, facts, legs };
 }
 
 export interface AdjudicateResult {
@@ -78,7 +90,7 @@ export function adjudicate(store: Store, layout: DataLayout, roundId: number, te
   if (round.status !== 'awaiting-adjudication') {
     throw new AdjudicateError(`round ${roundId} is ${round.status}; only a round awaiting adjudication can be adjudicated`);
   }
-  const { ctx, inputs, legs } = adjudicationContext(store, layout, roundId);
+  const { ctx, facts, legs } = adjudicationContext(store, layout, roundId);
   const outcome = validateAdjudicationText(text, ctx);
   if (!outcome.ok) {
     insertEvent(db, 'adjudication-rejected', roundId, { errors: outcome.errors });
@@ -121,7 +133,7 @@ export function adjudicate(store: Store, layout: DataLayout, roundId: number, te
       const row = leg ? (lfId.get(leg.id, u.leg_finding) as { id: number } | undefined) : undefined;
       if (row) unmap.run(u.reason, row.id);
     }
-    const items = new Map(inputs.earlierItems.map((i) => [i.id, i]));
+    const items = new Map(facts.detail.earlier_items.map((i) => [i.id, i]));
     const insItem = db.prepare('INSERT INTO earlier_items (round_id, source_id, kind, status, evidence, body_sha256) VALUES (?, ?, ?, ?, ?, ?)');
     for (const e of a.earlier_items) {
       const item = items.get(e.source);
@@ -158,8 +170,8 @@ export function adjudicate(store: Store, layout: DataLayout, roundId: number, te
   }
   const roundDir = roundDirOf(layout, roundId);
   writeFileSync(join(roundDir, 'ADJUDICATION.json'), text.endsWith('\n') ? text : `${text}\n`);
-  // The root is deleted at round end (plan 5.4); the round dir keeps the brief, the legs and the adjudication.
-  rmSync(inputs.root, { recursive: true, force: true });
-  rmSync(`${inputs.root}.git`, { recursive: true, force: true });
+  // The root is deleted at round end (plan 5.4), by its name under the layout's roots dir only (fold row 1); the
+  // round dir keeps the brief, the legs and the adjudication.
+  removeRoundRoots(layout, roundId);
   return { outcome, roundId, stored: true };
 }

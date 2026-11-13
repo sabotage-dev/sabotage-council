@@ -32,7 +32,7 @@ export async function runWorker(store: Store, layout: DataLayout, roundId: numbe
   if (existsSync(runnerFile(roundDir))) throw new Error(`round ${roundId} already has a worker (${runnerFile(roundDir)})`);
   writeFileSync(runnerFile(roundDir), `${JSON.stringify({ pid: process.pid, started_at: now() } satisfies RunnerRecord)}\n`, { flag: 'wx' });
   try {
-    const result = await runLegs(store, roundDir, options);
+    const result = await runLegs(store, layout, roundId, options);
     writeFileSync(join(roundDir, 'summary.json'), `${JSON.stringify(roundSummary(store, layout, roundId), null, 2)}\n`);
     return result;
   } catch (error) {

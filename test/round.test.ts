@@ -1,10 +1,26 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { adjudicate, findingIdOf } from '../src/adjudicate/index.js';
-import { getEvents, getLegs, getRound, nextStep, quorumOf, readRoundInputs, residueSuspects, resolveDiffTarget, resolvePlanTarget, roundSummary } from '../src/engine/index.js';
-import { cleanScratchAfterAll } from './helpers/fixtures.js';
-import { claudeCase, codexCase, commitChange, fixtureRepo, harness, OCC, runRound, type Harness } from './helpers/round.js';
+import {
+  getEvents,
+  getLegs,
+  getRound,
+  nextStep,
+  prepareRound,
+  quorumOf,
+  readRoundInputs,
+  removeOwnedRoot,
+  residueSuspects,
+  resolveDiffTarget,
+  resolvePlanTarget,
+  rootName,
+  rootPathOf,
+  roundSummary,
+  runWorker,
+} from '../src/engine/index.js';
+import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
+import { claudeCase, codexCase, commitChange, fakeAdapters, fakeHome, fixtureRepo, harness, OCC, rosterConfig, runRound, type Harness } from './helpers/round.js';
 
 cleanScratchAfterAll();
 
@@ -495,4 +511,109 @@ describe('residue sweep (plan 3.1 step 7)', () => {
     expect(residueSuspects([leg('PASS', 100), leg('CONTAMINATED', 150, true)], 200)).toEqual([]);
     expect(residueSuspects([leg('PASS', 100), leg('PASS', 150)], 200)).toEqual([leg('PASS', 100), leg('PASS', 150)]);
   });
+});
+
+describe('fold row 1: deletes are contained, roots are created exclusively', () => {
+  it('removes only a real root dir directly under the roots dir, by its root name', () => {
+    const h = harness();
+    const rootsDir = h.layout.rootsDir;
+    mkdirSync(rootsDir, { recursive: true });
+    const outside = scratch('sc-outside-');
+    writeFileSync(join(outside, 'keep.txt'), 'keep\n');
+    const real = join(rootsDir, rootName(h.layout, 7, 1));
+    mkdirSync(real);
+    const link = join(rootsDir, rootName(h.layout, 8, 1));
+    symlinkSync(outside, link);
+    expect(removeOwnedRoot(h.layout, outside).removed).toBe(false);
+    expect(removeOwnedRoot(h.layout, join(rootsDir, '..', '..')).removed).toBe(false);
+    expect(removeOwnedRoot(h.layout, join(rootsDir, 'not-a-root')).removed).toBe(false);
+    expect(removeOwnedRoot(h.layout, link)).toMatchObject({ removed: false, why: expect.stringContaining('not a directory') });
+    expect(removeOwnedRoot(h.layout, join(outside, rootName(h.layout, 7, 1))).removed).toBe(false);
+    expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+    expect(removeOwnedRoot(h.layout, real).removed).toBe(true);
+    expect(existsSync(real)).toBe(false);
+  });
+
+  it('names roots by store, so two stores sharing a roots dir never collide', () => {
+    const a = harness();
+    const b = harness();
+    const shared = { ...b.layout, rootsDir: a.layout.rootsDir };
+    expect(rootName(a.layout, 1, 1)).not.toBe(rootName(shared, 1, 1));
+    expect(rootName(a.layout, 1, 1)).toMatch(/^[0-9a-f]{8}-1-a1$/);
+  });
+
+  it('never deletes a pre-existing root dir when preparation fails', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const taken = rootPathOf(h.layout, 1, 1);
+    mkdirSync(taken, { recursive: true });
+    writeFileSync(join(taken, 'someone-elses.txt'), 'mine\n');
+    await expect(runRound(h, resolveDiffTarget(repo, 'main..feature'))).rejects.toThrow(/EEXIST/);
+    expect(readFileSync(join(taken, 'someone-elses.txt'), 'utf8')).toBe('mine\n');
+    expect(getRound(h.store.db, 1)?.status).toBe('failed');
+  }, 60_000);
+
+  it('deletes the root named by the layout at adjudication, never the one round.json names', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const r = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    const victim = scratch('sc-victim-');
+    writeFileSync(join(victim, 'keep.txt'), 'keep\n');
+    const file = join(r.prepared.roundDir, 'round.json');
+    writeFileSync(file, JSON.stringify({ ...(JSON.parse(readFileSync(file, 'utf8')) as object), root: victim }));
+    expect(adjudicate(h.store, h.layout, r.prepared.inputs.roundId, adjudicationFor(h, r.prepared.inputs.roundId)).outcome.ok).toBe(true);
+    expect(readFileSync(join(victim, 'keep.txt'), 'utf8')).toBe('keep\n');
+    expect(existsSync(rootPathOf(h.layout, r.prepared.inputs.roundId, 1))).toBe(false);
+    expect(existsSync(`${rootPathOf(h.layout, r.prepared.inputs.roundId, 1)}.git`)).toBe(false);
+  }, 60_000);
+});
+
+describe('fold row 3: the store decides, round.json is a display copy', () => {
+  it('a tampered round.json cannot change the rule or the earlier items the validator applies', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const r1 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    expect(adjudicate(h.store, h.layout, r1.prepared.inputs.roundId, adjudicationFor(h, r1.prepared.inputs.roundId)).outcome.ok).toBe(true);
+    commitChange(repo, 'calc/notes.md', 'notes\n', 'notes');
+    const r2 = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    const i2 = r2.prepared.inputs;
+    const file = join(r2.prepared.roundDir, 'round.json');
+    writeFileSync(file, JSON.stringify({ ...(JSON.parse(readFileSync(file, 'utf8')) as object), rule: 'round-1', earlierItems: [], roundNo: 1 }));
+    expect(roundSummary(h.store, h.layout, i2.roundId)).toMatchObject({ rule: 'serious', earlier_items: [expect.objectContaining({ id: i2.earlierItems[0]!.id })] });
+    const r = adjudicate(h.store, h.layout, i2.roundId, adjudicationFor(h, i2.roundId, (a) => {
+      a['earlier_items'] = [];
+    }));
+    expect(r.outcome.ok).toBe(false);
+    if (!r.outcome.ok) expect(r.outcome.errors.join('\n')).toContain(`earlier item ${i2.earlierItems[0]!.id} has no row`);
+  }, 120_000);
+
+  it("a tampered leg reply.json cannot drop a leg's findings from the attribution check", async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const r = await runRound(h, resolveDiffTarget(repo, 'main..feature'));
+    const reply = join(r.prepared.roundDir, 'legs', 'b-primary-1', 'reply.json');
+    const parsed = JSON.parse(readFileSync(reply, 'utf8')) as { findings: { findings: unknown[] } };
+    parsed.findings.findings = [];
+    writeFileSync(reply, JSON.stringify(parsed));
+    const res = adjudicate(h.store, h.layout, r.prepared.inputs.roundId, adjudicationFor(h, r.prepared.inputs.roundId, (a) => {
+      a['findings'] = [];
+      a['unmapped'] = [];
+      a['verdict'] = 'SHIP';
+      a['leg_verdicts'] = (a['leg_verdicts'] as Array<{ seat: string; raw: string }>).map((v) => ({ ...v, effective: v.raw === 'NEEDS-WORK' ? 'SHIP-WITH-FIXES' : v.raw }));
+    }));
+    expect(res.outcome.ok).toBe(false);
+    if (!res.outcome.ok) expect(res.outcome.errors).toContain("[attribution] seat b's finding F1 is not mapped (raised_by of a finding, or unmapped with a reason)");
+  }, 60_000);
+
+  it('fails the round before any leg runs when the root changed after it was sealed', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const config = await rosterConfig();
+    const prepared = prepareRound(h.store, { config, configPath: '/dev/null', layout: h.layout, target: resolveDiffTarget(repo, 'main..feature') });
+    writeFileSync(join(prepared.inputs.root, 'widget', 'calc', 'rangesum.py'), 'swapped\n');
+    const { env } = fakeHome({});
+    await expect(runWorker(h.store, h.layout, prepared.inputs.roundId, { adapters: fakeAdapters, env, pollMs: 20 })).rejects.toThrow(/no longer hashes to the sealed tree/);
+    expect(getRound(h.store.db, prepared.inputs.roundId)?.status).toBe('failed');
+    expect(getLegs(h.store.db, prepared.inputs.roundId)).toEqual([]);
+  }, 60_000);
 });

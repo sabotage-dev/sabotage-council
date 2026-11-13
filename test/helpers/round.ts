@@ -140,6 +140,6 @@ export async function runRound(
   const config = options.config ?? (await rosterConfig());
   const prepared = prepareRound(h.store, { config, configPath: '/dev/null', layout: h.layout, target });
   const { env } = fakeHome(cases);
-  const result = await runLegs(h.store, prepared.roundDir, { adapters: fakeAdapters, env, pollMs: 20, legTimeoutMs: 20_000, ...options });
+  const result = await runLegs(h.store, h.layout, prepared.inputs.roundId, { adapters: fakeAdapters, env, pollMs: 20, legTimeoutMs: 20_000, ...options });
   return { prepared, result };
 }

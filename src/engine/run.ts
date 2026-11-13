@@ -4,9 +4,11 @@ import type { SeatAdapter, SeatAdapters } from '../adapters/index.js';
 import type { FailureClass, LegHandle, LegText, Occupant, Preflight, Ratification, RoundCtx } from '../adapters/types.js';
 import type { FallbackConfig, SeatConfig } from '../config/schema.js';
 import { parseLegReply, type LegReply } from '../parse/index.js';
-import { sweepResidue } from '../root/seal.js';
+import { hashManifest, manifestOf } from '../root/hash.js';
+import { sweepResidue, type SealedRoot } from '../root/seal.js';
 import type { Store } from '../store/open.js';
-import { readRoundInputs, readSealed, type RoundInputs } from './prepare.js';
+import { FactsError, roundFacts, type RoundFacts } from './facts.js';
+import { roundDirOf, type DataLayout } from './prepare.js';
 import { getLegs, insertEvent, now, upsertOccupant, type LegStatus } from './records.js';
 
 /*
@@ -122,10 +124,12 @@ const bit = (b: boolean | null | undefined): number | null => (b === null || b =
  * Runs the legs of a prepared round to settlement and records everything. Never throws for a leg's failure: a leg
  * that cannot run is a recorded leg with its failure class.
  */
-export async function runLegs(store: Store, roundDir: string, options: RunOptions): Promise<RunResult> {
+export async function runLegs(store: Store, layout: DataLayout, roundId: number, options: RunOptions): Promise<RunResult> {
   const { db } = store;
-  const inputs = readRoundInputs(roundDir);
-  const sealed = readSealed(roundDir);
+  // Everything this run decides on comes from the store and the layout (fold row 3), never from round.json.
+  const inputs = roundFacts(store, layout, roundId);
+  const roundDir = roundDirOf(layout, roundId);
+  const sealed = sealedFromRoot(inputs);
   const pollMs = options.pollMs ?? 1000;
   const legTimeoutMs = options.legTimeoutMs ?? inputs.legTimeoutMs;
   const budgetMs = options.roundBudgetMs ?? legTimeoutMs * 2;
@@ -421,6 +425,22 @@ export function residueSuspects<T extends Pick<LegResult, 'status' | 'endedAtMs'
   return legs.some((l) => l.rootMutated) ? [] : pass;
 }
 
+/**
+ * The sealed root, re-read from the disk and proven against the tree hash the store recorded at round start: a root
+ * changed (or replaced) between preparation and launch fails the round before any leg runs.
+ */
+function sealedFromRoot(facts: RoundFacts): SealedRoot {
+  let manifest;
+  try {
+    manifest = manifestOf(facts.root);
+  } catch (error) {
+    throw new FactsError(`the root ${facts.root} cannot be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const treeHash = hashManifest(manifest);
+  if (treeHash !== facts.detail.tree_hash) throw new FactsError(`the root ${facts.root} no longer hashes to the sealed tree (${facts.detail.tree_hash})`);
+  return { root: facts.root, gitDir: `${facts.root}.git`, treeHash, manifest, commit: '' };
+}
+
 function safeClassify(adapter: SeatAdapter, handle: LegHandle): FailureClass | null {
   try {
     return adapter.classify(handle);
@@ -430,7 +450,7 @@ function safeClassify(adapter: SeatAdapter, handle: LegHandle): FailureClass | n
 }
 
 /** Records the parsed findings of every ratified leg and settles the round's quorum and status. */
-function settle(store: Store, inputs: RoundInputs, results: LegResult[], aborted: boolean): RunResult {
+function settle(store: Store, inputs: RoundFacts, results: LegResult[], aborted: boolean): RunResult {
   const { db } = store;
   const ratified = results.filter((l) => l.status === 'PASS');
   const insert = db.prepare(
@@ -451,7 +471,16 @@ function settle(store: Store, inputs: RoundInputs, results: LegResult[], aborted
       quorum,
       ratified: ratified.map((l) => l.seat),
       aborted,
-      legs: getLegs(db, inputs.roundId).map((l) => ({ id: l.id, seat: l.seat_id, role: l.role, attempt: l.attempt, status: l.status, failure_class: l.failure_class })),
+      legs: getLegs(db, inputs.roundId).map((l) => ({
+        id: l.id,
+        seat: l.seat_id,
+        role: l.role,
+        attempt: l.attempt,
+        status: l.status,
+        failure_class: l.failure_class,
+        // Whether the adjudicator must extract this leg's findings (its block did not parse): the store's record.
+        findings: results.find((r) => r.legId === l.id)?.reply?.findings.extracted_by ?? null,
+      })),
     });
     db.exec('COMMIT');
     return { roundId: inputs.roundId, status, quorum, ratified: ratified.length, legs: results };

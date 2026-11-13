@@ -1,13 +1,15 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { renderBrief, type Brief, type ReviewScope } from '../brief/render.js';
 import type { RoundRule } from '../brief/rules.js';
 import type { CouncilConfig } from '../config/schema.js';
 import type { RootInputs } from '../root/build.js';
 import type { EarlierItem } from '../root/data-files.js';
-import { prepareRoot, type SealedRoot } from '../root/seal.js';
+import { prepareRoot } from '../root/seal.js';
 import type { Store } from '../store/open.js';
-import { insertEvent, now, numberRound, sha256, upsertTarget, type CarriedItem, type RosterSnapshot } from './records.js';
+import type { PreparedDetail } from './facts.js';
+import { insertEvent, now, numberRound, upsertTarget, type CarriedItem, type RosterSnapshot } from './records.js';
+import { createRootDir, removeOwnedRoot } from './roots.js';
 import type { ResolvedTarget, RoundMode } from './target.js';
 
 /*
@@ -79,10 +81,6 @@ export function readRoundInputs(roundDir: string): RoundInputs {
   return JSON.parse(readFileSync(join(roundDir, 'round.json'), 'utf8')) as RoundInputs;
 }
 
-export function readSealed(roundDir: string): SealedRoot {
-  return JSON.parse(readFileSync(join(roundDir, 'sealed.json'), 'utf8')) as SealedRoot;
-}
-
 export function rosterOf(config: CouncilConfig): RosterSnapshot {
   return {
     seats: config.seats,
@@ -92,8 +90,9 @@ export function rosterOf(config: CouncilConfig): RosterSnapshot {
 
 /**
  * Numbers the round, builds and seals its root with the brief, and records the round as `running`. The round row is
- * inserted first so its id names the round dir and the root (`<id>-a1`); a failure after that marks the round
- * `failed` and removes the half-built root.
+ * inserted first so its id names the round dir and the root (`<store tag>-<id>-a1`, created exclusively); a failure
+ * after that marks the round `failed` and removes only the root dirs this call created. Everything a later step
+ * decides on goes into the store (the `round-prepared` event); `round.json` is a display copy (fold row 3).
  */
 export function prepareRound(store: Store, options: PrepareOptions): PreparedRound {
   const { db } = store;
@@ -110,10 +109,14 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
     .run(targetId, numbering.roundNo, t.mode, t.head, numbering.baseline, JSON.stringify(roster), startedAt);
   const roundId = Number(insert.lastInsertRowid);
   const roundDir = roundDirOf(options.layout, roundId);
-  const rootDir = join(options.layout.rootsDir, `${roundId}-a1`);
+  let rootDir: string | null = null;
+  let gitDirOwned = false;
   try {
     mkdirSync(roundDir, { recursive: true, mode: 0o700 });
-    mkdirSync(options.layout.rootsDir, { recursive: true, mode: 0o700 });
+    // Exclusive: an existing dir with this name is never adopted, and never deleted by this call's cleanup.
+    rootDir = createRootDir(options.layout, roundId, 1);
+    // The seal creates `<root>.git`; one that is already there is not this call's to delete.
+    gitDirOwned = !existsSync(`${rootDir}.git`);
     const previous: EarlierItem[] = numbering.items.map((i) => ({ id: i.id, text: i.text, closedContext: i.closedContext, from: `round ${i.fromRound}` }));
     const inputs: RootInputs = {
       repo: t.repoTop,
@@ -142,7 +145,6 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
     const fullRoundReason = fold?.kind === 'fallback' ? fold.reason : null;
     const briefFile = join(roundDir, 'BRIEF.md');
     writeFileSync(briefFile, brief.text, { flag: 'wx' });
-    writeFileSync(join(roundDir, 'sealed.json'), `${JSON.stringify(prepared.sealed)}\n`);
     const roundInputs: RoundInputs = {
       version: 1,
       roundId,
@@ -178,21 +180,30 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
       brief.nonce,
       roundId,
     );
-    insertEvent(db, 'round-prepared', roundId, {
+    const detail: PreparedDetail = {
+      version: 2,
       round_no: numbering.roundNo,
       rule: brief.rule,
       scope: brief.scope,
       baseline: numbering.baseline,
       snapshot: t.snapshot,
-      earlier_items: numbering.items.map((i) => ({ id: i.id, closed_context: i.closedContext, body_sha256: sha256(i.text) })),
+      revision: t.head,
       tree_hash: prepared.sealed.treeHash,
-    });
+      brief_text: brief.text,
+      brief_promises: [...brief.promises],
+      earlier_items: numbering.items,
+      human_asks: [],
+      root_inputs: inputs,
+    };
+    insertEvent(db, 'round-prepared', roundId, detail);
     return { inputs: roundInputs, roundDir, brief };
   } catch (error) {
     db.prepare("UPDATE rounds SET status = 'failed', finished_at = ? WHERE id = ?").run(now(), roundId);
     insertEvent(db, 'round-failed', roundId, { stage: 'prepare', error: error instanceof Error ? error.message : String(error) });
-    rmSync(rootDir, { recursive: true, force: true });
-    rmSync(`${rootDir}.git`, { recursive: true, force: true });
+    if (rootDir !== null) {
+      removeOwnedRoot(options.layout, rootDir);
+      if (gitDirOwned) removeOwnedRoot(options.layout, `${rootDir}.git`);
+    }
     throw error;
   }
 }

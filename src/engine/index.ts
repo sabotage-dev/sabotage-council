@@ -1,4 +1,4 @@
-export { prepareRound, readRoundInputs, readSealed, rosterOf, roundDirOf, type DataLayout, type PrepareOptions, type PreparedRound, type RoundInputs } from './prepare.js';
+export { prepareRound, readRoundInputs, rosterOf, roundDirOf, type DataLayout, type PrepareOptions, type PreparedRound, type RoundInputs } from './prepare.js';
 export {
   carriedItems,
   countedLegs,
@@ -32,3 +32,5 @@ export {
   type RoundMode,
 } from './target.js';
 export { failRound, runnerFile, runWorker, spawnWorker, waitRound, type WaitOptions } from './worker.js';
+export { FactsError, preparedDetail, roundFacts, targetKeyOf, type PreparedDetail, type RoundFacts } from './facts.js';
+export { createRootDir, removeOwnedRoot, removeRoundRoots, rootName, rootPathOf, storeTag, type RemoveResult, type RootsLayout } from './roots.js';

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { Ratification } from '../adapters/types.js';
 import type { LegReply } from '../parse/index.js';
 import type { Store } from '../store/open.js';
+import { roundFacts } from './facts.js';
 import { readRoundInputs, roundDirOf, type DataLayout } from './prepare.js';
 import { getEvents, getLegs, getRound, type LegRow } from './records.js';
 import { quorumOf, type QuorumLabel } from './run.js';
@@ -144,7 +145,9 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
   const round = getRound(store.db, roundId);
   if (!round) throw new Error(`no round ${roundId} in the store`);
   const roundDir = roundDirOf(layout, roundId);
+  // Display fields come from round.json; everything a decision rests on comes from the store (fold row 3).
   const inputs = readRoundInputs(roundDir);
+  const facts = roundFacts(store, layout, roundId);
   const legs = getLegs(store.db, roundId).map((l) => legSummary(roundDir, l));
   const ratified = legs.filter((l) => l.counted).length;
   const label = quorumOf(ratified);
@@ -158,26 +161,26 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
     round_no: round.round_no,
     mode: round.mode,
     target: inputs.label,
-    target_key: inputs.targetKey,
+    target_key: facts.targetKey,
     head_sha: round.head_sha,
     base_sha: round.base_sha,
     baseline_sha: round.baseline_sha,
-    scope: inputs.scope,
+    scope: facts.detail.scope,
     full_round_reason: round.full_round_reason,
-    rule: inputs.rule,
+    rule: facts.rule,
     nonce: round.nonce,
-    snapshot: inputs.snapshot,
+    snapshot: facts.detail.snapshot,
     status: round.status,
     quorum: {
       label,
       ratified,
-      seats: inputs.roster.seats.length,
+      seats: facts.roster.seats.length,
       note: round.status === 'running' ? `running: ${ratified} leg(s) ratified so far` : quorumNote(label, ratified),
     },
     round_dir: roundDir,
-    root: inputs.root,
-    brief_path: inputs.briefFile,
-    earlier_items: inputs.earlierItems.map((i) => ({ id: i.id, severity: i.severity, closed_context: i.closedContext, text: i.text })),
+    root: facts.root,
+    brief_path: join(roundDir, 'BRIEF.md'),
+    earlier_items: facts.detail.earlier_items.map((i) => ({ id: i.id, severity: i.severity, closed_context: i.closedContext, text: i.text })),
     legs,
     adjudication:
       round.status === 'adjudicated'
