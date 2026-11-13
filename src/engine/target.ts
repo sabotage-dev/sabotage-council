@@ -396,30 +396,16 @@ export function snapshotParent(top: string, sha: string): string | null {
   return ours && parents.length === 1 ? (parents[0] ?? null) : null;
 }
 
-export function treeOf(top: string, sha: string): string | null {
-  const r = git(['rev-parse', '--verify', '--quiet', `${sha}^{tree}`], top, undefined, [0, 1, 128]);
-  return r.status === 0 ? r.out : null;
-}
-
 export function isAncestorIn(top: string, ancestor: string, head: string): boolean {
   return git(['merge-base', '--is-ancestor', ancestor, head], top, undefined, [0, 1, 128]).status === 0;
 }
 
 /**
- * A follow-up round on uncommitted work (fold row 10). Every snapshot used to sit on HEAD, so the next one was a
- * sibling of the last reviewed one and the round was briefed as a rebase. When the newest reviewed head is a
- * snapshot on the same HEAD, the new snapshot is parented on it (the same tree is the same head), so the fold is the
- * delta of the work.
+ * A follow-up round on uncommitted work (fold row 10): every snapshot sits on the commit it was taken from, so the
+ * next snapshot is a sibling of the last reviewed one, not its descendant. When the baseline is a snapshot whose
+ * parent is an ancestor of this head (the work went on, or was committed), its tree is still the reviewed content:
+ * the fold is the delta between the two trees, not a rebase.
  */
-export function chainSnapshot(t: ResolvedTarget, lastReviewed: string | null): ResolvedTarget {
-  if (t.snapshotTree === null || lastReviewed === null) return t;
-  if (snapshotParent(t.repoTop, lastReviewed) !== t.headCommit) return t;
-  const head = treeOf(t.repoTop, lastReviewed) === t.snapshotTree ? lastReviewed : commitSnapshot(t.repoTop, t.snapshotTree, lastReviewed);
-  const revision = t.mode === 'plan' && t.foldPaths !== null ? contentRevision(t.repoTop, head, t.foldPaths) : head;
-  return { ...t, head, revision };
-}
-
-/** The baseline is a snapshot whose parent is an ancestor of the head: its tree is still the reviewed content. */
 export function baselineIsSnapshot(top: string, baseline: string | null, head: string): boolean {
   if (baseline === null) return false;
   const parent = snapshotParent(top, baseline);

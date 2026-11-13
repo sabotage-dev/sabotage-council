@@ -197,13 +197,6 @@ export function numberRound(db: DatabaseSync, targetId: number, head: string, re
   return { roundNo, baseline, items: carriedItems(db, rounds.map((r) => Number(r['id']))) };
 }
 
-/** The head of the newest council round of a target (the work a follow-up snapshot builds on, fold row 10). */
-export function latestCouncilHead(db: DatabaseSync, targetId: number): string | null {
-  const rows = all(db, COUNCIL_ROUNDS, targetId);
-  const last = rows.at(-1);
-  return last === undefined ? null : String(last['head_sha']);
-}
-
 /** Adjudicated rounds of a target that settled with two or more counted legs: council rounds, with their revision. */
 const COUNCIL_ROUNDS = `SELECT rounds.id, rounds.head_sha, rounds.round_no,
     coalesce((SELECT json_extract(events.detail_json, '$.revision') FROM events
