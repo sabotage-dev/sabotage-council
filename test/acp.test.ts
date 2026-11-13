@@ -51,6 +51,7 @@ async function runCase(
     sessionCwd?: (root: string, outside: string) => string;
     allowAll?: boolean;
     logFileIn?: string;
+    closeGraceMs?: number;
   } = {},
 ): Promise<Leg> {
   const dir = opts.logFileIn ?? scratch('sc-acp-');
@@ -81,6 +82,7 @@ async function runCase(
     timeoutMs: opts.timeoutMs ?? 15_000,
     killGraceMs: 300,
     cancelGraceMs: 300,
+    closeGraceMs: opts.closeGraceMs,
     exitGraceMs: 500,
     killOn: opts.killOn,
   });
@@ -96,6 +98,7 @@ function ratify(leg: Leg, unchanged = true) {
     pins: EXPECT,
     reads: READS,
     transportError: leg.exit.recordError,
+    closeTimedOut: leg.exit.closeTimedOut,
     timedOut: leg.exit.timedOut,
     rootUnchanged: () => ({ unchanged, changes: [] }),
   });
@@ -403,6 +406,39 @@ describe('ACP round 1: path evidence, execution evidence, log integrity', () => 
     const r = ratify(leg);
     expect(r.answer).toContain('LATE-LINE');
   });
+  it('round 2: stdout held open past the close grace: the leg ends, the group is killed, and it can never PASS', async () => {
+    const leg = await runCase({ steps: REVIEW, holdStdoutAfterExit: 4000 }, { closeGraceMs: 300 });
+    expect(leg.exit.closeTimedOut).toBe(true);
+    expect(groupAlive(leg.exit.pgid as number)).toBe(false);
+    const r = ratify(leg);
+    expect(r.failed).toEqual(['log']);
+    expect(r.status).not.toBe('PASS');
+    // The log's own exit record carries it too, so a replay without the handle fails the same way.
+    expect(ratify({ ...leg, exit: { ...leg.exit, closeTimedOut: false } }).failed).toEqual(['log']);
+  });
+
+  it('round 2: a later request for the same call is judged with the earlier request and its fsReadPaths', async () => {
+    const leg = await runCase({
+      steps: [
+        { update: tool('t', { status: 'pending', locations: [{ path: '__ROOT__/inside.txt' }] }) },
+        { askFor: { toolCallId: 't' }, requestMeta: { fsReadPaths: ['__OUTSIDE__/secret.txt'] } },
+        { askFor: { toolCallId: 't' } },
+        ...REVIEW,
+      ],
+    });
+    const r = ratify(leg);
+    expect(r.log.permissions.map((p) => p.decision)).toEqual(['reject', 'reject']);
+    expect(r.log.permissions[1]?.why).toContain('resolves outside the root');
+    expect(r.failed).toEqual([]);
+  });
+
+  it('round 2: a permission request with no toolCallId is rejected live and fails log', async () => {
+    const leg = await runCase({ steps: [{ askFor: { name: 'read_file', kind: 'read', locations: [{ path: '__ROOT__/inside.txt' }] } }, ...REVIEW] });
+    const r = ratify(leg);
+    expect(r.log.permissions.map((p) => [p.decision, p.why])).toEqual([['reject', 'the request names no toolCallId']]);
+    expect(r.failed).toEqual(['log']);
+  });
+
   it('with only allow_always and reject_always on offer, the answer is cancelled', async () => {
     const leg = await runCase({
       steps: [
@@ -475,7 +511,7 @@ describe('ACP permission policy', () => {
     const policy = readOnlyPolicy(root, READS);
     const inside = { toolCallId: 't', name: 'read_file', kind: 'read', locations: [{ path: join(root, 'a.txt') }] };
     const outside = { toolCallId: 't', name: 'read_file', kind: 'read', locations: [{ path: '/etc/hosts' }] };
-    const known = (snapshots: Array<Record<string, unknown>>) => () => ({ fields: {}, kinds: ['read'], snapshots });
+    const known = (snapshots: Array<Record<string, unknown>>) => () => ({ fields: {}, kinds: ['read'], snapshots, requests: [] });
     expect(policy({ toolCall: { toolCallId: 't' } }, known([inside])).allow).toBe(true);
     expect(policy({ toolCall: { toolCallId: 't' } }, known([outside, inside])).allow).toBe(false);
     expect(policy({ toolCall: { toolCallId: 't' }, _meta: { fsReadPaths: ['/etc/hosts'] } }, known([inside])).allow).toBe(false);

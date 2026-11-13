@@ -142,6 +142,7 @@ export function createAcpAdapter(def: AcpAdapterDef): SeatAdapter {
         pins: (h.data['expect'] as AcpPinExpect[] | undefined) ?? [],
         reads: def.reads,
         transportError: h.exit?.recordError ?? null,
+        closeTimedOut: (h.exit as { closeTimedOut?: boolean } | null)?.closeTimedOut === true,
         timedOut: h.exit?.timedOut ?? false,
         rootUnchanged: ctx.rootUnchanged,
       });

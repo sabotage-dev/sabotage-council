@@ -238,6 +238,8 @@ export function readAcpLog(path: string): AcpLog {
       const params = isObject(msg['params']) ? msg['params'] : {};
       const toolCall = isObject(params['toolCall']) ? params['toolCall'] : {};
       const toolCallId = str(toolCall['toolCallId']);
+      // A request the ratifier cannot tie to a call is a malformed record line: it fails `log` (round 2).
+      if (toolCallId === null) log.malformed++;
       log.permissions.push({ toolCallId, toolCall, decision: 'reject', option: '', why: '' });
       if (toolCallId !== null) {
         const call = log.toolCalls.get(toolCallId) ?? newCall(toolCallId, i);

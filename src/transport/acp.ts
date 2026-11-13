@@ -37,6 +37,8 @@ export interface KnownToolCall {
   kinds: string[];
   /** Every update as reported, in order. The policy judges all of them: an earlier path is never erased. */
   snapshots: Array<Record<string, unknown>>;
+  /** The params of every permission request for the call, this one included, in order (round 2). */
+  requests: Array<Record<string, unknown>>;
 }
 
 export interface PermissionDecision {
@@ -92,6 +94,11 @@ export interface AcpExit extends HeadlessExit {
   refused: string | null;
   /** The line that matched `killOn`, if one did. */
   killedOn: string | null;
+  /**
+   * The agent exited but its stdout did not close within `closeGraceMs` (a process of its group held it open), so
+   * output may be missing from the log. The ratifier fails `log` on it: an incomplete log is never a PASS.
+   */
+  closeTimedOut: boolean;
 }
 
 export type AcpPhase = 'spawn' | 'initialize' | 'session' | 'pins' | 'prompt' | 'done';
@@ -197,6 +204,7 @@ export function startAcp(spec: AcpSpec): AcpProcess {
   let sessionId: string | null = null;
   let refused: string | null = null;
   let killedOn: string | null = null;
+  let closeTimedOut = false;
   let promptDone = false;
   let timedOut = false;
   let cancelled = false;
@@ -274,6 +282,15 @@ export function startAcp(spec: AcpSpec): AcpProcess {
     const method = String(msg['method']);
     const params = isObject(msg['params']) ? msg['params'] : {};
     if (method === 'session/request_permission') {
+      // The request joins its call's live state before the decision, so a later request is judged with every
+      // earlier one (its toolCall and its extra paths), not only with the notifications.
+      const requested = isObject(params['toolCall']) ? params['toolCall'] : {};
+      const requestedId = requested['toolCallId'];
+      if (typeof requestedId === 'string') {
+        const prior = toolCalls.get(requestedId) ?? { fields: {}, kinds: [], snapshots: [], requests: [] };
+        prior.requests.push(params);
+        toolCalls.set(requestedId, prior);
+      }
       let decision: PermissionDecision;
       try {
         decision = spec.onPermission(params, (id) => toolCalls.get(id));
@@ -325,7 +342,7 @@ export function startAcp(spec: AcpSpec): AcpProcess {
       const update = msg['params']['update'];
       if (update['sessionUpdate'] === 'config_option_update') absorb(update);
       if ((update['sessionUpdate'] === 'tool_call' || update['sessionUpdate'] === 'tool_call_update') && typeof update['toolCallId'] === 'string') {
-        const prior = toolCalls.get(update['toolCallId']) ?? { fields: {}, kinds: [], snapshots: [] };
+        const prior = toolCalls.get(update['toolCallId']) ?? { fields: {}, kinds: [], snapshots: [], requests: [] };
         prior.snapshots.push(update);
         for (const [k, v] of Object.entries(update)) if (v !== undefined && v !== null) prior.fields[k] = v;
         if (typeof update['kind'] === 'string' && !prior.kinds.includes(update['kind'])) prior.kinds.push(update['kind']);
@@ -506,6 +523,7 @@ export function startAcp(spec: AcpSpec): AcpProcess {
         sessionId,
         refused,
         killedOn,
+        closeTimedOut,
       };
       log({ dir: 'client', event: 'exit', exit: record });
       writeRecord(record);
@@ -540,7 +558,11 @@ export function startAcp(spec: AcpSpec): AcpProcess {
     // The leg ends on `close` (the agent exited and every holder of its stdio closed), so trailing stdout is kept.
     // A process of the group that holds stdout open is given `closeGraceMs`, then the leg ends and the group goes.
     child.once('exit', (code, signal) => {
-      const grace = setTimeout(() => void finish(code, signal, spawnError), closeGraceMs);
+      const grace = setTimeout(() => {
+        closeTimedOut = true;
+        log({ dir: 'client', event: 'close-timeout', closeGraceMs });
+        void finish(code, signal, spawnError);
+      }, closeGraceMs);
       grace.unref();
       child.once('close', () => {
         clearTimeout(grace);

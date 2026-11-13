@@ -73,6 +73,14 @@ export const KIRO_READS: ReadSet = {
   },
   cwdDefault: ['grep', 'glob'],
   denialNotice: (s) => kiroMeta(s)['toolCallFailureReason'] === 'permission_denied',
+  // Argument semantics (kiro's own tool descriptions, recorded in the canary fixture): grep's `pattern` is a regex
+  // to search for and glob's `pattern` is a file glob; both take an optional `path` (default the cwd). The purpose
+  // note kiro adds to every call is free text. grep's file-filter glob falls back to the generic glob-word rule.
+  args: {
+    read: { text: ['__tool_use_purpose'] },
+    grep: { text: ['pattern', '__tool_use_purpose'] },
+    glob: { globs: ['pattern'], text: ['__tool_use_purpose'] },
+  },
 };
 
 const RECORD_CLASS: Readonly<Record<string, FailureClass>> = {

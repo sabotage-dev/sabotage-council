@@ -62,6 +62,9 @@ export const AGY_READS: ReadSet = {
   kinds: ['read'],
   names: ['read_file'],
   nameOf: (s) => str(s['name']),
+  // read_file's recorded arguments are `Path`, `StartLine`, `EndLine` and `ByteOffset`: one path, no glob, no
+  // regex or free text, so the generic key rules judge it exactly.
+  args: { read_file: {} },
 };
 
 const RECORD_CLASS: Readonly<Record<string, FailureClass>> = {

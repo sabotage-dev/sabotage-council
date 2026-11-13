@@ -257,6 +257,23 @@ describe('kiro through the fake agent (synthetic, every conformance case)', () =
     expect(failedNames(r)).toEqual([]);
   });
 
+  it('round 2: grep patterns are regexes, never paths: "~" and "../x" with no path search the cwd (PASS)', async () => {
+    const grep = (id: string, pattern: string) => ({ tool: { toolCallId: id, title: `Searching for '${pattern}'`, kind: 'search', rawInput: { pattern, __tool_use_purpose: 'x' }, _meta: kiroMeta('grep') }, ask: false });
+    const { r } = await launch({ steps: [grep('g1', '~'), grep('g2', '../x'), ...REVIEW] });
+    expect(failedNames(r)).toEqual([]);
+  });
+
+  it('round 2: a glob pattern is a file glob: /etc/* is rejected when asked and contaminates when it ran', async () => {
+    const glob = (ask: boolean) => ({ tool: { toolCallId: 'gl', title: 'Finding /etc/*', kind: 'search', rawInput: { pattern: '/etc/*' }, _meta: kiroMeta('glob') }, ask, denied: DENIED });
+    const asked = await launch({ steps: [glob(true), ...REVIEW] });
+    expect((asked.r.detail['permissions'] as Array<{ decision: string; why: string }>)[0]).toMatchObject({ decision: 'reject' });
+    expect((asked.r.detail['permissions'] as Array<{ why: string }>)[0]?.why).toContain('/etc/*');
+    expect(failedNames(asked.r)).toEqual([]);
+    const ran = await launch({ steps: [glob(false), ...REVIEW] });
+    expect(failedNames(ran.r)).toEqual(['read-paths']);
+    expect(ran.r.status).toBe('CONTAMINATED');
+  });
+
   it('a path-less read that ran is unjudgeable: FAIL, not CONTAMINATED', async () => {
     const read = { tool: { toolCallId: 'p', title: 'Reading', kind: 'read', rawInput: { operations: [{ mode: 'Line' }] }, _meta: kiroMeta('read') }, ask: false };
     const { r } = await launch({ steps: [read, ...REVIEW] });

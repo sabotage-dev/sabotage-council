@@ -33,6 +33,34 @@ export interface ReadSet {
    * (kiro 3.2.1: `_meta.kiro.toolCallFailureReason: "permission_denied"` with "User denied tool execution").
    */
   denialNotice?: ((snapshot: Json) => boolean) | undefined;
+  /**
+   * Per-tool argument semantics, by tool name (round 2). Keys are matched exactly, at any depth. A tool without an
+   * entry, or a key it does not declare, falls back to the generic key rules.
+   */
+  args?: Readonly<Record<string, ToolArgs>> | undefined;
+}
+
+export interface ToolArgs {
+  /** Keys whose strings are file globs: judged as paths, so an absolute, climbing or home glob is outside. */
+  globs?: readonly string[] | undefined;
+  /** Keys whose strings are regexes or free text: never judged as paths (a grep for `~` or `../x` names no file). */
+  text?: readonly string[] | undefined;
+}
+
+/** The argument semantics of every tool a call names, merged. */
+interface ArgSpec {
+  globs: Set<string>;
+  text: Set<string>;
+}
+
+function argSpec(set: ReadSet | undefined, names: readonly string[]): ArgSpec {
+  const spec: ArgSpec = { globs: new Set(), text: new Set() };
+  for (const n of names) {
+    const a = set?.args?.[n];
+    for (const k of a?.globs ?? []) spec.globs.add(k);
+    for (const k of a?.text ?? []) spec.text.add(k);
+  }
+  return spec;
 }
 
 /** The containers of a tool call that carry its arguments. */
@@ -115,9 +143,15 @@ export interface CollectedPaths {
   problems: string[];
 }
 
-function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths): boolean {
+function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths, spec: ArgSpec): boolean {
   const words = keyTokens(key);
   if (typeof value === 'string') {
+    // The tool's own declaration wins: a declared regex or free-text key is never a path, a declared glob always is.
+    if (spec.text.has(key)) return false;
+    if (spec.globs.has(key)) {
+      if (value.trim() !== '') out.paths.push(value);
+      return false;
+    }
     if (pathy) {
       if (value.trim() !== '') out.paths.push(value);
       return true;
@@ -128,13 +162,13 @@ function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths):
   }
   if (Array.isArray(value)) {
     let found = false;
-    for (const v of value) found = walk(v, key, pathy, out) || found;
+    for (const v of value) found = walk(v, key, pathy, out, spec) || found;
     if (pathy && !found && value.length > 0) out.problems.push(`${key} holds no path the client can judge`);
     return found;
   }
   if (isObject(value)) {
     let found = false;
-    for (const [k, v] of Object.entries(value)) found = walk(v, k, isPathKey(k), out) || found;
+    for (const [k, v] of Object.entries(value)) found = walk(v, k, isPathKey(k) && !spec.text.has(k), out, spec) || found;
     if (pathy && !found) out.problems.push(`${key} holds an object with no path in it`);
     return found;
   }
@@ -147,11 +181,12 @@ function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths):
  * `input`): arrays and objects are recursed, so kiro's `rawInput.operations[].path` counts. `extra` adds paths
  * the permission request names elsewhere (`_meta.fsReadPaths`).
  */
-export function collectPaths(snapshots: readonly Json[], extra: readonly string[] = []): CollectedPaths {
+export function collectPaths(snapshots: readonly Json[], extra: readonly string[] = [], set?: ReadSet, names: readonly string[] = []): CollectedPaths {
   const out: CollectedPaths = { paths: [], problems: [] };
+  const spec = argSpec(set, names);
   for (const s of snapshots) {
     for (const container of ARG_CONTAINERS) {
-      if (s[container] !== undefined) walk(s[container], container, container === 'locations', out);
+      if (s[container] !== undefined) walk(s[container], container, container === 'locations', out, spec);
     }
   }
   for (const p of extra) if (p.trim() !== '') out.paths.push(p);
@@ -209,7 +244,7 @@ export function judgeCall(snapshots: readonly Json[], extra: readonly string[], 
   if (mcp.length > 0) return notRead(`an MCP-shaped tool name (${mcp.join(', ')})`);
   const undeclared = names.filter((n) => !set.names.includes(n));
   if (undeclared.length > 0) return notRead(`tool ${undeclared.join(', ')} is not a declared read (${set.names.join(', ')})`);
-  const collected = collectPaths(snapshots, extra);
+  const collected = collectPaths(snapshots, extra, set, names);
   if (collected.problems.length > 0) return { ...base, read: true, paths: collected.paths, why: `cannot judge: ${collected.problems.join('; ')}` };
   let paths = collected.paths;
   if (paths.length === 0) {
@@ -230,14 +265,21 @@ export function requestPaths(params: Json): string[] {
   return Array.isArray(list) ? list.filter((p): p is string => typeof p === 'string') : [];
 }
 
-/** The live policy the transport calls for each `session/request_permission`. */
+/**
+ * The live policy the transport calls for each `session/request_permission`. A request with no `toolCallId` is
+ * rejected (it cannot be tied to what the call does). Otherwise the call is judged on every notification and every
+ * request so far (each request's `toolCall` and `_meta.fsReadPaths`), and this one.
+ */
 export function readOnlyPolicy(root: string, set: ReadSet): (params: Json, known: (toolCallId: string) => KnownToolCall | undefined) => PermissionDecision {
   const aliases = rootAliases(root);
   return (params, known) => {
     const requested = isObject(params['toolCall']) ? params['toolCall'] : {};
     const id = str(requested['toolCallId']);
-    const prior = id !== null ? known(id) : undefined;
-    const j = judgeCall([...(prior?.snapshots ?? []), requested], requestPaths(params), root, set, aliases);
+    if (id === null) return { allow: false, why: 'the request names no toolCallId' };
+    const prior = known(id);
+    const requests = [...(prior?.requests ?? []), params];
+    const snapshots = [...(prior?.snapshots ?? []), ...requests.map((r) => (isObject(r['toolCall']) ? r['toolCall'] : {}))];
+    const j = judgeCall(snapshots, requests.flatMap(requestPaths), root, set, aliases);
     return { allow: j.read && j.judgeable && j.inside, why: j.why };
   };
 }

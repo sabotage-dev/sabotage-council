@@ -165,6 +165,12 @@ async function onRequest(msg) {
     const result = { stopReason: kase.stopReason ?? 'end_turn' };
     if (kase.usage) result.usage = kase.usage;
     send({ jsonrpc: '2.0', id, result });
+    if (kase.holdStdoutAfterExit) {
+      // A process of the group that keeps stdout open, silent, well past the client's close grace.
+      spawn(process.execPath, ['-e', `setTimeout(() => {}, ${Number(kase.holdStdoutAfterExit)})`], { stdio: ['ignore', 'inherit', 'ignore'] });
+      setTimeout(() => process.exit(0), 20);
+      return undefined;
+    }
     if (kase.lateAfterExit) {
       // A process of the group that keeps stdout open and writes after this agent has exited.
       const late = `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: kase.lateAfterExit } } } })}\n`;

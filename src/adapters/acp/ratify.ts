@@ -37,6 +37,8 @@ export interface AcpCommonInput {
   reads: ReadSet;
   /** The transport's own write failures (the exit record's `recordError`): a lost log line is never a PASS. */
   transportError?: string | null | undefined;
+  /** The agent's stdout did not close within the grace after it exited (the exit record's `closeTimedOut`). */
+  closeTimedOut?: boolean | undefined;
   timedOut: boolean;
   rootUnchanged: (() => { unchanged: boolean; changes: string[] }) | undefined;
 }
@@ -106,12 +108,14 @@ export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
   // the log or on the handle: a line lost to a failed append must never leave a passing log behind.
   const logged = log.exit !== null ? log.exit['recordError'] : undefined;
   const writeErrors = [typeof logged === 'string' ? logged : null, input.transportError ?? null].filter((e): e is string => e !== null && e !== '');
+  // Stdout still open when the leg ended: output after that point may be missing, so the log is incomplete.
+  const unclosed = (log.exit !== null && log.exit['closeTimedOut'] === true) || input.closeTimedOut === true;
   check(
     'log',
-    log.exists && log.malformed === 0 && log.rawLines.length === 0 && log.tornLine === null && log.exit !== null && writeErrors.length === 0,
+    log.exists && log.malformed === 0 && log.rawLines.length === 0 && log.tornLine === null && log.exit !== null && writeErrors.length === 0 && !unclosed,
     !log.exists
       ? `no update log at ${input.logFile}`
-      : `${log.malformed} malformed log line(s), ${log.rawLines.length} non-JSON stdout line(s)${log.tornLine !== null ? ', a torn last line' : ''}${log.exit === null ? ', no exit record (the log is incomplete)' : ''}${writeErrors.length > 0 ? `, write failures: ${writeErrors.join('; ')}` : ''}`,
+      : `${log.malformed} malformed log line(s), ${log.rawLines.length} non-JSON stdout line(s)${log.tornLine !== null ? ', a torn last line' : ''}${log.exit === null ? ', no exit record (the log is incomplete)' : ''}${writeErrors.length > 0 ? `, write failures: ${writeErrors.join('; ')}` : ''}${unclosed ? ', stdout did not close after the agent exited (the log may be incomplete)' : ''}`,
   );
 
   const init = log.initialize;
