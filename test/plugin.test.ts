@@ -85,7 +85,7 @@ describe('plugin', () => {
   it('holds no em dash and no local path', () => {
     for (const f of [...files(PLUGIN), join(REPO, '.claude-plugin', 'marketplace.json')]) {
       const text = readFileSync(f, 'utf8');
-      expect(text, f).not.toContain('—');
+      expect(text, f).not.toContain('\u2014');
       expect(text, f).not.toMatch(/\/Users\/|\/home\/[a-z]/);
     }
   });

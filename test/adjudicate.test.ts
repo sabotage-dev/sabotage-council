@@ -237,6 +237,12 @@ describe('adjudicate: plan 7.3 validator', () => {
     expect([...classes].sort()).toEqual(['approval', 'attribution', 'coverage', 'effective', 'followups', 'human-asks', 'identity', 'ids', 'owner', 'refutation', 'round-rule', 'schema', 'severity', 'verdict'].sort());
   });
 
+  it('asks no row for a closed-context item (plan 3.5)', () => {
+    const a = valid();
+    a['earlier_items'] = [];
+    expect(errorsOf(a, ctx({ earlierItems: [{ id: ITEM, severity: 'HIGH', kind: 'finding', closedContext: true }] }))).toEqual([]);
+  });
+
   it('rejects text that is not JSON', () => {
     const r = validateAdjudicationText('{not json', ctx());
     expect(r.ok).toBe(false);
