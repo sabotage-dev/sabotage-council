@@ -2,12 +2,16 @@
 // A stand-in for the codex CLI in tests. It replays a materialized fixture: the event stream on stdout, the
 // rollouts under $CODEX_HOME/sessions/<today>, and the answer in the -o file. Behaviour comes from
 // $HOME/fake-codex.json, because the adapter scrubs every other variable.
+//
+// Round tests (P5) add the same opt-in keys as fake-claude: `byOccupant` ({ "<model>/<effort>": [case, ...] }, the
+// Nth exec of that occupant takes the Nth case) and `replay` (the fixture's nonce, model and effort become the
+// round's nonce from the brief on stdin and the requested -m and model_reasoning_effort).
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const home = process.env.HOME ?? '';
-const config = JSON.parse(readFileSync(join(home, 'fake-codex.json'), 'utf8'));
+let config = JSON.parse(readFileSync(join(home, 'fake-codex.json'), 'utf8'));
 const args = process.argv.slice(2);
 const out = (s) => process.stdout.write(s);
 const pad = (n) => String(n).padStart(2, '0');
@@ -35,6 +39,22 @@ if (args[0] === '--version') {
   out(subst(readFileSync(config.promptInput, 'utf8'), process.cwd()));
 } else if (args[0] === 'exec') {
   const stdin = readFileSync(0, 'utf8');
+  const model = args[args.indexOf('-m') + 1];
+  const effort = /^model_reasoning_effort="?([a-z]+)"?$/.exec(args.find((a) => a.startsWith('model_reasoning_effort=')) ?? '')?.[1];
+  if (config.byOccupant) {
+    const key = `${model}/${effort}`;
+    const cases = config.byOccupant[key] ?? [{}];
+    const counter = join(home, `fake-codex-launches-${key.replace(/[^\w.-]/g, '_')}`);
+    const n = existsSync(counter) ? Number(readFileSync(counter, 'utf8')) : 0;
+    writeFileSync(counter, String(n + 1));
+    config = { ...config, ...cases[Math.min(n, cases.length - 1)] };
+  }
+  let replay = (s) => s;
+  if (config.replay && config.fixture) {
+    const kase = JSON.parse(readFileSync(join(config.fixture, 'case.json'), 'utf8'));
+    const nonce = /NONCE: ([0-9a-f]{12})/.exec(stdin)?.[1] ?? kase.nonce;
+    replay = (s) => s.split(kase.nonce).join(nonce).split(kase.model).join(model).split(`effort":"${kase.effort}"`).join(`effort":"${effort}"`);
+  }
   log('exec-argv.json', { args, cwd: process.cwd(), env: Object.keys(process.env).sort() });
   writeFileSync(join(home, 'exec-stdin.txt'), stdin);
   const root = args[args.indexOf('-C') + 1];
@@ -53,13 +73,13 @@ if (args[0] === '--version') {
     const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]));
     if (existsSync(sessions)) {
       for (const file of walk(sessions).filter((f) => f.endsWith('.jsonl'))) {
-        writeFileSync(join(day, file.split('/').pop()), subst(readFileSync(file, 'utf8'), root));
+        writeFileSync(join(day, file.split('/').pop()), replay(subst(readFileSync(file, 'utf8'), root)));
       }
     }
-    const lastText = readFileSync(join(fixture, 'last.txt'), 'utf8');
+    const lastText = replay(readFileSync(join(fixture, 'last.txt'), 'utf8'));
     if (lastText !== '') writeFileSync(last, lastText);
     process.stderr.write(readFileSync(join(fixture, 'stderr.log'), 'utf8'));
-    out(subst(readFileSync(join(fixture, 'events.jsonl'), 'utf8'), root));
+    out(replay(subst(readFileSync(join(fixture, 'events.jsonl'), 'utf8'), root)));
     if (config.lingerMs) setTimeout(() => process.exit(0), config.lingerMs);
     if (config.exitCode) process.exitCode = config.exitCode;
   }
