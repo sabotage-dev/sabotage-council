@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FailureClass } from '../../config/vocab.js';
+import { workspaceConfigIn } from '../../root/sanitize.js';
 import type { CommandRunner } from '../../transport/headless.js';
 import type { Occupant, Preflight, PreflightCheck } from '../types.js';
 import { CURSOR_FLOOR, CURSOR_LABEL, CURSOR_MODEL_MAP, CURSOR_TESTED_VERSIONS, CURSOR_USER_IMPORTS, compareCursorVersions, parseCursorVersion } from './known.js';
@@ -28,7 +29,12 @@ export interface CursorPreflightOptions {
   timeoutMs?: number | undefined;
 }
 
-const ROOT_AGENT_CONFIG = /^(?:\.cursor|\.claude|AGENTS.*\.md|CLAUDE\.md|\.cursorignore|\.mcp\.json)$/i;
+/**
+ * What a trusted Cursor workspace loads, at any depth (the research: `.cursor/` rules, hooks, MCP and CLI config,
+ * the legacy `.cursorrules`, `AGENTS.md` at the root and nested, `CLAUDE.md`, `.claude/`, `.cursorignore`,
+ * `.mcp.json`). The root sanitizer moves or renames every one.
+ */
+export const CURSOR_WORKSPACE_CONFIG = /^(?:\.cursor|\.claude|AGENTS[\s\S]*\.md|CLAUDE\.md|\.cursorrules|\.cursorignore|\.mcp\.json)$/i;
 
 export async function cursorPreflight(o: Occupant, options: CursorPreflightOptions): Promise<Preflight> {
   const checks: PreflightCheck[] = [];
@@ -122,7 +128,7 @@ export async function cursorPreflight(o: Occupant, options: CursorPreflightOptio
   }
   checks.push({ name: 'model', status: 'ok', detail: `${o.model} offered; the council hook's model_id is the binding proof` });
 
-  const planted = existsSync(options.root) ? readdirSync(options.root).filter((n) => ROOT_AGENT_CONFIG.test(n)) : [];
+  const planted = workspaceConfigIn(options.root, CURSOR_WORKSPACE_CONFIG);
   if (planted.length > 0) {
     fail('isolation', `the root holds files a trusted workspace loads, which the sanitizer should have moved: ${planted.join(', ')}`);
     return result(false, 'setup', 'root not sanitized', cliVersion);

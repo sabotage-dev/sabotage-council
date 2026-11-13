@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CURSOR_FORBIDDEN_FLAGS,
@@ -221,9 +221,12 @@ function out(stdout: string, exitCode = 0): CommandResult {
   return { exitCode, signal: null, stdout, stderr: '', timedOut: false, durationMs: 1, error: null };
 }
 
-async function preflight(o: Partial<Occupant> = {}, opts: { version?: string; status?: string; models?: string; env?: NodeJS.ProcessEnv; bin?: string | null; plant?: string } = {}) {
+async function preflight(o: Partial<Occupant> = {}, opts: { version?: string; status?: string; models?: string; env?: NodeJS.ProcessEnv; bin?: string | null; plant?: string; file?: boolean } = {}) {
   const root = scratch('sc-cursor-root-');
-  if (opts.plant) mkdirSync(join(root, opts.plant));
+  if (opts.plant !== undefined && opts.file === true) {
+    mkdirSync(dirname(join(root, opts.plant)), { recursive: true });
+    writeFileSync(join(root, opts.plant), 'x');
+  } else if (opts.plant !== undefined) mkdirSync(join(root, opts.plant), { recursive: true });
   const legDir = scratch('sc-cursor-leg-');
   const calls: string[][] = [];
   const run: CommandRunner = async (_b, args) => {
@@ -254,6 +257,9 @@ describe('cursor preflight (4.3), no model call', () => {
     ['an effort that is not in the slug', { effort: 'low' }, {}, 'effort not in the slug'],
     ['auto routing', { model: 'auto' }, {}, 'bad model slug'],
     ['a root holding .cursor/', {}, { plant: '.cursor' }, 'root not sanitized'],
+    ['a root holding the legacy .cursorrules (claude F11)', {}, { plant: '.cursorrules', file: true }, 'root not sanitized'],
+    ['a root holding a nested AGENTS.md', {}, { plant: 'pkg/sub/AGENTS.md', file: true }, 'root not sanitized'],
+    ['a root holding a nested .cursor/', {}, { plant: 'pkg/.cursor', file: false }, 'root not sanitized'],
   ])('refuses %s', async (_w, o, opts, reason) => {
     const { pre } = await preflight(o, opts);
     expect(pre.ok).toBe(false);

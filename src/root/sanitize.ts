@@ -133,6 +133,24 @@ export function sanitizeTrees(root: string, trees: readonly string[]): Sanitized
   return out;
 }
 
+/**
+ * A backend preflight's check that the sanitizer ran: every entry under `root`, at any depth, whose name matches
+ * that backend's own list of what it loads from a workspace (round 1 row 9: nested entries load too, from the
+ * workspace up to the repository root). The quarantine dir is skipped, a matching directory is reported and not
+ * entered, links are reported by their own names and never followed. A name that cannot be read is reported too,
+ * so the preflight refuses rather than passes.
+ */
+export function workspaceConfigIn(root: string, names: RegExp): string[] {
+  if (lstatOrNull(root)?.isDirectory() !== true) return [];
+  try {
+    return walk(root, '', (e) => e.rel !== AGENT_CONFIG_QUARANTINE && !names.test(basename(e.rel)))
+      .filter((e) => e.rel !== AGENT_CONFIG_QUARANTINE && names.test(basename(e.rel)))
+      .map((e) => e.rel);
+  } catch (error) {
+    return [`(the root could not be read: ${error instanceof Error ? error.message : String(error)})`];
+  }
+}
+
 /** Maps a pre-sanitizer root-relative path to where the sanitizer put it. */
 export function sanitizedPathMap(entries: readonly SanitizedEntry[]): (path: string) => string {
   const files = new Map<string, string>();

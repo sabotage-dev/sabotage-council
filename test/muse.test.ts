@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   MUSE_FORBIDDEN_FLAGS,
@@ -245,9 +245,12 @@ function out(stdout: string, exitCode = 0): CommandResult {
   return { exitCode, signal: null, stdout, stderr: '', timedOut: false, durationMs: 1, error: null };
 }
 
-async function preflight(o: Partial<Occupant> = {}, opts: { loggedIn?: boolean; version?: string; env?: NodeJS.ProcessEnv; plant?: string } = {}) {
+async function preflight(o: Partial<Occupant> = {}, opts: { loggedIn?: boolean; version?: string; env?: NodeJS.ProcessEnv; plant?: string; file?: boolean } = {}) {
   const root = scratch('sc-muse-root-');
-  if (opts.plant) mkdirSync(join(root, opts.plant));
+  if (opts.plant !== undefined && opts.file === true) {
+    mkdirSync(dirname(join(root, opts.plant)), { recursive: true });
+    writeFileSync(join(root, opts.plant), 'x');
+  } else if (opts.plant !== undefined) mkdirSync(join(root, opts.plant), { recursive: true });
   const legDir = scratch('sc-muse-leg-');
   const calls: string[][] = [];
   const run: CommandRunner = async (_c, args, options) => {
@@ -277,6 +280,9 @@ describe('muse preflight (4.3), no model call', () => {
     ['a logged-out muse', {}, { loggedIn: false }, 'muse is not logged in'],
     ['an old version', {}, { version: '1.4.0' }, 'below the tested floor'],
     ['a root holding .agents/', {}, { plant: '.agents' }, 'root not sanitized'],
+    ['a root holding a nested .muse/', {}, { plant: 'pkg/.muse', file: false }, 'root not sanitized'],
+    ['a root holding a nested CLAUDE.md', {}, { plant: 'pkg/docs/CLAUDE.md', file: true }, 'root not sanitized'],
+    ['a root holding a stray MEMORY.md', {}, { plant: 'notes/MEMORY.md', file: true }, 'root not sanitized'],
   ])('refuses %s', async (_what, o, opts, reason) => {
     const { pre } = await preflight(o, opts);
     expect(pre.ok).toBe(false);

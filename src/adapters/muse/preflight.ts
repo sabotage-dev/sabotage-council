@@ -1,5 +1,5 @@
-import { existsSync, readdirSync } from 'node:fs';
 import type { FailureClass } from '../../config/vocab.js';
+import { workspaceConfigIn } from '../../root/sanitize.js';
 import type { CommandRunner } from '../../transport/headless.js';
 import type { Occupant, Preflight, PreflightCheck } from '../types.js';
 import { MUSE_EFFORTS, MUSE_FLOOR, MUSE_MODELS, MUSE_TESTED_VERSIONS, compareVersions, museDecl } from './known.js';
@@ -30,7 +30,13 @@ export function parseMuseVersion(text: string): string | null {
   return /Muse Code (\d+\.\d+\.\d+)/.exec(text)?.[1] ?? /\b(\d+\.\d+\.\d+)\b/.exec(text)?.[1] ?? null;
 }
 
-const ROOT_AGENT_CONFIG = /^(?:\.muse|\.agents|\.claude|\.codex|\.mcp\.json|AGENTS.*\.md|CLAUDE\.md)$/i;
+/**
+ * What muse loads from a workspace, at any depth (the research: instruction files per level from the workspace up
+ * to the repository root, `AGENTS.md`, `CLAUDE.md`, `.agents/` (rules, skills, agents, committed `MEMORY.md`, which
+ * loads even untrusted), `.claude/` and `.codex/` skills, `.muse/` hooks and config, and `.mcp.json`). The root
+ * sanitizer moves or renames every one.
+ */
+export const MUSE_WORKSPACE_CONFIG = /^(?:\.muse|\.agents|\.claude|\.codex|\.mcp\.json|AGENTS[\s\S]*\.md|CLAUDE\.md|MEMORY\.md)$/i;
 
 export async function musePreflight(o: Occupant, options: MusePreflightOptions): Promise<Preflight> {
   const checks: PreflightCheck[] = [];
@@ -101,7 +107,7 @@ export async function musePreflight(o: Occupant, options: MusePreflightOptions):
   }
   checks.push({ name: 'model', status: 'ok', detail: `${o.model} / ${o.effort} (declared; muse has no offline model list, the record is the proof)` });
 
-  const planted = existsSync(options.root) ? readdirSync(options.root).filter((n) => ROOT_AGENT_CONFIG.test(n)) : [];
+  const planted = workspaceConfigIn(options.root, MUSE_WORKSPACE_CONFIG);
   if (planted.length > 0) {
     fail('isolation', `the root holds files muse loads from a workspace, which the sanitizer should have moved: ${planted.join(', ')}`);
     return result(false, 'setup', 'root not sanitized', cliVersion);

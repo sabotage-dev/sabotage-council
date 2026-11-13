@@ -48,6 +48,7 @@ export {
   COUNCIL_DATA_SUFFIX,
   sanitizedPathMap,
   sanitizeTrees,
+  workspaceConfigIn,
   type SanitizedEntry,
 } from './sanitize.js';
 export {
