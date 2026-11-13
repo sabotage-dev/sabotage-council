@@ -721,6 +721,67 @@ describe('fold row 2: the snapshot honours the user excludes and leaves secrets 
   }, 60_000);
 });
 
+describe("round 2 row 2: the snapshot honours the repository's effective excludes file", () => {
+  const treeFiles = (repo: string, sha: string): string[] => git(repo, ['ls-tree', '-r', '--name-only', sha]).split('\n');
+
+  it('keeps a file a repo-local core.excludesFile ignores out of the root, as git status does, and the local value wins over the global one', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const home = scratch('sc-user-home-');
+    writeFileSync(join(home, 'global-ignore'), 'global-only.log\n');
+    writeFileSync(join(home, '.gitconfig'), `[core]\n\texcludesFile = ${join(home, 'global-ignore')}\n`);
+    const ignore = join(scratch('sc-local-ignore-'), 'ignore');
+    writeFileSync(ignore, 'credentials.json\n');
+    git(repo, ['config', 'core.excludesFile', ignore]);
+    for (const f of ['credentials.json', 'global-only.log', 'new-module.py']) writeFileSync(join(repo, f), 'x\n');
+    // git status in the repository hides credentials.json and shows global-only.log: the local value replaces the global one.
+    const status = git(repo, ['status', '--porcelain', '--untracked-files=all']);
+    expect(status).not.toContain('credentials.json');
+    expect(status).toContain('global-only.log');
+    const t = resolveDiffTarget(repo, undefined, { env: { PATH: process.env['PATH'], HOME: home } });
+    const files = treeFiles(repo, t.head);
+    expect(files).not.toContain('credentials.json');
+    expect(files).toContain('global-only.log');
+    expect(files).toContain('new-module.py');
+    const r = await runRound(h, t);
+    expect(existsSync(join(r.prepared.inputs.root, 'widget', 'credentials.json'))).toBe(false);
+    expect(existsSync(join(r.prepared.inputs.root, 'widget', 'new-module.py'))).toBe(true);
+    // A relative value is relative to the work tree's top, as git reads it.
+    writeFileSync(join(repo, '.git', 'local-ignore'), 'relative-only.log\n');
+    git(repo, ['config', 'core.excludesFile', '.git/local-ignore']);
+    writeFileSync(join(repo, 'relative-only.log'), 'x\n');
+    expect(treeFiles(repo, resolveDiffTarget(repo, undefined, { env: { PATH: process.env['PATH'], HOME: home } }).head)).not.toContain('relative-only.log');
+  }, 60_000);
+
+  it('honours a global core.excludesFile set through include.path, and one set in the system config', () => {
+    const { repo } = fixtureRepo();
+    const home = scratch('sc-user-home-');
+    writeFileSync(join(home, 'ignore'), 'included-only.log\n');
+    writeFileSync(join(home, 'extra.gitconfig'), `[core]\n\texcludesFile = ${join(home, 'ignore')}\n`);
+    writeFileSync(join(home, '.gitconfig'), `[include]\n\tpath = ${join(home, 'extra.gitconfig')}\n`);
+    for (const f of ['included-only.log', 'system-only.log', 'new-module.py']) writeFileSync(join(repo, f), 'x\n');
+    const env = { PATH: process.env['PATH'], HOME: home };
+    const files = treeFiles(repo, resolveDiffTarget(repo, undefined, { env }).head);
+    expect(files).not.toContain('included-only.log');
+    expect(files).toContain('new-module.py');
+    // The system scope: an empty global config, and GIT_CONFIG_SYSTEM naming a file that sets the excludes.
+    writeFileSync(join(home, '.gitconfig'), '');
+    writeFileSync(join(home, 'system-ignore'), 'system-only.log\n');
+    writeFileSync(join(home, 'system.gitconfig'), `[core]\n\texcludesFile = ${join(home, 'system-ignore')}\n`);
+    const system = treeFiles(repo, resolveDiffTarget(repo, undefined, { env: { ...env, GIT_CONFIG_SYSTEM: join(home, 'system.gitconfig') } }).head);
+    expect(system).not.toContain('system-only.log');
+    expect(system).toContain('included-only.log');
+  });
+
+  it("fails the snapshot, rather than guessing, when the user's config cannot be read", () => {
+    const { repo } = fixtureRepo();
+    writeFileSync(join(repo, 'new-module.py'), 'x\n');
+    const home = scratch('sc-user-home-');
+    writeFileSync(join(home, '.gitconfig'), '[core\n');
+    expect(() => resolveDiffTarget(repo, undefined, { env: { PATH: process.env['PATH'], HOME: home } })).toThrow(/could not read core\.excludesFile/);
+  });
+});
+
 describe('fold row 4: one adjudication per round, the store is the source of truth', () => {
   it('two adjudications racing for one round store exactly one', async () => {
     const h = harness();

@@ -70,9 +70,10 @@ sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, prin
   <path|repo@ref>` adds other paths or repositories to the root, `--fact <text>` gives the seats an established fact
   they must not refile, and `--question <text>` (at most 3) replaces the default questions.
 - `round start diff [<base>..<head>]` reviews a branch diff; the default is the merge-base with the default branch
-  to HEAD, with uncommitted work snapshotted to a commit object (your index and branches are never touched; your
-  global excludes apply, and untracked files named like secrets, such as `.env*` or `*.pem`, are left out with a
-  warning). An explicit range reviews committed history; `--uncommitted` adds the work tree.
+  to HEAD, with uncommitted work snapshotted to a commit object (your index and branches are never touched; the
+  ignore rules `git status` uses apply, including the excludes file the repository's own config names, and
+  untracked files named like secrets, such as `.env*` or `*.pem`, are left out with a warning). An explicit range
+  reviews committed history; `--uncommitted` adds the work tree.
 - `round start` numbers the round from the store (a head counts once a council round on it, with two or more
   counted legs, is adjudicated; a plan round counts revisions of the plan, so an unrelated commit is not a new
   round), builds and seals the root, writes the brief, and starts a detached worker that runs the legs; it prints

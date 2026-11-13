@@ -121,19 +121,35 @@ function resolveSha(top: string, ref: string): string {
  */
 export const SECRET_NAME = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx)|id_[a-z0-9]+(?:\.pub)?)$/i;
 
+/** The variables that say where the user's git config lives; nothing else of the user's env reaches `git config`. */
+const CONFIG_ENV = ['PATH', 'HOME', 'XDG_CONFIG_HOME', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM'] as const;
+
 /**
- * The user's own global excludes file, which the engine's isolated git calls never read (`core.excludesFile=/dev/null`):
- * `core.excludesFile` from the user's global git config, else git's default `$XDG_CONFIG_HOME/git/ignore` (or
- * `~/.config/git/ignore`). Null when there is none. `git config --get` runs no hook and no filter.
+ * The excludes file `git status` reads in the repository at `top`, which the engine's isolated git calls never read
+ * (`core.excludesFile=/dev/null`; P5 round 2 row 2): `core.excludesFile` from the repository's effective config
+ * (local, worktree, global and system, includes followed), read by `git config` run in the repository with the
+ * user's config locations. A relative value is relative to the work tree's top, as git reads it. Only when no scope
+ * sets it, git's default `$XDG_CONFIG_HOME/git/ignore` (or `~/.config/git/ignore`). Null when there is none (a value
+ * set to the empty string means none, as in git). `git config --get` runs no hook and no filter. A config git
+ * cannot read fails the snapshot: the excludes are what keeps an ignored secret out of the root.
  */
-export function userExcludesFile(env: NodeJS.ProcessEnv = process.env): string | null {
+export function effectiveExcludesFile(top: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const pick: NodeJS.ProcessEnv = {};
-  for (const k of ['PATH', 'HOME', 'XDG_CONFIG_HOME', 'GIT_CONFIG_GLOBAL']) if (env[k] !== undefined) pick[k] = env[k];
-  const r = spawnSync('git', ['config', '--global', '--path', '--get', 'core.excludesFile'], { env: { ...pick, GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf8' });
-  const configured = r.status === 0 ? r.stdout.trim() : '';
-  const home = env['HOME'] ?? '';
-  const xdg = env['XDG_CONFIG_HOME'] !== undefined && env['XDG_CONFIG_HOME'] !== '' ? env['XDG_CONFIG_HOME'] : home === '' ? '' : join(home, '.config');
-  const candidate = configured !== '' ? configured : xdg === '' ? '' : join(xdg, 'git', 'ignore');
+  for (const k of CONFIG_ENV) if (env[k] !== undefined) pick[k] = env[k];
+  const r = spawnSync('git', ['config', '--path', '--get', 'core.excludesFile'], { cwd: top, env: pick, encoding: 'utf8' });
+  if (r.error !== undefined || (r.status !== 0 && r.status !== 1)) {
+    const why = r.error?.message ?? (r.stderr.trim() === '' ? `exit status ${String(r.status)}` : r.stderr.trim());
+    throw new TargetError(`could not read core.excludesFile in ${top}: ${why}`);
+  }
+  let candidate = '';
+  if (r.status === 0) {
+    const configured = r.stdout.replace(/\r?\n$/, '');
+    if (configured !== '') candidate = resolve(top, configured);
+  } else {
+    const home = env['HOME'] ?? '';
+    const xdg = env['XDG_CONFIG_HOME'] !== undefined && env['XDG_CONFIG_HOME'] !== '' ? env['XDG_CONFIG_HOME'] : home === '' ? '' : join(home, '.config');
+    if (xdg !== '') candidate = join(xdg, 'git', 'ignore');
+  }
   return candidate !== '' && existsSync(candidate) && statSync(candidate).isFile() ? candidate : null;
 }
 
@@ -149,8 +165,8 @@ export interface SnapshotTree {
  * The tree of the uncommitted work, built in a temporary index so the user's index and branches are never touched
  * (plan 9.1, 9.2): filled from `headSha`, then (`paths` given) those files only, each with `git hash-object`; else
  * every tracked change (`add --update`) and every untracked file git lists with the user's own excludes honoured
- * (the repository's `.gitignore` files, `.git/info/exclude` and the user's global excludes file, fold row 2), minus
- * files whose names look like secrets, which are named in a warning.
+ * (the repository's `.gitignore` files, `.git/info/exclude` and the excludes file of the repository's effective
+ * config, fold row 2 and round 2 row 2), minus files whose names look like secrets, which are named in a warning.
  */
 export function snapshotTree(top: string, headSha: string, options: { paths?: readonly string[] | undefined; env?: NodeJS.ProcessEnv | undefined } = {}): SnapshotTree {
   const dir = mkdtempSync(join(tmpdir(), 'sc-snapshot-'));
@@ -170,7 +186,7 @@ export function snapshotTree(top: string, headSha: string, options: { paths?: re
     } else {
       // No pathspec: `add --update -- .` fails ("did not match any file(s)") when the head tracks no file.
       git(['add', '--update'], top, env);
-      const excludes = userExcludesFile(options.env);
+      const excludes = effectiveExcludesFile(top, options.env);
       const listed = runGit(['-c', `core.excludesFile=${excludes ?? '/dev/null'}`, 'ls-files', '--others', '--exclude-standard', '-z'], { cwd: top, env });
       const untracked = splitNul(listed.stdout).map((raw) => decodeName(raw, 'the untracked files'));
       const add: string[] = [];
