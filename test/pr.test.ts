@@ -987,4 +987,54 @@ describe('pr rounds: post-step safety (P6 round 2)', () => {
     expect(postsSent(w)).toHaveLength(1);
     expect(writes(w).map((q) => q.method)).toEqual(['POST', 'PUT']);
   }, 60_000);
+
+  it('row 2: the last read before the POST keeps the base and the state: a retarget holds an identity approval, a close posts nothing', async () => {
+    const identityRoutes = (r: Routes, src: SourceRepo): void => {
+      Object.assign(json(r, `GET ${API_PULL}`), { state: 'open', merged: false, user: { login: 'someone' } });
+      r['GET repos/sabotage-dev/sabotage-council/collaborators/someone/permission'] = { json: { permission: 'write' } };
+      r['GET search/issues'] = { json: { items: [{ number: 9 }] } };
+      r['GET repos/sabotage-dev/sabotage-council/pulls/9/reviews'] = { json: [{ id: 9101, user: { login: 'repo-owner' }, state: 'APPROVED', commit_id: src.shas['C6'], submitted_at: 'x', body: 'ok' }] };
+      const tree = git(src.repo, ['rev-parse', `${src.shas['C7']!}^{tree}`]);
+      r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C6']!}`] = { json: { tree: { sha: tree } } };
+      r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C7']!}`] = { json: { tree: { sha: tree } } };
+    };
+    const w = await world(identityRoutes);
+    const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
+    if (r.kind !== 'identity') throw new Error('expected the identity path');
+    expect([post(w, r.roundId, 'dry-run').event]).toEqual(['APPROVE']);
+    // The author retargets the PR to release while the CI and identity reads run: the last read sees it.
+    const routes = pr2Routes(w.src.shas);
+    identityRoutes(routes, w.src);
+    const onMain = json(routes, `GET ${API_PULL}`);
+    const onRelease = structuredClone(onMain);
+    Object.assign(onRelease['base'] as Json, { ref: 'release' });
+    routes[`GET ${API_PULL}`] = { seq: [{ json: onMain }, { json: onRelease }] };
+    w.gh.setRoutes(routes);
+    const retargeted = post(w, r.roundId, 'post');
+    expect(retargeted.outcome).toBe('refused');
+    expect(retargeted.event).toBe('APPROVE');
+    expect(retargeted.problems.join()).toContain('is now release, not the default branch main, and this identity review was rendered on main: nothing posts');
+    expect(retargeted.next).toBe(`sabotage-council post ${r.roundId} --dry-run`);
+    expect(writes(w)).toEqual([]);
+    // The new dry run shows the held review that applies on release; that one posts on its own go.
+    routes[`GET ${API_PULL}`] = { json: onRelease };
+    w.gh.setRoutes(routes);
+    const held = post(w, r.roundId, 'dry-run');
+    expect([held.event, held.row]).toEqual(['COMMENT', 4]);
+    expect(post(w, r.roundId, 'post')).toMatchObject({ outcome: 'posted', event: 'COMMENT' });
+
+    // A council round whose PR is closed between the CI read and the POST posts nothing.
+    const c = await world(approvable);
+    const { id } = await councilRound(c, { dryRun: false }, APPROVE);
+    post(c, id, 'dry-run');
+    const croutes = pr2Routes(c.src.shas);
+    approvable(croutes, c.src);
+    const open = json(croutes, `GET ${API_PULL}`);
+    croutes[`GET ${API_PULL}`] = { seq: [{ json: open }, { json: { ...structuredClone(open), state: 'closed' } }] };
+    c.gh.setRoutes(croutes);
+    const closed = post(c, id, 'post');
+    expect(closed.outcome).toBe('refused');
+    expect(closed.problems.join()).toContain('sabotage-dev/sabotage-council#2 was closed since the post began: nothing posts');
+    expect(writes(c)).toEqual([]);
+  }, 120_000);
 });

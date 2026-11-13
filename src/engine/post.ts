@@ -696,9 +696,18 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     return refuse(unapproved);
   }
 
-  // Row 5: the CI and identity reads take time; read the head once more right before the POST.
-  const headNow = readPull(o.api, ref).headSha;
-  if (headNow.toLowerCase() !== head.toLowerCase()) return superseded(headNow);
+  // Row 5: the CI and identity reads take time; read the pull request once more right before the POST, and keep all
+  // of it (P6 round 2 row 2): a moved head supersedes the round, a close posts nothing, and an identity round whose
+  // base left the default branch since its render posts nothing (its approval was re-checked on the old base).
+  const last = readPull(o.api, ref);
+  if (last.headSha.toLowerCase() !== head.toLowerCase()) return superseded(last.headSha);
+  if (last.state === 'closed') return refuse(`${ref.owner}/${ref.repo}#${ref.number} was closed since the post began: nothing posts`);
+  if (identity && pr.baseRef === pr.defaultBranch && last.baseRef !== last.defaultBranch) {
+    result.next = `sabotage-council post ${round.id} --dry-run`;
+    return refuse(
+      `the base of ${ref.owner}/${ref.repo}#${ref.number} is now ${last.baseRef}, not the default branch ${last.defaultBranch}, and this identity review was rendered on ${pr.baseRef}: nothing posts; run post ${round.id} --dry-run to show the user the review that applies now`,
+    );
+  }
 
   // The intent and the guards it owes, in one transaction before the POST (plan 9.4, row 2). A re-post after an
   // interrupted POST that did not land replaces the guards that never ran.
