@@ -208,7 +208,16 @@ describe('CLI: round start / wait / show and adjudicate', () => {
       root: '/root',
       brief_path: '/r/BRIEF.md',
       earlier_items: [],
-      legs: [],
+      legs: [
+        {
+          leg_id: 1, seat: 'a', role: 'primary', attempt: 1, backend: 'codex', model: 'm', effort: 'high', transport: 'headless',
+          status: 'CONTAMINATED', counted: false, failure_class: 'contaminated', enforcement: null, cli_version: null,
+          verdict_raw: null, verdict_reason: null, verdict_effective: null, findings: [], findings_extracted_by: null,
+          findings_problem: null, answer_path: null, leg_dir: '/r/legs/a-primary-1',
+          ratification: { status: 'CONTAMINATED', failed_checks: [{ name: 'write-denial', detail: `line one\n  line two ${'x'.repeat(300)}` }], model_observed: null, effort_observed: null, session_id: null, record_path: null },
+          started_at: null, finished_at: null, duration_ms: null, tokens_in: null, tokens_out: null, cost_usd: null, credits: null,
+        },
+      ],
       adjudication: null,
       started_at: '2026-01-01T00:00:00.000Z',
       finished_at: null,
@@ -218,5 +227,9 @@ describe('CLI: round start / wait / show and adjudicate', () => {
       events: [],
     });
     expect(lines).toContain('quorum solo: SOLO REVIEW: one ratified leg. This is not a council verdict, and it never approves (plan 3.1 step 8).');
+    const failed = lines.find((l) => l.includes('failed write-denial'))!;
+    expect(failed.startsWith('        failed write-denial: line one line two xxx')).toBe(true);
+    expect(failed.endsWith('...')).toBe(true);
+    expect(lines.every((l) => !l.includes('\n'))).toBe(true);
   });
 });

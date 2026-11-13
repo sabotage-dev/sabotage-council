@@ -209,6 +209,12 @@ export function roundShow(io: RoundIo, paths: StorePaths, roundId: number, json:
   }
 }
 
+/** A record's detail on one line, cut to `max` characters: a failed check may quote a multi-line output. */
+function oneLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 3)}...` : flat;
+}
+
 const occupant = (l: { backend: string; model: string; effort: string | null }): string => [l.backend, l.model, l.effort].filter((p) => p !== null).join(' / ');
 
 export function renderSummary(s: RoundSummary): string[] {
@@ -225,7 +231,7 @@ export function renderSummary(s: RoundSummary): string[] {
     const verdict = l.verdict_raw !== null ? ` verdict ${l.verdict_raw}${l.verdict_effective !== null && l.verdict_effective !== l.verdict_raw ? ` (effective ${l.verdict_effective})` : ''}` : '';
     const found = l.counted ? ` ${l.findings_extracted_by === 'adjudicator-needed' ? 'findings block needs extraction' : `${l.findings.length} finding(s)`}` : '';
     out.push(`  ${l.seat}  ${l.role} ${l.attempt}  ${occupant(l)}  ${l.status}${l.failure_class !== null ? ` (${l.failure_class})` : ''}${verdict}${found}${cost}${time}`);
-    for (const c of l.ratification?.failed_checks ?? []) out.push(`        failed ${c.name}: ${c.detail}`);
+    for (const c of l.ratification?.failed_checks ?? []) out.push(`        failed ${c.name}: ${oneLine(c.detail, 160)}`);
   }
   if (s.earlier_items.length > 0) {
     out.push('earlier items:');
