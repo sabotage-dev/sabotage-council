@@ -902,6 +902,29 @@ describe('fold rows 12-13: a clean root for every fallback and relaunch; one sea
     expect(existsSync(join(rootPathOf(h.layout, 1, 2), 'planted.txt'))).toBe(false);
   }, 60_000);
 
+  it('takes a seat out, and leaves no partial root, when the rebuilt root would not match the sealed tree', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const notes = join(scratch('sc-context-'), 'notes.md');
+    writeFileSync(notes, 'context as sealed\n');
+    const { prepared } = await runRound(
+      h,
+      resolvePlanTarget(repo, 'docs/PLAN.md', [notes]),
+      { codex: { [OCC.a]: [codexCase('usage-limit')] } },
+      {
+        beforeNextLeg: () => {
+          writeFileSync(join(rootPathOf(h.layout, 1, 1), 'planted.txt'), 'changed\n');
+          // The context changed on disk since the seal: a rebuild cannot reproduce the sealed tree.
+          writeFileSync(notes, 'context changed since\n');
+        },
+      },
+    );
+    expect(getLegs(h.store.db, prepared.inputs.roundId).filter((l) => l.seat_id === 'a').map((l) => l.role)).toEqual(['primary']);
+    expect(getEvents(h.store.db, prepared.inputs.roundId).find((e) => e.kind === 'seat-out')?.detail).toMatchObject({ seat: 'a', why: expect.stringContaining('not the sealed') });
+    expect(existsSync(rootPathOf(h.layout, 1, 2))).toBe(false);
+    expect(existsSync(`${rootPathOf(h.layout, 1, 2)}.git`)).toBe(false);
+  }, 60_000);
+
   it('preflights every fallback before any leg launches', async () => {
     const h = harness();
     const { repo } = fixtureRepo();

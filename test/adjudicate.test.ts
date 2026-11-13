@@ -348,6 +348,11 @@ describe('adjudicate: plan 7.3 validator', () => {
     listed['followups'] = [F2, ITEM];
     listed['earlier_items'] = [{ source: ITEM, status: 'open', evidence: 'not yet', fix_row: ITEM }];
     expect(errorsOf(listed, ctx4)).toEqual([]);
+    const nitUnlisted = valid();
+    r4(nitUnlisted);
+    nitUnlisted.findings.push(carriedRow('nit', 'MEDIUM'));
+    nitUnlisted['earlier_items'] = [{ source: ITEM, status: 'open', evidence: 'not yet', fix_row: ITEM }];
+    expect(errorsOf(nitUnlisted, ctx4).join('\n')).toContain('must name a follow-up listed in followups');
     // A carried follow-up open in a later round stays a follow-up (never owed by itself), but must be listed.
     const follow = valid();
     follow['earlier_items'] = [{ source: ITEM, status: 'half-closed', evidence: 'partly', fix_row: null }];
