@@ -47,7 +47,7 @@ export interface ToolArgs {
   text?: readonly string[] | undefined;
 }
 
-/** The argument semantics of every tool a call names, merged. */
+/** The argument semantics of the named tools, merged (globs win over text in `walk`). */
 interface ArgSpec {
   globs: Set<string>;
   text: Set<string>;
@@ -146,12 +146,13 @@ export interface CollectedPaths {
 function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths, spec: ArgSpec): boolean {
   const words = keyTokens(key);
   if (typeof value === 'string') {
-    // The tool's own declaration wins: a declared regex or free-text key is never a path, a declared glob always is.
-    if (spec.text.has(key)) return false;
+    // The tool's own declaration wins: a declared glob is always a path, a declared regex or free-text key never is.
+    // Globs are checked first, so in a merged spec a text declaration can never suppress a glob (round 3).
     if (spec.globs.has(key)) {
       if (value.trim() !== '') out.paths.push(value);
       return false;
     }
+    if (spec.text.has(key)) return false;
     if (pathy) {
       if (value.trim() !== '') out.paths.push(value);
       return true;
@@ -183,8 +184,12 @@ function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths, 
  */
 export function collectPaths(snapshots: readonly Json[], extra: readonly string[] = [], set?: ReadSet, names: readonly string[] = []): CollectedPaths {
   const out: CollectedPaths = { paths: [], problems: [] };
-  const spec = argSpec(set, names);
+  // Each snapshot is read with its own tool's semantics; a snapshot that names no tool (a kiro permission request)
+  // uses the union of the call's tools, where globs win (round 3, defense in depth).
+  const union = argSpec(set, names);
   for (const s of snapshots) {
+    const own = set?.nameOf(s) ?? null;
+    const spec = own !== null ? argSpec(set, [own]) : union;
     for (const container of ARG_CONTAINERS) {
       if (s[container] !== undefined) walk(s[container], container, container === 'locations', out, spec);
     }
@@ -240,6 +245,8 @@ export function judgeCall(snapshots: readonly Json[], extra: readonly string[], 
   const badKinds = kinds.filter((k) => !set.kinds.includes(k));
   if (badKinds.length > 0) return notRead(`kind ${badKinds.join(', ')} is not a read`);
   if (names.length === 0) return notRead('no tool name is reported');
+  // One call is one tool: a call reported under two names (glob, then grep) could have its glob read as a regex.
+  if (names.length > 1) return notRead(`reported under more than one tool name (${names.join(', ')})`);
   const mcp = names.filter((n) => MCP_SHAPED.test(n));
   if (mcp.length > 0) return notRead(`an MCP-shaped tool name (${mcp.join(', ')})`);
   const undeclared = names.filter((n) => !set.names.includes(n));

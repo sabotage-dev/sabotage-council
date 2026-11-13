@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { collectPaths } from '../src/adapters/acp/policy.js';
 import {
   KIRO_AGENT,
+  KIRO_READS,
   classifyKiroText,
   createKiroAdapter,
   kiroProfile,
@@ -272,6 +274,35 @@ describe('kiro through the fake agent (synthetic, every conformance case)', () =
     const ran = await launch({ steps: [glob(false), ...REVIEW] });
     expect(failedNames(ran.r)).toEqual(['read-paths']);
     expect(ran.r.status).toBe('CONTAMINATED');
+  });
+
+  describe('round 3: a call reported under two tool names', () => {
+    const glob = (pattern: string, status: string) => ({ update: { sessionUpdate: 'tool_call', toolCallId: 'x1', kind: 'search', status, rawInput: { pattern }, _meta: kiroMeta('glob') } });
+    const asGrep = (status: string) => ({ update: { sessionUpdate: 'tool_call_update', toolCallId: 'x1', kind: 'search', status, _meta: kiroMeta('grep') } });
+    it.each(['/etc/*', '../outside/*'])('[glob, grep] with pattern %s is refused live, and contaminates when it ran', async (pattern) => {
+      const asked = await launch({ steps: [glob(pattern, 'pending'), asGrep('pending'), { askFor: { toolCallId: 'x1' } }, ...REVIEW] });
+      const perms = asked.r.detail['permissions'] as Array<{ decision: string; why: string }>;
+      expect(perms.map((p) => p.decision)).toEqual(['reject']);
+      expect(perms[0]?.why).toContain('more than one tool name (glob, grep)');
+      expect(failedNames(asked.r)).toEqual([]);
+      const ran = await launch({ steps: [glob(pattern, 'in_progress'), asGrep('completed'), ...REVIEW] });
+      expect(failedNames(ran.r)).toEqual(['tools-used']);
+      expect(ran.r.status).toBe('CONTAMINATED');
+    });
+    it('each snapshot is read with its own tool: the glob path survives a later grep snapshot', () => {
+      const snapshots = [
+        { kind: 'search', rawInput: { pattern: '/etc/*' }, _meta: kiroMeta('glob') },
+        { kind: 'search', rawInput: { pattern: '~' }, _meta: kiroMeta('grep') },
+        { rawInput: { pattern: '../outside/*' } },
+      ];
+      expect(collectPaths(snapshots, [], KIRO_READS, ['glob', 'grep']).paths).toEqual(['/etc/*', '../outside/*']);
+    });
+    it('single-name calls are unaffected: a path-less grep for ~ and a glob for src/** both PASS', async () => {
+      const grep = { tool: { toolCallId: 'g', title: "Searching for '~'", kind: 'search', rawInput: { pattern: '~' }, _meta: kiroMeta('grep') }, ask: false };
+      const globSrc = { tool: { toolCallId: 's', title: 'Finding src/**', kind: 'search', rawInput: { pattern: 'src/**' }, _meta: kiroMeta('glob') }, ask: false };
+      const { r } = await launch({ steps: [grep, globSrc, ...REVIEW] });
+      expect(failedNames(r)).toEqual([]);
+    });
   });
 
   it('a path-less read that ran is unjudgeable: FAIL, not CONTAMINATED', async () => {
