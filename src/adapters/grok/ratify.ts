@@ -3,7 +3,7 @@ import type { FailureClass } from '../../config/vocab.js';
 import { collectPaths, judgePath, type ReadSet } from '../acp/policy.js';
 import { readClaudeStream, type ClaudeStream } from '../claude/records.js';
 import { isObject, num, readJsonl, str, type Json } from '../codex/records.js';
-import { rootAliases } from '../paths.js';
+import { resolveLexical, rootAliases } from '../paths.js';
 import { nonceOnFirstLine, verdictOf, type Ratification, type RatificationCheck } from '../types.js';
 import { GROK_READ_TOOLS, grokLabel, grokModelMatches, type GrokSandbox } from './known.js';
 import { eventsOf, findGrokSession, grokUsage, readGrokSession, type GrokSession } from './records.js';
@@ -234,37 +234,63 @@ export function ratifyGrokLeg(input: GrokRatifyInput): Ratification {
 
   const uses = streamToolUses(input.streamFile);
   const started = none ? [] : eventsOf(s as GrokSession, 'tool_started').map((e) => str(e['tool_name']));
+  const completed = none ? [] : eventsOf(s as GrokSession, 'tool_completed').map((e) => str(e['tool_name']));
   const updateCalls = s ? [...s.toolCalls.values()] : [];
-  const names = [...uses.map((u) => u.name), ...started, ...updateCalls.map((c) => c.name)];
+  // Every reported name counts, on every record (grok F5): stream uses, starts, completions, every update snapshot.
+  const names = [...uses.map((u) => u.name), ...started, ...completed, ...updateCalls.flatMap((c) => c.names)];
   const forbidden = [...new Set(names.filter((n) => n === null || !READ_SET.includes(n)).map(String))];
-  check('tools-used', forbidden.length === 0, forbidden.length === 0 ? `${uses.length} tool use(s) in the stream, ${started.length} started, all reads` : `tools beyond the read set: ${forbidden.join(', ')}`);
+  const twoNames = updateCalls.filter((c) => c.names.length > 1);
+  check(
+    'tools-used',
+    forbidden.length === 0 && twoNames.length === 0,
+    forbidden.length > 0
+      ? `tools beyond the read set: ${forbidden.join(', ')}`
+      : twoNames.length > 0
+        ? `calls reported under more than one tool name: ${twoNames.map((c) => `${c.id} (${c.names.join(', ')})`).join('; ')}`
+        : `${uses.length} tool use(s) in the stream, ${started.length} started, ${completed.length} completed, all reads`,
+  );
 
-  // N9: the read paths come from updates.jsonl `tool_call.rawInput`, cross-checked against the stream's tool uses.
+  // N9: the read paths come from updates.jsonl: every rawInput, every `_meta` input and every `locations` list of
+  // every snapshot (never merged, codex F4), plus the paths the read's own output names; the stream's tool uses
+  // are judged too and must agree.
   const outside: string[] = [];
   const unknown: string[] = [];
+  const judge = (label: string, p: string, where: string): string => {
+    const j = judgePath(p, input.root, aliases);
+    if (!j.inside) outside.push(`${label} ${p} (${j.why}${where})`);
+    return resolveLexical(p, input.root);
+  };
+  const recorded = new Map<string, Set<string>>();
   for (const call of updateCalls) {
-    if (call.rawInput === null) {
-      unknown.push(`${call.id} (${String(call.name)}) has no rawInput in updates.jsonl`);
+    const label = call.names[0] ?? '?';
+    const seen = new Set<string>();
+    recorded.set(call.id, seen);
+    if (call.inputs.length === 0) {
+      unknown.push(`${call.id} (${label}) has no rawInput in updates.jsonl`);
       continue;
     }
-    const c = callPaths(call.name ?? '', call.rawInput);
-    if (c.problems.length > 0) unknown.push(`${call.id} (${String(call.name)}): ${c.problems.join('; ')}`);
-    for (const p of c.paths) {
-      const j = judgePath(p, input.root, aliases);
-      if (!j.inside) outside.push(`${String(call.name)} ${p} (${j.why})`);
+    for (const raw of call.inputs) {
+      const c = callPaths(label, raw);
+      if (c.problems.length > 0) unknown.push(`${call.id} (${label}): ${c.problems.join('; ')}`);
+      for (const p of c.paths) seen.add(judge(label, p, ''));
     }
+    for (const p of call.outputPaths) judge(label, p, ', in its output');
   }
   for (const u of uses) {
-    for (const p of callPaths(u.name, u.input).paths) {
-      const j = judgePath(p, input.root, aliases);
-      if (!j.inside) outside.push(`${u.name} ${p} (${j.why}, stream)`);
+    const c = callPaths(u.name, u.input);
+    if (c.problems.length > 0) unknown.push(`stream tool use ${String(u.id)} (${u.name}): ${c.problems.join('; ')}`);
+    const mine = c.paths.map((p) => judge(u.name, p, ', stream'));
+    const theirs = u.id !== null ? recorded.get(u.id) : undefined;
+    if (theirs === undefined) unknown.push(`stream tool use ${String(u.id)} (${u.name}) is not in updates.jsonl`);
+    else {
+      const missing = mine.filter((p) => !theirs.has(p));
+      if (missing.length > 0) unknown.push(`stream tool use ${String(u.id)} names paths updates.jsonl does not: ${missing.join(', ')}`);
     }
-    if (u.id === null || !s?.toolCalls.has(u.id)) unknown.push(`stream tool use ${String(u.id)} (${u.name}) is not in updates.jsonl`);
   }
   const completedIds = none ? [] : eventsOf(s as GrokSession, 'tool_completed').map((e) => str(e['tool_call_id']));
   for (const id of completedIds) if (id === null || !s?.toolCalls.has(id)) unknown.push(`completed tool call ${String(id)} is not in updates.jsonl`);
   check('read-paths', outside.length === 0, outside.length === 0 ? `every read path inside the root (${updateCalls.length} call(s) in updates.jsonl)` : [...new Set(outside)].join('; '));
-  check('read-paths-known', none || unknown.length === 0, none ? noRecord : unknown.length === 0 ? 'every tool call has its paths in updates.jsonl, and every stream tool use and completed call is there' : unknown.join('; '));
+  check('read-paths-known', none || unknown.length === 0, none ? noRecord : unknown.length === 0 ? 'every tool call has its paths in updates.jsonl, and every stream tool use and completed call is there and agrees' : unknown.join('; '));
 
   const injected = s?.promptContext && Array.isArray(s.promptContext['agents_md_files']) ? s.promptContext['agents_md_files'] : null;
   check('instructions', none || (injected !== null && injected.length === 0), none ? noRecord : injected === null ? 'prompt_context.json has no agents_md_files list' : injected.length === 0 ? 'no instruction file injected' : `instruction files injected: ${JSON.stringify(injected).slice(0, 300)}`);
@@ -326,7 +352,7 @@ export function ratifyGrokLeg(input: GrokRatifyInput): Ratification {
       sandbox,
       mcpStarted: startedNames,
       hookRuns: ranHooks.length,
-      toolCalls: updateCalls.map((c) => ({ id: c.id, name: c.name, rawInput: c.rawInput, statuses: c.statuses })),
+      toolCalls: updateCalls.map((c) => ({ id: c.id, names: c.names, inputs: c.inputs, outputPaths: c.outputPaths, statuses: c.statuses })),
       signature,
     },
   };

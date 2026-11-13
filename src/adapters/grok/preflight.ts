@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { FailureClass } from '../../config/vocab.js';
 import type { CommandRunner } from '../../transport/headless.js';
@@ -150,7 +150,7 @@ export async function grokPreflight(o: Occupant, options: GrokPreflightOptions):
   const timeoutMs = options.timeoutMs ?? 60_000;
   const sandbox: GrokSandbox = o.sandbox ?? 'read-only';
   const files = grokLegFiles(options.legDir);
-  const { grokHome, route } = legGrokHome(options.env, files);
+  const { grokHome, route } = legGrokHome(options.env, files, o.authHome);
   let loaded: string[] = [];
   let mcpListed = false;
   const result = (ok: boolean, failureClass: FailureClass | null, reason: string | null, cliVersion: string | null, data: Record<string, unknown> = {}): Preflight => ({
@@ -181,8 +181,22 @@ export async function grokPreflight(o: Occupant, options: GrokPreflightOptions):
     fail('home', 'no grok home: set GROK_HOME or HOME, or XAI_API_KEY');
     return result(false, 'auth', 'no grok home', null);
   }
+  if (route === 'auth_home' && (!grokHome.startsWith('/') || !existsSync(grokHome) || !statSync(grokHome).isDirectory())) {
+    fail('home', `the seat's auth_home ${grokHome} is not an existing absolute directory`);
+    return result(false, 'setup', 'auth_home is not a directory', null);
+  }
+  checks.push({
+    name: 'home',
+    status: 'ok',
+    detail:
+      route === 'auth_home'
+        ? `GROK_HOME=${grokHome} (the seat's auth_home: its own grok login and config; XAI_API_KEY is not passed)`
+        : route === 'api-key'
+          ? `GROK_HOME is the leg's own empty dir (XAI_API_KEY)`
+          : `GROK_HOME=${grokHome} (the user's grok home)`,
+  });
   prepareGrokHomes(files, route);
-  const env = grokEnv(options.env, files.home, grokHome);
+  const env = grokEnv(options.env, files.home, grokHome, route);
   const run = (args: readonly string[]) => options.runner(options.bin, args, { cwd: options.root, env, timeoutMs });
 
   const version = await run(['--version']);
@@ -215,8 +229,9 @@ export async function grokPreflight(o: Occupant, options: GrokPreflightOptions):
 
   const listed = await run(['models']);
   const models = parseGrokModels(`${listed.stdout}\n${listed.stderr}`);
-  if (route === 'login' && !models.loggedIn) {
-    fail('auth', 'grok models does not report a login; run `grok login`, or set XAI_API_KEY');
+  if (route !== 'api-key' && !models.loggedIn) {
+    const how = route === 'auth_home' ? `GROK_HOME=${grokHome} grok login` : '`grok login`, or set XAI_API_KEY';
+    fail('auth', `grok models does not report a login in ${grokHome}; run ${how}`);
     return result(false, 'auth', 'grok is not logged in', cliVersion);
   }
   checks.push({ name: 'auth', status: 'ok', detail: route === 'api-key' ? 'XAI_API_KEY (the leg runs on its own empty grok home)' : `grok login in ${grokHome} (HOME isolated per leg)` });
@@ -253,7 +268,7 @@ export async function grokPreflight(o: Occupant, options: GrokPreflightOptions):
   ];
   if (inspect.mcpServers.length > 0) {
     const names = inspect.mcpServers.map((m) => `${m.name} (${m.source}${m.path !== null ? ` ${m.path}` : ''})`).join(', ');
-    const why = `MCP servers would start in the leg: ${names}. A leg that starts an MCP server fails (owner ruling); use XAI_API_KEY (the leg then runs on its own empty grok home) or disable the servers in your grok config yourself`;
+    const why = `MCP servers would start in the leg: ${names}. A leg that starts an MCP server fails (owner ruling); give the seat an auth_home (its own grok home, logged in once, with no MCP config), use XAI_API_KEY, or disable the servers in your grok config yourself`;
     fail('mcp', why);
     if (problems.length === 0) return result(false, 'setup', `MCP servers would start: ${inspect.mcpServers.map((m) => m.name).join(', ')}`, cliVersion);
   }
@@ -262,6 +277,6 @@ export async function grokPreflight(o: Occupant, options: GrokPreflightOptions):
     return result(false, 'setup', `grok would load ${problems.join('; ')}`, cliVersion);
   }
   checks.push({ name: 'isolation', status: 'ok', detail: 'grok inspect under the leg HOME lists no instructions, hooks, plugins, permission rules, MCP servers or project config' });
-  userOwned.push(route === 'api-key' ? 'XAI_API_KEY (an isolated grok home)' : `the grok login in ${grokHome}`);
+  userOwned.push(route === 'api-key' ? 'XAI_API_KEY (an isolated grok home)' : route === 'auth_home' ? `the seat's own grok login in ${grokHome} (auth_home)` : `the grok login in ${grokHome}`);
   return result(true, null, null, cliVersion);
 }

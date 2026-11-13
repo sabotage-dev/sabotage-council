@@ -15,6 +15,9 @@ import type { EnforcementLabel } from '../types.js';
  *     lists no Claude-compat instructions, hooks, plugins or permission rules, and planted project files in an
  *     untrusted root (`AGENTS.md`, a `.claude` hook) were not loaded by a live leg.
  *   - The served model id is the requested id with `-build` (`grok-4.7` is served as `grok-4.7-build`).
+ *   - No `--sandbox read-only` leg is recorded: on the measuring Mac the sandbox refuses to start (above), so every
+ *     recorded leg ran `--sandbox off`. The `pending` label for a sandbox-on leg with no MCP server is N1's
+ *     placeholder, not a measured result.
  */
 
 /** The only tools a grok seat may be offered or use (plan 4.2). */

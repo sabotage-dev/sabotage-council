@@ -6,7 +6,7 @@ import { runCommand, startHeadless, type CommandRunner, type HeadlessProcess } f
 import { readClaudeStream } from '../claude/records.js';
 import { fromNonceLine, type LegHandle, type LegState, type LegText, type Occupant, type Preflight, type Ratification, type RoundCtx, type SeatAdapter } from '../types.js';
 import { GROK_FLOOR, GROK_MODELS, GROK_TESTED_VERSIONS, grokDecl, type GrokSandbox } from './known.js';
-import { defaultGrokBin, grokArgs, grokEnv, grokLegFiles, legGrokHome, prepareGrokHomes } from './launch.js';
+import { defaultGrokBin, grokArgs, grokEnv, grokLegFiles, legGrokHome, prepareGrokHomes, type GrokRoute } from './launch.js';
 import { grokPreflight } from './preflight.js';
 import { copyGrokSession, findGrokSession } from './records.js';
 import { classifyGrokText, grokAnswer, grokErrorTexts, ratifyGrokLeg } from './ratify.js';
@@ -36,7 +36,7 @@ interface GrokLegData {
   effort: string;
   sandbox: GrokSandbox;
   grokHome: string;
-  route: 'api-key' | 'login';
+  route: GrokRoute;
   cliVersion: string | null;
   startupHang: boolean;
   sessionCopy: string | null;
@@ -68,7 +68,7 @@ export function createGrokAdapter(options: GrokAdapterOptions = {}): SeatAdapter
       if (!p.ok) throw new Error(`grok preflight failed: ${p.reason ?? 'unknown'}`);
       const sourceEnv = ctx.env ?? process.env;
       const files = grokLegFiles(ctx.legDir);
-      const { grokHome, route } = legGrokHome(sourceEnv, files);
+      const { grokHome, route } = legGrokHome(sourceEnv, files, o.authHome);
       if (grokHome === null) throw new Error('no grok home');
       prepareGrokHomes(files, route);
       const sessionId = randomUUID();
@@ -81,7 +81,7 @@ export function createGrokAdapter(options: GrokAdapterOptions = {}): SeatAdapter
         command: binFor(sourceEnv),
         args: grokArgs({ briefFile: ctx.briefFile, root: ctx.root, sessionId, model: o.model, effort: data.effort, sandbox, maxTurns: options.maxTurns, allowRules: options.allowRules }),
         cwd: ctx.root,
-        env: grokEnv(sourceEnv, files.home, grokHome),
+        env: grokEnv(sourceEnv, files.home, grokHome, route),
         stdoutFile: files.stream,
         stderrFile: files.stderr,
         timeoutMs: ctx.timeoutMs,

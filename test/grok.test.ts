@@ -85,6 +85,21 @@ function editJson(path: string, change: (v: Record<string, unknown>) => void): v
   writeFileSync(path, JSON.stringify(v));
 }
 
+/** Adds an update for the first read_file call: before its first snapshot, or after its last. */
+function insertUpdate(session: string, make: (id: string) => Record<string, unknown>, before: boolean): void {
+  const rows = readJsonl(join(session, 'updates.jsonl'));
+  const updateOf = (r: Record<string, unknown>) => (r['params'] as { update?: Record<string, unknown> } | undefined)?.update;
+  const first = rows.findIndex((r) => updateOf(r)?.['sessionUpdate'] === 'tool_call' && updateOf(r)?.['title'] === 'read_file');
+  const id = String(updateOf(rows[first] as Record<string, unknown>)?.['toolCallId']);
+  let last = first;
+  rows.forEach((r, i) => {
+    if (updateOf(r)?.['toolCallId'] === id) last = i;
+  });
+  const row = { method: 'session/update', params: { sessionId: 'x', update: make(id) } };
+  rows.splice(before ? first + 1 : last + 1, 0, row);
+  writeJsonl(join(session, 'updates.jsonl'), rows);
+}
+
 /** The recorded smoke with the user MCP server's events removed: the leg a machine with no MCP config gets. */
 function noMcp(_dir: string, session: string): void {
   const rows = readJsonl(join(session, 'events.jsonl')).filter((e) => !String(e['type']).startsWith('mcp_'));
@@ -175,6 +190,17 @@ describe('grok ratification: each check fails on its own (mutation coverage)', (
     ],
     ['the nonce on the second line', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('result'), (r) => (r['result'] = `Review.\n${String(r['result'])}`)), ['nonce']],
     ['a mutated root', () => undefined, ['root-unchanged'], true],
+    ['an earlier snapshot naming an outside path, later rewritten inside (never merged, codex F4)', (_d, s) => insertUpdate(s, (id) => ({ sessionUpdate: 'tool_call_update', toolCallId: id, rawInput: { target_file: '/etc/hosts' } }), true), ['read-paths']],
+    ['a read whose own output names an outside file (grok F5)', (_d, s) => insertUpdate(s, (id) => ({ sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', rawOutput: { type: 'ReadFile', FileContent: { absolute_path: '/etc/hosts' } } }), false), ['read-paths']],
+    ['a grep output listing an outside match', (_d, s) => insertUpdate(s, (id) => ({ sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', rawOutput: { type: 'GrepSearch', file_matches: [{ path: '/etc/hosts' }] } }), false), ['read-paths']],
+    ['a completion of a shell tool (every reported name counts)', (_d, s) => writeJsonl(join(s, 'events.jsonl'), [...readJsonl(join(s, 'events.jsonl')), { type: 'tool_completed', tool_name: 'run_terminal_command', tool_call_id: 'x' }]), ['read-paths-known', 'tools-used']],
+    ['a call reported under two tool names', (_d, s) => insertUpdate(s, (id) => ({ sessionUpdate: 'tool_call_update', toolCallId: id, _meta: { 'x.ai/tool': { name: 'grep' } } }), false), ['tools-used']],
+    ['a stream tool use naming a path updates.jsonl does not', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('assistant'), (r) => {
+      for (const b of (r['message'] as { content: Array<Record<string, unknown>> }).content) if (b['type'] === 'tool_use' && b['name'] === 'read_file') b['input'] = { target_file: 'planted/README.md' };
+    }), ['read-paths-known']],
+    ['a stream tool use whose path cannot be judged', (dir) => edit(join(dir, 'stream.jsonl'), typeIs('assistant'), (r) => {
+      for (const b of (r['message'] as { content: Array<Record<string, unknown>> }).content) if (b['type'] === 'tool_use' && b['name'] === 'read_file') b['input'] = { target_file: 42 };
+    }), ['read-paths-known']],
   ];
   it.each(cases)('fails on %s', (_what, change, expected, rootMutated) => {
     const r = ratifyGrokLeg(legFor('smoke', (dir, session) => {
@@ -389,6 +415,31 @@ describe('grok preflight (4.3), no model call', () => {
     const pre = await preflightFor({}, { allowRules: ['Read(/**)'] }).p;
     expect(pre.ok).toBe(false);
     expect(pre.reason).toBe('allow rules planted');
+  });
+
+  it('runs on the seat auth_home as GROK_HOME (owner ruling): its own login and config, XAI_API_KEY not passed', async () => {
+    const own = scratch('sc-grok-own-');
+    const { p, calls } = preflightFor({ authHome: own }, { env: { HOME: '/nonexistent', PATH: '/usr/bin', XAI_API_KEY: 'never-read' } });
+    const pre = await p;
+    expect(pre.ok, pre.reason ?? '').toBe(true);
+    expect(pre.data).toMatchObject({ route: 'auth_home', grokHome: own });
+    expect(calls.every((c) => c.env['GROK_HOME'] === own && c.env['XAI_API_KEY'] === undefined)).toBe(true);
+    expect(pre.checks.find((c) => c.name === 'home')?.detail).toContain("the seat's auth_home");
+  });
+
+  it('names the login command for the seat auth_home when it holds no login, and refuses a missing auth_home', async () => {
+    const own = scratch('sc-grok-own-');
+    const pre = await preflightFor({ authHome: own }, { models: 'You are not logged in.\n' }).p;
+    expect(pre.failureClass).toBe('auth');
+    expect(pre.checks.find((c) => c.name === 'auth')?.detail).toContain(`GROK_HOME=${own} grok login`);
+    expect((await preflightFor({ authHome: join(own, 'missing') }).p).reason).toBe('auth_home is not a directory');
+  });
+
+  it('refuses an auth_home whose grok config would start an MCP server', async () => {
+    const own = scratch('sc-grok-own-');
+    const pre = await preflightFor({ authHome: own }, { inspect: readFileSync(join(fixtureDir('grok', 'inspect'), 'clean.json'), 'utf8') }).p;
+    expect(pre.ok).toBe(false);
+    expect(pre.reason).toContain('context7');
   });
 
   it('takes the API-key route with an empty grok home of its own', async () => {

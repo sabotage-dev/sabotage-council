@@ -91,13 +91,20 @@ export function grokLegFiles(legDir: string): GrokLegFiles {
   };
 }
 
-/** Which grok home a leg uses, and why. */
-export function legGrokHome(env: NodeJS.ProcessEnv, files: GrokLegFiles): { grokHome: string | null; route: 'api-key' | 'login' } {
+export type GrokRoute = 'auth_home' | 'api-key' | 'login';
+
+/**
+ * Which grok home a leg uses, and why: the seat's `auth_home` (its own grok login and config; `XAI_API_KEY` is then
+ * not passed, so the leg signs in with that home's login, as a kiro `auth_home` does), else an empty home of the
+ * leg's own with `XAI_API_KEY`, else the user's grok home.
+ */
+export function legGrokHome(env: NodeJS.ProcessEnv, files: GrokLegFiles, authHome?: string): { grokHome: string | null; route: GrokRoute } {
+  if (authHome !== undefined) return { grokHome: authHome, route: 'auth_home' };
   if (hasXaiKey(env)) return { grokHome: files.grokHome, route: 'api-key' };
   return { grokHome: userGrokHome(env), route: 'login' };
 }
 
-export function prepareGrokHomes(files: GrokLegFiles, route: 'api-key' | 'login'): void {
+export function prepareGrokHomes(files: GrokLegFiles, route: GrokRoute): void {
   mkdirSync(files.home, { recursive: true });
   if (route === 'api-key') mkdirSync(files.grokHome, { recursive: true });
 }
@@ -145,9 +152,10 @@ export function grokArgs(input: GrokArgsInput): string[] {
 }
 
 /** The leg's environment: the allowlist, the fixed switches, the leg's HOME and the chosen grok home. */
-export function grokEnv(source: NodeJS.ProcessEnv, home: string, grokHome: string): Record<string, string> {
+export function grokEnv(source: NodeJS.ProcessEnv, home: string, grokHome: string, route: GrokRoute = 'login'): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of GROK_ENV_ALLOW) {
+    if (route === 'auth_home' && name === 'XAI_API_KEY') continue;
     const value = source[name];
     if (value !== undefined) env[name] = value;
   }

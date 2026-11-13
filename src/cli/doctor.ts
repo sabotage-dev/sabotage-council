@@ -136,6 +136,10 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
           options.write(`        home  ${o.authHome !== undefined ? `${o.authHome} (auth_home)` : "the user's HOME (default)"}`);
           if (typeof pre.data['credential'] === 'string') options.write(`        credential  ${pre.data['credential']}`);
         }
+        // Which grok home a grok seat signs in from: its auth_home (its own login and config), or the default.
+        if (o.backend === 'grok') {
+          options.write(`        grok home  ${o.authHome !== undefined ? `${o.authHome} (auth_home)` : typeof pre.data['grokHome'] === 'string' ? `${pre.data['grokHome']} (${String(pre.data['route'])})` : "the user's grok home (default)"}`);
+        }
         for (const c of pre.checks) {
           if (c.status === 'fail') failed = true;
           options.write(`        ${c.status.padEnd(4)}  ${c.name}: ${c.detail}`);

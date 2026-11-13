@@ -152,6 +152,22 @@ describe('doctor preflight per seat (plan 4.3)', () => {
     }
   });
 
+  it('shows which grok home a grok seat signs in from: its auth_home, or the default', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sc-grok-auth-home-'));
+    try {
+      writeFileSync(configPath, PLAN_EXAMPLE.replace('model = "grok-4.7"\neffort = "high"', `model = "grok-4.7"\neffort = "high"\nauth_home = "${home}"`));
+      const adapters: SeatAdapters = (backend) => (backend === 'grok' ? stubAdapter({ enforcement: 'weak', cliVersion: '1.0.70' }) : undefined);
+      const { lines } = await doctor({ adapters });
+      expect(lines).toContain(`  c  grok / grok-4.7 / high, auth_home ${home}`);
+      expect(lines).toContain(`        grok home  ${home} (auth_home)`);
+      writeFileSync(configPath, PLAN_EXAMPLE);
+      const plain = await doctor({ adapters: (backend) => (backend === 'grok' ? stubAdapter({ enforcement: 'weak', cliVersion: '1.0.70', data: { grokHome: '/u/.grok', route: 'login' } }) : undefined) });
+      expect(plain.lines).toContain('        grok home  /u/.grok (login)');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('fails when a seat fails its preflight, and says why', async () => {
     const adapters: SeatAdapters = (backend) =>
       backend === 'claude'

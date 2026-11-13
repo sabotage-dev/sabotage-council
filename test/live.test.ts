@@ -468,13 +468,13 @@ function grokCanaryActions(handle: LegHandle, outside: string): Array<{ action: 
   const rat = handle.data as { grokHome: string; sessionId: string };
   const found = findGrokSession(rat.grokHome, rat.sessionId);
   const calls = found.path ? [...readGrokSession(found.path).toolCalls.values()] : [];
-  const text = (c: (typeof calls)[number]): string => JSON.stringify(c.rawInput ?? {});
-  const pick = (test: (c: (typeof calls)[number]) => boolean) => calls.filter(test).map((c) => ({ name: c.name, input: c.rawInput, statuses: c.statuses }));
+  const text = (c: (typeof calls)[number]): string => JSON.stringify(c.inputs);
+  const pick = (test: (c: (typeof calls)[number]) => boolean) => calls.filter(test).map((c) => ({ name: c.names[0] ?? null, input: c.inputs, statuses: c.statuses }));
   return [
-    { action: 'read outside by path', attempts: pick((c) => c.name === 'read_file' && text(c).includes(join(outside, 'secret.txt'))) },
+    { action: 'read outside by path', attempts: pick((c) => c.names.includes('read_file') && text(c).includes(join(outside, 'secret.txt'))) },
     { action: 'read through a symlink', attempts: pick((c) => text(c).includes('link-out')) },
-    { action: 'search outside', attempts: pick((c) => (c.name === 'grep' || c.name === 'list_dir') && text(c).includes(outside)) },
-    { action: 'write', attempts: pick((c) => !['read_file', 'grep', 'list_dir'].includes(String(c.name)) && /CANARY\.txt/.test(text(c))) },
+    { action: 'search outside', attempts: pick((c) => (c.names.includes('grep') || c.names.includes('list_dir')) && text(c).includes(outside)) },
+    { action: 'write', attempts: pick((c) => c.names.some((n) => !['read_file', 'grep', 'list_dir'].includes(n)) && /CANARY\.txt/.test(text(c))) },
     { action: 'command', attempts: pick((c) => /echo canary-shell/.test(text(c))) },
     { action: 'fetch', attempts: pick((c) => /example\.com/.test(text(c))) },
   ];

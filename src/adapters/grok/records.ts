@@ -64,10 +64,31 @@ function readJson(path: string): { value: Json | unknown[] | null; problem: stri
 
 export interface GrokToolCall {
   id: string;
-  name: string | null;
+  /** Every tool name the call was reported with: `_meta["x.ai/tool"].name`, the first snapshot's `title`, `name`. */
+  names: string[];
   kind: string | null;
-  rawInput: Json | null;
+  /**
+   * Every argument snapshot, never merged: each `rawInput`, each `_meta["x.ai/tool"].input`, each `locations` list.
+   * A later update can never erase a path an earlier one named (codex F4).
+   */
+  inputs: Json[];
+  /** Paths the call's own output names (`FileContent.absolute_path`, `Content.absolute_root_path`, `file_matches[].path`). */
+  outputPaths: string[];
   statuses: string[];
+}
+
+/** Paths a read tool's `rawOutput` names, by the recorded 1.0.70 shapes. */
+export function outputPaths(raw: unknown): string[] {
+  if (!isObject(raw)) return [];
+  const out: string[] = [];
+  const file = isObject(raw['FileContent']) ? raw['FileContent'] : null;
+  if (file !== null && typeof file['absolute_path'] === 'string') out.push(file['absolute_path']);
+  const listing = isObject(raw['Content']) ? raw['Content'] : null;
+  if (listing !== null && typeof listing['absolute_root_path'] === 'string') out.push(listing['absolute_root_path']);
+  if (Array.isArray(raw['file_matches'])) {
+    for (const m of raw['file_matches']) if (isObject(m) && typeof m['path'] === 'string') out.push(m['path']);
+  }
+  return out;
 }
 
 export interface GrokSession {
@@ -142,10 +163,17 @@ export function readGrokSession(dir: string): GrokSession {
       if (kind !== 'tool_call' && kind !== 'tool_call_update') continue;
       const id = str(u['toolCallId']);
       if (id === null) continue;
-      const call = toolCalls.get(id) ?? { id, name: null, kind: null, rawInput: null, statuses: [] };
-      call.name = call.name ?? str(u['name']) ?? str(u['title']);
+      const call = toolCalls.get(id) ?? { id, names: [], kind: null, inputs: [], outputPaths: [], statuses: [] };
+      const meta = isObject(u['_meta']) && isObject(u['_meta']['x.ai/tool']) ? u['_meta']['x.ai/tool'] : null;
+      // The first snapshot's `title` is the tool name; later titles are display text (`Read \`path\``).
+      const names = [meta !== null ? str(meta['name']) : null, str(u['name']), kind === 'tool_call' ? str(u['title']) : null];
+      for (const n of names) if (n !== null && !call.names.includes(n)) call.names.push(n);
       call.kind = call.kind ?? str(u['kind']);
-      if (isObject(u['rawInput']) && Object.keys(u['rawInput']).length > 0) call.rawInput = { ...(call.rawInput ?? {}), ...u['rawInput'] };
+      for (const input of [u['rawInput'], meta !== null ? meta['input'] : undefined]) {
+        if (isObject(input) && Object.keys(input).length > 0) call.inputs.push(input);
+      }
+      if (Array.isArray(u['locations']) && u['locations'].length > 0) call.inputs.push({ locations: u['locations'] });
+      call.outputPaths.push(...outputPaths(u['rawOutput']));
       const status = str(u['status']);
       if (status !== null) call.statuses.push(status);
       toolCalls.set(id, call);
