@@ -397,3 +397,30 @@ describe('pr rounds: the untrusted seat policy (plan 5.2)', () => {
     expect(legsOf(trusted, t.id).map((l) => l[0])).toEqual(['a', 'b', 'c']);
   }, 120_000);
 });
+
+describe('pr rounds: a superseded round', () => {
+  it('posts nothing when the head moved, and its owed rows still carry into the next round', async () => {
+    const open = (r: Routes, src: SourceRepo): void => {
+      reopen(r);
+      moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }));
+    };
+    const w = await world(open);
+    const { id } = await councilRound(w, { dryRun: false }, { outcome: 'owed', verdict: 'NEEDS-WORK', approve: false });
+    const owedId = (w.h.store.db.prepare("SELECT id FROM findings WHERE round_id = ? AND outcome = 'owed'").get(id) as { id: string }).id;
+    const routes = pr2Routes(w.src.shas);
+    open(routes, w.src);
+    const e = pushCommit(w.src, 'E', { 'src/step9.py': 'x = 9\n' }, w.src.shas['D']);
+    moveHead(routes, e);
+    w.gh.setRoutes(routes);
+    const p = post(w, id, 'post');
+    expect(p.outcome).toBe('superseded');
+    expect(w.gh.requests().filter((q) => q.method === 'POST')).toEqual([]);
+    expect(getRound(w.h.store.db, id)?.status).toBe('superseded');
+    expect(roundSummary(w.h.store, w.h.layout, id).adjudication).toMatchObject({ verdict: 'NEEDS-WORK', owed: 1 });
+    const next = preparePrRound(w.h.store, w.options({ dryRun: false }));
+    if (next.kind !== 'council') throw new Error('expected a council round');
+    // The superseded round posted nothing, so GitHub still counts three heads: E is round 4 too.
+    expect(next.prepared.inputs.roundNo).toBe(4);
+    expect(next.prepared.inputs.earlierItems.map((i) => i.id)).toEqual([owedId, 'R5880199419']);
+  }, 60_000);
+});

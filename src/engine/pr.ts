@@ -106,7 +106,7 @@ export function prDataOf(pr: PrSnapshot): PrData {
 export function reviewItemsAsCarried(db: DatabaseSync, targetId: number, items: readonly ReviewItem[]): CarriedItem[] {
   const last = db.prepare(
     `SELECT earlier_items.status, earlier_items.body_sha256 FROM earlier_items JOIN rounds ON rounds.id = earlier_items.round_id
-      WHERE rounds.target_id = ? AND rounds.status = 'adjudicated' AND earlier_items.source_id = ? ORDER BY rounds.id DESC LIMIT 1`,
+      WHERE rounds.target_id = ? AND rounds.status IN ('adjudicated', 'superseded') AND earlier_items.source_id = ? ORDER BY rounds.id DESC LIMIT 1`,
   );
   return items.map((i) => {
     const row = last.get(targetId, i.id) as { status: string; body_sha256: string | null } | undefined;
@@ -123,9 +123,12 @@ export function reviewItemsAsCarried(db: DatabaseSync, targetId: number, items: 
   });
 }
 
-/** Earlier items of a PR round: the store's (owed rows, rulings, follow-ups of its rounds), then the R items. */
+/**
+ * Earlier items of a PR round: the store's (owed rows, rulings, follow-ups of its rounds; a round superseded at its
+ * post was still adjudicated, so its items carry), then the R items.
+ */
 function prNumbering(db: DatabaseSync, targetId: number, count: RoundCount, items: readonly ReviewItem[]): RoundNumbering {
-  const rounds = db.prepare("SELECT id FROM rounds WHERE target_id = ? AND status = 'adjudicated' ORDER BY id").all(targetId) as Array<{ id: number }>;
+  const rounds = db.prepare("SELECT id FROM rounds WHERE target_id = ? AND status IN ('adjudicated', 'superseded') ORDER BY id").all(targetId) as Array<{ id: number }>;
   const stored = carriedItems(db, rounds.map((r) => r.id));
   return { roundNo: count.roundNo, baseline: count.baseline, items: [...stored, ...reviewItemsAsCarried(db, targetId, items)] };
 }

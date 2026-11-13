@@ -283,7 +283,7 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
     earlier_items: facts.detail.earlier_items.map((i) => ({ id: i.id, severity: i.severity, origin: i.origin, closed_context: i.closedContext, text: i.text })),
     legs,
     adjudication:
-      round.status === 'adjudicated'
+      round.status === 'adjudicated' || round.status === 'superseded'
         ? { verdict: round.verdict, owed: round.owed_count, approve: round.approve === null ? null : round.approve === 1, needs_ruling: round.needs_ruling === 1 }
         : null,
     started_at: round.started_at,
