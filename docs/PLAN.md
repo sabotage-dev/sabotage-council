@@ -252,8 +252,12 @@ Rules that hold in every round:
 - **Fail closed.** If any read fails or is partial, the round does not run; the engine never guesses round 1.
 - **Plan and diff targets.** The run store keeps the round number:
   - plan targets are keyed by repo + path;
-  - diff targets are keyed by repo + branch (`HEAD` is the checked-out branch; a raw sha, a tag or a detached
-    HEAD is keyed by the resolved base);
+  - diff targets are keyed by repo + branch (`HEAD` is the checked-out branch; a branch name is itself). A raw
+    sha, a tag or a detached HEAD is keyed by its resolved head commit (with uncommitted work, the commit the
+    snapshot sits on): the same work re-run is the same target, two unrelated heads never share one, and a later
+    commit starts a new series, which `round start` warns about. `--series <name>` keys any diff target by that
+    name within the repo instead, for branch and non-branch heads alike, so the series survives new commits and a
+    moving base (P5 round 2 row 1);
   - a head counts once a council round on it (two or more counted legs) is adjudicated: a solo-reviewed head is
     never a baseline;
   - plan targets count revisions of the plan (the content of the plan file and any in-repository `--context`
@@ -1227,7 +1231,8 @@ evidence rows behind the flag. It never swaps a seat by itself.
   (`GIT_INDEX_FILE` set to a temp file: `read-tree HEAD`, `git add --all`, `write-tree`, `commit-tree -p HEAD`), so
   untracked, non-ignored files are included and the user's index and branches are never touched. (`git stash
   create`, the first design, leaves untracked files out; P5 round 1 owed row.)
-- **Target:** keyed by repo + branch. Round 2+ reviews from the last reviewed head.
+- **Target:** keyed by repo + branch; a sha, a tag or a detached HEAD by its head commit; or by `--series <name>`
+  for any head (3.6). Round 2+ reviews from the last reviewed head.
 - This is the "council runs against git diffs while building" loop.
 
 ### 9.3 `pr <owner/repo#num | url> [--post | --dry-run]`

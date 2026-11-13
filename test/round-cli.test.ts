@@ -8,6 +8,7 @@ import { runnerFile, runWorker, type RoundSummary } from '../src/engine/index.js
 import { openStore } from '../src/store/index.js';
 import { fakeRegistry } from './fake-registry.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
+import { git } from './helpers/git-fixture.js';
 import { fakeAdapters, fakeHome, fixtureRepo, ROSTER_TOML } from './helpers/round.js';
 
 cleanScratchAfterAll();
@@ -165,6 +166,24 @@ describe('CLI: round start / wait / show and adjudicate', () => {
     expect(brief).toContain('TARGET: docs/PLAN.md');
     expect(brief).toContain('- the module has no callers yet');
   }, 60_000);
+
+  it('warns when a diff target is keyed by a commit, and --series names the series instead', async () => {
+    const { repo } = fixtureRepo();
+    const c = cli(repo, () => undefined);
+    const sha = git(repo, ['rev-parse', 'feature']);
+    const bySha = await c.run('round', 'start', 'diff', `main..${sha}`, '--json');
+    expect(bySha.code).toBe(0);
+    expect(bySha.lines.filter((l) => l.includes('a later commit starts a new series'))).toHaveLength(1);
+    expect(bySha.lines.find((l) => l.includes('new series'))?.startsWith('warn  ')).toBe(true);
+    expect((JSON.parse(bySha.lines.at(-1)!) as { target: string }).target).toBe(`widget@commit:${sha.slice(0, 12)}`);
+    const named = await c.run('round', 'start', 'diff', `main..${sha}`, '--series', 'range-fix', '--json');
+    expect(named.code).toBe(0);
+    expect(named.lines.join('\n')).not.toContain('new series');
+    expect((JSON.parse(named.lines.at(-1)!) as { target: string }).target).toBe('widget@series:range-fix');
+    const bad = await c.run('round', 'start', 'diff', '--series', 'two words');
+    expect(bad.code).toBe(1);
+    expect(bad.lines.at(-1)).toContain('--series "two words" must be');
+  });
 
   it('refuses a config the registry rejects, and an unknown model never starts a round', async () => {
     const { repo } = fixtureRepo();

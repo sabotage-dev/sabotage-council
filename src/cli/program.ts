@@ -95,11 +95,24 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .argument('[range]', '<base>..<head>; default: the merge-base with the default branch .. HEAD, uncommitted work snapshotted')
       .description('the council reviews a branch diff (plan 9.2)')
       .option('--uncommitted', "with an explicit range whose head is the checked-out commit: include the uncommitted work tree")
+      .option(
+        '--series <name>',
+        'name the review series: rounds with this name in the repository number and carry earlier items together, whatever the head (default: the branch; a sha, tag or detached HEAD is keyed by its commit, so a later commit starts a new series)',
+      )
       .option('--fact <text>', 'an established fact the seats must not refile (repeatable)', collect, [])
       .option('--question <text>', 'a question for the seats, at most 3 (repeatable)', collect, [])
       .option('--json', 'print the round as JSON instead of the bare id'),
-  ).action(async (range: string | undefined, opts: StartOpts & { uncommitted?: boolean }) => {
-    await roundStart(roundIo, pathsOf(opts), { mode: 'diff', target: range, context: [], facts: opts.fact, questions: opts.question, json: opts.json === true, uncommitted: opts.uncommitted === true });
+  ).action(async (range: string | undefined, opts: StartOpts & { uncommitted?: boolean; series?: string }) => {
+    await roundStart(roundIo, pathsOf(opts), {
+      mode: 'diff',
+      target: range,
+      context: [],
+      facts: opts.fact,
+      questions: opts.question,
+      json: opts.json === true,
+      uncommitted: opts.uncommitted === true,
+      series: opts.series,
+    });
   });
 
   const roundId = (value: string): number => {

@@ -10,7 +10,8 @@ import { decodeName, splitNul } from '../root/names.js';
 /*
  * Resolving what a `plan` or `diff` round reviews (plan 9.1, 9.2): the repository, the head (a snapshot commit when
  * the work is uncommitted), the base, and the target's store key (plan 3.6: plan targets by repo + path, diff
- * targets by repo + branch). Every git call runs through the engine's isolated runner (no hooks, no user config).
+ * targets by repo + branch, head commit or `--series` name). Every git call runs through the engine's isolated
+ * runner (no hooks, no user config), except the one `git config` read of the user's excludes file.
  */
 
 export class TargetError extends Error {
@@ -36,13 +37,13 @@ export interface ResolvedTarget {
   snapshot: string | null;
   /** diff only: the base side; the root holds the merge-base of base and head. */
   base: string | null;
-  /** diff only: the branch the target is keyed by. */
+  /** diff only: the series the target is keyed by (`targets.branch`): a branch name, `series:<name>` or `commit:<sha>`. */
   branch: string | null;
   /** plan only: the plan's path inside the repository. */
   planPath: string | null;
-  /** What the brief names as the target: the plan path, or `<repo>@<branch>`. */
+  /** What the brief names as the target: the plan path, or `<repo>@<series>`. */
   label: string;
-  /** The finding-id namespace (plan 7.3): `plan:<repoKey>:<path>` or `diff:<repoKey>:<branch>`. */
+  /** The finding-id namespace (plan 7.3): `plan:<repoKey>:<path>` or `diff:<repoKey>:<series key>`. */
   targetKey: string;
   context: ContextSource[];
   /** Things the user must hear before the round runs: for example untracked files left out of the snapshot. */
@@ -318,15 +319,38 @@ function refExists(top: string, ref: string): boolean {
   return git(['show-ref', '--verify', '--quiet', ref], top, undefined, [0, 1, 128]).status === 0;
 }
 
+/** A `--series` name: 1-100 letters, digits, `.`, `_`, `/` or `-`, starting with a letter or digit. */
+export const SERIES_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/;
+
+export interface DiffSeriesKey {
+  /** What `targets.branch` stores: a branch name, `series:<name>`, or `commit:<sha>`. Never holds whitespace. */
+  key: string;
+  /** The key as the brief and `round show` name it (a commit key shortened to 12 hex). */
+  display: string;
+  /** Keyed by a commit: a later commit starts a new series (`round start` warns). */
+  byCommit: boolean;
+}
+
 /**
- * The branch a diff target is keyed by (fold row 10), never the ref string `HEAD` or a raw sha: `HEAD` (or no range)
- * is the checked-out branch; a local or remote-tracking branch name is itself; anything else (a sha, a tag, a
- * detached HEAD) is keyed by the resolved base, so successive rounds on it converge.
+ * The series a diff target is keyed by (fold row 10, P5 round 2 row 1). `--series <name>` keys it by that name within
+ * the repository, for branch and non-branch heads alike. Else `HEAD` (or no range) is the checked-out branch, and a
+ * local or remote-tracking branch name is itself. Anything else (a sha, a tag, a detached HEAD) is keyed by its
+ * resolved head commit, the commit any uncommitted work sits on: the same work re-run is the same target, two
+ * unrelated heads never share one, and a later commit starts a new series. The forms cannot collide: a git ref
+ * name never holds `:`, and a series name cannot.
  */
-export function diffBranchKey(top: string, headToken: string | null, base: string): string {
-  if (headToken === null || headToken === 'HEAD' || headToken === '@') return currentBranch(top) ?? `detached-from-${base.slice(0, 12)}`;
-  if (refExists(top, `refs/heads/${headToken}`) || refExists(top, `refs/remotes/${headToken}`)) return headToken;
-  return `from-${base.slice(0, 12)}`;
+export function diffSeriesKey(top: string, headToken: string | null, headCommit: string, series?: string): DiffSeriesKey {
+  if (series !== undefined) {
+    if (!SERIES_NAME.test(series)) {
+      throw new TargetError(`--series "${series}" must be 1-100 characters: letters, digits, ".", "_", "/" or "-", starting with a letter or digit`);
+    }
+    return { key: `series:${series}`, display: `series:${series}`, byCommit: false };
+  }
+  let branch: string | null = null;
+  if (headToken === null || headToken === 'HEAD' || headToken === '@') branch = currentBranch(top);
+  else if (refExists(top, `refs/heads/${headToken}`) || refExists(top, `refs/remotes/${headToken}`)) branch = headToken;
+  if (branch !== null) return { key: branch, display: branch, byCommit: false };
+  return { key: `commit:${headCommit}`, display: `commit:${headCommit.slice(0, 12)}`, byCommit: true };
 }
 
 export interface DiffOptions {
@@ -336,13 +360,15 @@ export interface DiffOptions {
    * the checked-out commit. Without a range, uncommitted work is always included.
    */
   uncommitted?: boolean | undefined;
+  /** `--series <name>`: key the target by this name within the repository, whatever the head (round 2 row 1). */
+  series?: string | undefined;
 }
 
 /**
  * `diff [<base>..<head>]` (plan 9.2). Default: the merge-base with the default branch .. HEAD, with uncommitted work
  * (tracked changes and untracked, non-ignored files) snapshotted to a commit object. An explicit range reviews the
  * committed head, and includes uncommitted work only with `uncommitted` (the warnings say which). The target is
- * keyed by `diffBranchKey`.
+ * keyed by `diffSeriesKey`; a target keyed by a commit comes with a warning that a later commit starts a new series.
  */
 export function resolveDiffTarget(cwd: string, range?: string, options: DiffOptions = {}): ResolvedTarget {
   const top = repoTopOf(cwd);
@@ -367,6 +393,10 @@ export function resolveDiffTarget(cwd: string, range?: string, options: DiffOpti
     include = options.uncommitted === true;
     if (include && headCommit !== checkedOut) throw new TargetError(`--uncommitted needs the range's head to be the checked-out commit ${checkedOut.slice(0, 7)}; ${to} is ${headCommit.slice(0, 7)}`);
   }
+  // Keyed before the snapshot, so a bad --series fails before any work.
+  const series = diffSeriesKey(top, headToken, headCommit, options.series);
+  const branch = series.key;
+  if (/\s/.test(branch)) throw new TargetError(`branch "${branch}" holds whitespace`);
   const warnings: string[] = [];
   let snap: SnapshotTree = { tree: null, skipped: [], warnings: [] };
   if (headCommit === checkedOut) {
@@ -378,8 +408,11 @@ export function resolveDiffTarget(cwd: string, range?: string, options: DiffOpti
   }
   const tree = include ? snap.tree : null;
   const head = tree === null ? headCommit : commitSnapshot(top, tree, headCommit);
-  const branch = diffBranchKey(top, headToken, base);
-  if (/\s/.test(branch)) throw new TargetError(`branch "${branch}" holds whitespace`);
+  if (series.byCommit) {
+    warnings.push(
+      `this target is keyed by the commit ${headCommit.slice(0, 12)} (a sha, a tag or a detached HEAD, not a branch): a later commit starts a new series at round 1, with no earlier items. Give --series <name>, or review a branch, to keep one series across commits`,
+    );
+  }
   return {
     mode: 'diff',
     repoTop: top,
@@ -392,7 +425,7 @@ export function resolveDiffTarget(cwd: string, range?: string, options: DiffOpti
     base,
     branch,
     planPath: null,
-    label: `${repoName}@${branch}`,
+    label: `${repoName}@${series.display}`,
     targetKey: `diff:${repoKey}:${branch}`,
     context: [],
     warnings,

@@ -924,19 +924,6 @@ describe('fold rows 10-11: targets, uncommitted follow-ups, explicit ranges and 
     expect(() => resolveDiffTarget(repo, undefined, { uncommitted: true })).toThrow(/explicit/);
   });
 
-  it('keys diff targets by branch, never by the ref string HEAD or a raw sha', () => {
-    const { repo } = fixtureRepo();
-    const byDefault = resolveDiffTarget(repo);
-    expect(resolveDiffTarget(repo, 'main..HEAD').targetKey).toBe(byDefault.targetKey);
-    expect(byDefault.targetKey.endsWith(':feature')).toBe(true);
-    const sha = git(repo, ['rev-parse', 'feature']);
-    const base = git(repo, ['rev-parse', 'main']);
-    const raw = resolveDiffTarget(repo, `main..${sha}`);
-    expect(raw.branch).toBe(`from-${base.slice(0, 12)}`);
-    git(repo, ['checkout', '--quiet', '--detach']);
-    expect(resolveDiffTarget(repo).branch).toBe(`detached-from-${base.slice(0, 12)}`);
-  });
-
   it('folds a plan round on the plan, and an unrelated commit is not a new plan revision', async () => {
     const h = harness();
     const { repo } = fixtureRepo();
@@ -953,6 +940,97 @@ describe('fold rows 10-11: targets, uncommitted follow-ups, explicit ranges and 
     expect(fold).not.toContain('unrelated');
     expect(fold).not.toContain('more.py');
   }, 120_000);
+});
+
+describe('round 2 row 1: a non-branch diff head is keyed by its commit, and --series names a series', () => {
+  const adjudicated = async (h: Harness, t: ReturnType<typeof resolveDiffTarget>) => {
+    const r = await runRound(h, t);
+    const res = adjudicate(h.store, h.layout, r.prepared.inputs.roundId, adjudicationFor(h, r.prepared.inputs.roundId));
+    expect(res.outcome.ok, JSON.stringify(res.outcome)).toBe(true);
+    return r;
+  };
+
+  it('keys HEAD, no range and a branch name by the branch, and a sha, a tag or a detached HEAD by its head commit, with a warning', () => {
+    const { repo } = fixtureRepo();
+    const byDefault = resolveDiffTarget(repo);
+    expect(resolveDiffTarget(repo, 'main..HEAD').targetKey).toBe(byDefault.targetKey);
+    expect(resolveDiffTarget(repo, 'main..feature').targetKey).toBe(byDefault.targetKey);
+    expect(byDefault.branch).toBe('feature');
+    expect(byDefault.label).toBe('widget@feature');
+    expect(byDefault.warnings.join('\n')).not.toContain('new series');
+    const sha = git(repo, ['rev-parse', 'feature']);
+    const raw = resolveDiffTarget(repo, `main..${sha}`);
+    expect(raw.branch).toBe(`commit:${sha}`);
+    expect(raw.targetKey.endsWith(`:commit:${sha}`)).toBe(true);
+    expect(raw.label).toBe(`widget@commit:${sha.slice(0, 12)}`);
+    expect(raw.warnings.join('\n')).toMatch(/keyed by the commit [0-9a-f]{12}.*a later commit starts a new series.*--series <name>, or review a branch/);
+    git(repo, ['tag', 'v1', 'feature']);
+    expect(resolveDiffTarget(repo, 'main..v1').targetKey).toBe(raw.targetKey);
+    expect(resolveDiffTarget(repo, 'main..HEAD~0').targetKey).toBe(raw.targetKey);
+    git(repo, ['checkout', '--quiet', '--detach']);
+    const detached = resolveDiffTarget(repo);
+    expect(detached.targetKey).toBe(raw.targetKey);
+    expect(detached.warnings.join('\n')).toContain('a later commit starts a new series');
+    // Uncommitted work on a detached head is keyed by the commit it sits on: more work stays one series.
+    writeFileSync(join(repo, 'calc', 'extra.py'), 'x = 1\n');
+    const work1 = resolveDiffTarget(repo);
+    expect(work1.snapshot).toContain('uncommitted work tree');
+    writeFileSync(join(repo, 'calc', 'extra2.py'), 'y = 2\n');
+    const work2 = resolveDiffTarget(repo);
+    expect(work2.head).not.toBe(work1.head);
+    expect([work1.targetKey, work2.targetKey]).toEqual([raw.targetKey, raw.targetKey]);
+  });
+
+  it('keeps two shas on one base tip apart (round 1 each), and the same sha re-run is the same target', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const sha1 = git(repo, ['rev-parse', 'feature']);
+    const r1 = await adjudicated(h, resolveDiffTarget(repo, `main..${sha1}`));
+    // Unrelated work off the same main tip.
+    git(repo, ['checkout', '--quiet', '-b', 'other', 'main']);
+    const sha2 = commitChange(repo, 'calc/other.py', 'z = 3\n', 'other work');
+    const r2 = await runRound(h, resolveDiffTarget(repo, `main..${sha2}`));
+    expect(r2.prepared.inputs.targetId).not.toBe(r1.prepared.inputs.targetId);
+    expect(r2.prepared.inputs).toMatchObject({ roundNo: 1, baseline: null, scope: 'full', earlierItems: [] });
+    const again = await runRound(h, resolveDiffTarget(repo, `main..${sha1}`));
+    expect(again.prepared.inputs).toMatchObject({ targetId: r1.prepared.inputs.targetId, roundNo: 1 });
+    expect(again.prepared.inputs.earlierItems.map((i) => i.origin)).toEqual(['owed']);
+  }, 120_000);
+
+  it('a --series series survives the base advancing: it keeps its numbering and its carried items', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const sha1 = git(repo, ['rev-parse', 'feature']);
+    const t1 = resolveDiffTarget(repo, `main..${sha1}`, { series: 'range-fix' });
+    expect(t1).toMatchObject({ branch: 'series:range-fix', label: 'widget@series:range-fix' });
+    expect(t1.warnings).toEqual([]);
+    const r1 = await adjudicated(h, t1);
+    // main moves on, and the work goes on in a new commit.
+    git(repo, ['checkout', '--quiet', 'main']);
+    commitChange(repo, 'docs/NOTES.md', 'notes\n', 'main moves on');
+    git(repo, ['checkout', '--quiet', 'feature']);
+    const sha2 = commitChange(repo, 'calc/rangesum.py', 'def range_sum(values, start, end):\n    return sum(values[start:end + 1])\n', 'calc: fix the bound');
+    const t2 = resolveDiffTarget(repo, `main..${sha2}`, { series: 'range-fix' });
+    expect(t2.base).not.toBe(t1.base);
+    const r2 = await runRound(h, t2);
+    const i2 = r2.prepared.inputs;
+    expect(i2).toMatchObject({ targetId: r1.prepared.inputs.targetId, roundNo: 2, scope: 'delta', baseline: sha1 });
+    const owedId = findingIdOf(i2.targetKey, 'widget/calc/rangesum.py', 'range_sum excludes the end index');
+    expect(i2.earlierItems.map((i) => i.id)).toEqual([owedId]);
+    expect(readFileSync(join(i2.root, 'FOLD.diff'), 'utf8')).toContain('return sum(values[start:end + 1])');
+    // The same series name on a branch head is the same target; without the name the sha is its own series.
+    expect(resolveDiffTarget(repo, 'main..feature', { series: 'range-fix' }).targetKey).toBe(i2.targetKey);
+    expect(resolveDiffTarget(repo, `main..${sha2}`).targetKey).not.toBe(i2.targetKey);
+    expect(resolveDiffTarget(repo, 'main..feature').targetKey).not.toBe(i2.targetKey);
+  }, 120_000);
+
+  it('refuses a series name that is not a plain name', () => {
+    const { repo } = fixtureRepo();
+    for (const bad of ['', 'two words', '-x', '.hidden', 'a:b', 'x'.repeat(101), 'line\nbreak']) {
+      expect(() => resolveDiffTarget(repo, 'main..feature', { series: bad }), JSON.stringify(bad)).toThrow(/--series/);
+    }
+    expect(resolveDiffTarget(repo, 'main..feature', { series: 'team/range_fix-2.1' }).branch).toBe('series:team/range_fix-2.1');
+  });
 });
 
 describe('fold rows 12-13: a clean root for every fallback and relaunch; one seat never orphans the others', () => {

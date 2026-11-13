@@ -39,6 +39,9 @@ Check the engine is installed: `sabotage-council --version`. If it is not on PAT
    ```
 
    Options: `--context <path|repo@ref>` (plan only, repeatable) adds other paths or repositories to the root;
+   `--series <name>` (diff only) names the review series, so rounds with that name number and carry earlier items
+   together whatever the head (by default a branch is its own series, and a sha, tag or detached HEAD is keyed by its
+   commit, so a later commit starts a new series: `round start` warns, and then suggest `--series` to the user);
    `--fact <text>` (repeatable) gives the seats an established fact they must not refile; `--question <text>` (at
    most 3) replaces the default questions. It prints `round_id`, `round_no`, `rule`, `scope` and the brief path, and
    returns at once: the legs run in a background worker.

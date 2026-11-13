@@ -73,7 +73,10 @@ sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, prin
   to HEAD, with uncommitted work snapshotted to a commit object (your index and branches are never touched; the
   ignore rules `git status` uses apply, including the excludes file the repository's own config names, and
   untracked files named like secrets, such as `.env*` or `*.pem`, are left out with a warning). An explicit range
-  reviews committed history; `--uncommitted` adds the work tree.
+  reviews committed history; `--uncommitted` adds the work tree. Rounds on one branch form one series: they number
+  together and carry earlier items. A sha, a tag or a detached HEAD has no branch, so its series is keyed by the
+  head commit, and a later commit starts a new series (`round start` warns). `--series <name>` names the series
+  instead, for any head: rounds with that name in the repository form one series, whatever the head or the base.
 - `round start` numbers the round from the store (a head counts once a council round on it, with two or more
   counted legs, is adjudicated; a plan round counts revisions of the plan, so an unrelated commit is not a new
   round), builds and seals the root, writes the brief, and starts a detached worker that runs the legs; it prints
