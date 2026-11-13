@@ -570,9 +570,16 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     } catch (error) {
       recheck = `the live re-check could not run: ${error instanceof Error ? error.message : String(error)}`;
     }
-    facts = { ...common, needsRuling: false, verdict: null, owed: 0, legsClear: false, council: false, adjudicatorApprove: false, userChangeRequest: cr !== null, identityRecheck: recheck };
+    // Row 14: on the user's own PR the author row matches first; its comment still carries "Ruling needed" when the
+    // round recorded one or the user's change request stands now (N10). Elsewhere the identity rows decide (N2).
+    const authorRuling = common.isAuthor && (round.needs_ruling === 1 || cr !== null);
+    const holds = cr !== null ? [`Your own change request (review ${cr.review.id}) stands (plan 3.8).`] : [];
+    facts = { ...common, needsRuling: authorRuling, verdict: null, owed: 0, legsClear: false, council: false, adjudicatorApprove: false, userChangeRequest: cr !== null, identityRecheck: recheck };
     decision = decideEvent(facts);
-    body = renderBody({ kind: 'identity', marker, decision, number: prep.match.number, commitId: prep.match.commitId, reviewId: prep.match.reviewId, ci }, { nonce: null, participants });
+    body = renderBody(
+      { kind: 'identity', marker, decision, number: prep.match.number, commitId: prep.match.commitId, reviewId: prep.match.reviewId, ci, recheck, holds },
+      { nonce: null, participants },
+    );
     owed = null;
     holdsDismissal = cr !== null || unadjudicated.length > 0;
   } else {
@@ -617,7 +624,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   result.row = decision.row;
   result.body = body;
   result.bodySha256 = sha256(body);
-  result.problems.push(...validateBody(body, { marker, rules: { nonce: round.nonce, participants }, owed }));
+  result.problems.push(...validateBody(body, { marker, rules: { nonce: round.nonce, participants }, owed, ruling: decision.ruling }));
   if (result.problems.length > 0) {
     insertEvent(db, o.mode === 'post' ? 'post-refused' : 'post-dry-run', round.id, { outcome: 'refused', problems: result.problems, event: decision.event, row: decision.row });
     return result;

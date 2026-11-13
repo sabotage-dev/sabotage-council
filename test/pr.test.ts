@@ -413,6 +413,9 @@ describe('pr rounds: holds, asks and the post step', () => {
     const retargeted = post(w, r.roundId, 'dry-run');
     expect([retargeted.event, retargeted.row]).toEqual(['COMMENT', 4]);
     expect(retargeted.body).toContain('the live re-check failed: the base is now release, not the default branch main');
+    // Row 14: the body no longer claims the approval stands or the trees match.
+    expect(retargeted.body).not.toContain('still stands');
+    expect(retargeted.body).toContain("When this round was prepared, this head's tree matched");
 
     // Row 1: an approval the login later replaced by a change request on PR 9 no longer stands, so it holds the
     // identity post, and a new preparation does not find it either.
@@ -433,6 +436,25 @@ describe('pr rounds: holds, asks and the post step', () => {
     const lateHeld = post(w, r.roundId, 'dry-run');
     expect([lateHeld.event, lateHeld.row]).toEqual(['COMMENT', 4]);
     expect(lateHeld.body).toContain('a change request by alice (review 9201) came after this round was prepared');
+  }, 60_000);
+
+  it("row 14: on the user's own PR an identity post is the author's comment, and keeps the ruling its change request needs", async () => {
+    const w = await world((r, src) => {
+      reopen(r);
+      r['GET search/issues'] = { json: { items: [{ number: 9 }] } };
+      r['GET repos/sabotage-dev/sabotage-council/pulls/9/reviews'] = { json: [{ id: 9101, user: { login: 'repo-owner' }, state: 'APPROVED', commit_id: src.shas['C6'], submitted_at: 'x', body: 'ok' }] };
+      const tree = git(src.repo, ['rev-parse', `${src.shas['C7']!}^{tree}`]);
+      r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C6']!}`] = { json: { tree: { sha: tree } } };
+      r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C7']!}`] = { json: { tree: { sha: tree } } };
+      // The user's own change request on an earlier head: no seat checks its asks on the identity path (N2).
+      jsonList(r, `GET ${API_PULL}/reviews`).push({ id: 8101, user: { login: 'repo-owner' }, state: 'CHANGES_REQUESTED', commit_id: src.shas['C6'], submitted_at: '2026-11-12T19:00:00Z', body: 'Not yet.' });
+    });
+    const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
+    if (r.kind !== 'identity') throw new Error('expected the identity path');
+    expect(getRound(w.h.store.db, r.roundId)).toMatchObject({ needs_ruling: 1 });
+    const p = post(w, r.roundId, 'dry-run');
+    expect([p.outcome, p.event, p.row]).toEqual(['rendered', 'COMMENT', 1]);
+    expect(p.body).toContain('## Ruling needed\n\n- Your own change request (review 8101) stands (plan 3.8).');
   }, 60_000);
 
   it('row 10: refuses to prepare or post when gh is logged in as another account than github.login', async () => {

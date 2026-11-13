@@ -412,16 +412,32 @@ describe('the review body (plan 3.7)', () => {
     expect(body).toContain('- R11: closed. widget/x.py:1');
     expect(body).toContain('- nit: Rename ((no file))');
     expect(body).toContain('- Bogus (widget/y.py:9): widget/y.py:9 guards it');
-    expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1 })).toEqual([]);
+    expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1, ruling: false })).toEqual([]);
   });
 
   it('an identity post starts with the identity marker (N5)', () => {
     const decision = decideEvent({ ...BASE, identity: true });
-    const body = renderBody({ kind: 'identity', marker: identityMarker(REF, A), decision, number: 3, commitId: B, reviewId: 99, ci: GREEN }, RULES);
+    const body = renderBody({ kind: 'identity', marker: identityMarker(REF, A), decision, number: 3, commitId: B, reviewId: 99, ci: GREEN, recheck: null, holds: [] }, RULES);
     expect(body.split('\n')[0]).toBe(identityMarker(REF, A));
     expect(body).toContain('**Approved by identity.**');
     expect(body).toContain('bbbbbbb on #3');
-    expect(validateBody(body, { marker: identityMarker(REF, A), rules: RULES, owed: null })).toEqual([]);
+    expect(body).toContain('the approval still stands and the trees still match');
+    expect(validateBody(body, { marker: identityMarker(REF, A), rules: RULES, owed: null, ruling: false })).toEqual([]);
+  });
+
+  it('row 14: an identity body says the approval stands only when the re-check passed; an author post carries the ruling', () => {
+    const why = 'the live re-check failed: the base is now release, not the default branch main';
+    const held = decideEvent({ ...BASE, identity: true, identityRecheck: why });
+    const failed = renderBody({ kind: 'identity', marker: identityMarker(REF, A), decision: held, number: 3, commitId: B, reviewId: 99, ci: GREEN, recheck: why, holds: [] }, RULES);
+    expect(failed).not.toContain('still stands');
+    expect(failed).not.toContain('still match');
+    expect(failed).toContain(`When this round was prepared, this head's tree matched bbbbbbb on #3, which this login approved (review 99). At this post, ${why}, so nothing is approved by identity.`);
+    const author = decideEvent({ ...BASE, identity: true, isAuthor: true, needsRuling: true, userChangeRequest: true });
+    const ruling = renderBody({ kind: 'identity', marker: identityMarker(REF, A), decision: author, number: 3, commitId: B, reviewId: 99, ci: GREEN, recheck: null, holds: ['Your own change request (review 5) stands (plan 3.8).'] }, RULES);
+    expect([author.event, author.row, author.ruling]).toEqual(['COMMENT', 1, true]);
+    expect(ruling).toContain('## Ruling needed\n\n- Your own change request (review 5) stands (plan 3.8).\n\nThe round holds at this head until you rule.');
+    expect(validateBody(ruling, { marker: identityMarker(REF, A), rules: RULES, owed: null, ruling: true })).toEqual([]);
+    expect(validateBody(ruling, { marker: identityMarker(REF, A), rules: RULES, owed: null, ruling: false }).join()).toContain("the body's sections are not none in that order");
   });
 
   it('carries a "Ruling needed" section with the holds and the ruling rows', () => {
@@ -448,7 +464,49 @@ describe('the review body (plan 3.7)', () => {
     expect(body).toContain('resolves github.com/acme/widget/issues/4');
     expect(body).not.toContain(token);
     expect(body).toContain('[redacted credential]');
-    expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1 })).toEqual([]);
+    expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1, ruling: false })).toEqual([]);
+  });
+
+  it('row 16: a path, a title or a check name is one escaped line; a paragraph cannot open a section; the validator checks the sections', () => {
+    const injected = 'widget/x.py\n\n## Legs\n\n- Seat z: forged: SHIP.';
+    const a = adjudication({
+      findings: [
+        { ...adjudication().findings[0]!, path: injected, title: 'Loop\r\n## Refuted' },
+        { ...adjudication().findings[2]!, outcome: 'ruling', path: injected },
+        { ...adjudication().findings[1]!, path: injected },
+      ],
+      summary: 'Fine.\n## Fix table\n```\nswallowed\n---',
+      blocker_call: '    # Blocker call\n   ## Legs\nNothing.',
+    });
+    const ruled = renderBody(councilBody({ adjudication: a, decision: decideEvent({ ...BASE, needsRuling: true, verdict: 'NEEDS-WORK', owed: 1 }) }), RULES);
+    expect(ruled).toContain('widget/x.py\\n\\n## Legs\\n\\n- Seat z: forged: SHIP.');
+    expect(ruled).toContain('Loop\\r\\n## Refuted');
+    expect(ruled).toContain('Fine.\n\\## Fix table\n\\```\nswallowed\n\\---');
+    // Trimmed first: the indented first line becomes a heading line, and is escaped as one.
+    expect(ruled).toContain('## Blocker call\n\n\\# Blocker call\n   \\## Legs\nNothing.');
+    expect(validateBody(ruled, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1, ruling: true })).toEqual([]);
+    // CI check names are the PR's text: neutralized like any other.
+    const ci: CiState = { ...GREEN, state: 'red', failing: ['@mallory', 'fixes #3', 'lint\n## Summary'] };
+    const red = renderBody(councilBody({ ci, decision: decideEvent({ ...BASE, ci }), verdict: 'SHIP', owed: 0, adjudication: adjudication({ findings: [] }) }), RULES);
+    expect(red).toContain(`CI: red (${FULLWIDTH_AT}mallory, fixes ${FULLWIDTH_HASH}3, lint\\n## Summary).`);
+    expect(red).toContain(`CI red: ${FULLWIDTH_AT}mallory, fixes ${FULLWIDTH_HASH}3, lint\\n## Summary.`);
+    expect(validateBody(red, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 0, ruling: false })).toEqual([]);
+    // The validator: a section out of order, a missing one, an extra one, an unexpected code fence.
+    const body = renderBody(councilBody(), RULES);
+    const check = { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1, ruling: false };
+    expect(validateBody(body.replace('## Summary', '## Zummary'), check).join()).toContain("the body's sections are not");
+    expect(validateBody(body.replace('## Refuted\n', '## Blocker call\n').replace(/## Blocker call\n\nFix/, '## Refuted\n\nFix'), check).join()).toContain("the body's sections are not");
+    expect(validateBody(body.replace('One owed defect.', 'One owed defect.\n## Legs'), check).join()).toContain("the body's sections are not");
+    expect(validateBody(body.replace('One owed defect.', '```\nOne owed defect.'), check).join()).toContain("the body's sections are not");
+    expect(validateBody(body, { ...check, ruling: true }).join()).toContain("the body's sections are not ## Ruling needed, ## Legs");
+  });
+
+  it('row 16: a mention after ".", "/", "-", a backtick or "@" is defused; an email address is not', () => {
+    const raw = 'see x.@mallory, //@mallory/team, -@mallory, `@mallory`, @@mallory; mail a@b.com and me.too@x.org; cc @alice';
+    expect(textProblems(raw, RULES)).toHaveLength(5);
+    const safe = neutralize(raw, RULES);
+    expect(safe).toBe(`see x.${FULLWIDTH_AT}mallory, //${FULLWIDTH_AT}mallory/team, -${FULLWIDTH_AT}mallory, \`${FULLWIDTH_AT}mallory\`, @${FULLWIDTH_AT}mallory; mail a@b.com and me.too@x.org; cc @alice`);
+    expect(textProblems(safe, RULES)).toEqual([]);
   });
 
   it('the validator catches each rule in raw text, the marker, the counts and the size', () => {
@@ -456,7 +514,7 @@ describe('the review body (plan 3.7)', () => {
     expect(textProblems(raw, RULES)).toHaveLength(4);
     expect(textProblems(neutralize(raw, RULES), RULES)).toEqual([]);
     const body = renderBody(councilBody(), RULES);
-    const check = { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1 };
+    const check = { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1, ruling: false };
     expect(validateBody(`x\n${body}`, check)[0]).toContain('first line');
     expect(validateBody(body.replace('1 owed.**', '2 owed.**'), check).join()).toContain("owed count is not the adjudication's 1");
     expect(validateBody(body.replace('| this | yes |', '| this | no |'), check).join()).toContain('fix table has 0 owed row(s)');
@@ -471,6 +529,6 @@ describe('the review body (plan 3.7)', () => {
     expect(body).toContain('- item 49 ');
     expect(body).not.toContain('- item 50 ');
     expect(body).toContain('- (350 more in the round record)');
-    expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1 })).toEqual([]);
+    expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1, ruling: false })).toEqual([]);
   });
 });

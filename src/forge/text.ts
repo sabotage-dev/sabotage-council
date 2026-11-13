@@ -20,8 +20,12 @@ export const CREDENTIAL_PATTERNS: readonly RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
 ];
 
-/** A GitHub mention: `@login` or `@org/team`, not inside a word or an email address. */
-export const MENTION = /(^|[^A-Za-z0-9_`./@-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?(?:\/[A-Za-z0-9_.-]+)?)/g;
+/**
+ * A GitHub mention: `@login` or `@org/team`, anywhere but right after a word character (so `a@b.com` is spared).
+ * GitHub pings after `.`, `/`, `-`, a backtick or another `@` as well, so those are mentions here too (P6 round 1
+ * row 16); defusing one GitHub would not have pinged costs nothing.
+ */
+export const MENTION = /(^|[^A-Za-z0-9_])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?(?:\/[A-Za-z0-9_.-]+)?)/g;
 
 const CLOSE_WORDS = '(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)';
 /** A closing keyword before an issue reference: `fixes #12`, `closes o/r#12`, `resolves https://github.com/o/r/issues/12`. */
@@ -40,6 +44,33 @@ export interface TextRules {
   nonce: string | null;
   /** Lower-case logins that may be mentioned: the PR's participants. */
   participants: ReadonlySet<string>;
+}
+
+/**
+ * One line of posted data (P6 round 1 row 16): line breaks and every other control or line-separator character are
+ * shown as escapes (`\n`, `\r`, `\t`, `\u{1b}`), so a file path, a title or a check name never starts a new line,
+ * a section or a table row of the body.
+ */
+export function oneLine(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) =>
+    c === '\n' ? '\\n' : c === '\r' ? '\\r' : c === '\t' ? '\\t' : `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`,
+  );
+}
+
+/** A line that would open a heading, a setext underline, a thematic break or a code fence in Markdown. */
+export const BLOCK_START = /^ {0,3}(?:#{1,6}(?=[ \t]|$)|=+[ \t]*$|-+[ \t]*$|`{3,}|~{3,})/;
+
+/**
+ * A paragraph of posted data (the summary, the blocker call): it keeps its line breaks, but a line that would open a
+ * heading, an underline or a code fence gets a backslash before its first mark, so it shows as text and never
+ * starts or swallows a section of the body (row 16).
+ */
+export function paragraph(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => oneLine(BLOCK_START.test(line) ? line.replace(/^( {0,3})/, '$1\\') : line))
+    .join('\n');
 }
 
 /** Neutralizes one string for a posted body. Mentions of participants stay; everything else is defused. */
