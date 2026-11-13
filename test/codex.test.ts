@@ -993,6 +993,13 @@ describe('codex preflight (4.3), through a fake CLI', () => {
     expect(p.checks.find((c) => c.status === 'fail')?.name).toBe(check);
   });
 
+  it('reports what the render loads from the root, for doctor --deep', async () => {
+    const p = await pre({ promptInput: join(fixtureDir('codex', 'prompt-input'), 'repo-agents-md.json') }).run;
+    expect(p.data['loaded']).toEqual(['repository AGENTS.md instructions']);
+    const clean = await pre({}).run;
+    expect(clean.data['loaded']).toBeUndefined();
+  });
+
   it('refuses a seat with no effort', async () => {
     const p = await pre({}, { backend: 'codex', model: 'gpt-6.1-sol' }).run;
     expect(p).toMatchObject({ ok: false, failureClass: 'setup' });

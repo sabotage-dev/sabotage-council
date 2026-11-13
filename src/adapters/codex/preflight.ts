@@ -259,7 +259,9 @@ export async function codexPreflight(o: Occupant, options: CodexPreflightOptions
   if (verdict.repoInstructions) problems.push('repository AGENTS.md instructions load from the root');
   if (problems.length > 0) {
     fail(checks, 'isolation', problems.join('; '));
-    return result(false, 'setup', `the leg's config does not isolate: ${problems.join('; ')}`, cliVersion);
+    // What the render shows loading from the root (for `doctor --deep`).
+    const loaded = [...(verdict.repoInstructions ? ['repository AGENTS.md instructions'] : []), ...verdict.mcpTools.map((t) => `MCP tool ${t}`)];
+    return result(false, 'setup', `the leg's config does not isolate: ${problems.join('; ')}`, cliVersion, { loaded });
   }
   checks.push({
     name: 'isolation',

@@ -40,7 +40,7 @@ describe('doctor', () => {
     expect(lines).toEqual([
       'ok    node v22.13.0 satisfies >=22.13',
       `ok    config ${configPath} loaded`,
-      'note  config-wide model and family checks wait for every backend adapter; codex, claude, antigravity and kiro seats are preflighted below',
+      'note  config-wide model and family checks are not run here; each seat is preflighted below',
       `ok    store ${dbPath} at schema version 1, applied migration(s) 1`,
       'seats:',
       '  a  codex / gpt-6.1-sol / high  (fallback kiro / gpt-5.6-sol / high on usage_limit, auth)',
