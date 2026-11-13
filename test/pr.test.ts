@@ -898,3 +898,93 @@ describe('pr rounds: post-step safety (P6 round 1)', () => {
     expect(council.guards[0]).toMatchObject({ status: 'done', outcome: 'kept: no review landed meanwhile and the head held' });
   }, 120_000);
 });
+
+const crash = (): never => {
+  throw new Error('crashed after the POST');
+};
+const NEEDS_WORK: AdjOptions = { outcome: 'owed', verdict: 'NEEDS-WORK', approve: false };
+const ourReview = (id: number, state: string, commit: string, body: string): Json => ({ id, user: { login: 'repo-owner' }, state, commit_id: commit, submitted_at: '2026-11-13T12:00:00Z', body });
+
+describe('pr rounds: post-step safety (P6 round 2)', () => {
+  it('row 1: a crash after the POST, then a push: the next post adopts the approval, withdraws it and records the round; a close is reconciled too', async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    post(w, id, 'dry-run');
+    expect(() => post(w, id, 'post', { afterPost: crash })).toThrow('crashed after the POST');
+    const sent = (postsSent(w)[0]!.body as { body: string }).body;
+    // GitHub holds the approval on D, and the author pushed E since: the moved head must not hide it.
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    jsonList(routes, `GET ${API_PULL}/reviews`).push(ourReview(990001, 'APPROVED', w.src.shas['D']!, sent));
+    const e = pushCommit(w.src, 'E', { 'src/step9.py': 'x = 9\n' }, w.src.shas['D']);
+    moveHead(routes, e);
+    routes[DISMISS_OURS] = { json: {} };
+    w.gh.setRoutes(routes);
+    const adopted = post(w, id, 'post');
+    expect(adopted).toMatchObject({ outcome: 'already-posted', reviewId: 990001, event: 'APPROVE' });
+    expect(adopted.guards).toEqual([{ kind: 'approval-race', reviewId: null, status: 'done', attempts: 1, outcome: `withdrawn: the head moved to ${e.slice(0, 7)} while the approval was posted` }]);
+    expect(writes(w).map((q) => `${q.method} ${q.path}`)).toEqual([`POST ${API_PULL}/reviews`, DISMISS_OURS]);
+    expect(getRound(w.h.store.db, id)).toMatchObject({ status: 'adjudicated', event_posted: 'APPROVE', review_id: 990001 });
+
+    // The same crash, then the PR is closed: the approval is still adopted and its guard still runs.
+    const c = await world(approvable);
+    const closed = await councilRound(c, { dryRun: false }, APPROVE);
+    post(c, closed.id, 'dry-run');
+    expect(() => post(c, closed.id, 'post', { afterPost: crash })).toThrow('crashed after the POST');
+    const croutes = pr2Routes(c.src.shas);
+    approvable(croutes, c.src);
+    Object.assign(json(croutes, `GET ${API_PULL}`), { state: 'closed' });
+    jsonList(croutes, `GET ${API_PULL}/reviews`).push(ourReview(990001, 'APPROVED', c.src.shas['D']!, (postsSent(c)[0]!.body as { body: string }).body));
+    c.gh.setRoutes(croutes);
+    const kept = post(c, closed.id, 'post');
+    expect(kept).toMatchObject({ outcome: 'already-posted', reviewId: 990001, event: 'APPROVE' });
+    expect(kept.guards).toEqual([expect.objectContaining({ kind: 'approval-race', status: 'done', outcome: 'kept: no review landed meanwhile and the head held' })]);
+    expect(getRound(c.h.store.db, closed.id)).toMatchObject({ event_posted: 'APPROVE', review_id: 990001 });
+    expect(postsSent(c)).toHaveLength(1);
+  }, 120_000);
+
+  it('row 1: a crash after the POST of a review GitHub bound to another commit: the next post adopts it and withdraws it, with no second POST', async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, NEEDS_WORK);
+    post(w, id, 'dry-run');
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990001, login: 'repo-owner', commitId: w.src.shas['C7']! } };
+    w.gh.setRoutes(routes);
+    expect(() => post(w, id, 'post', { afterPost: crash })).toThrow('crashed after the POST');
+    expect(getRound(w.h.store.db, id)).toMatchObject({ event_posted: null, review_id: null });
+    jsonList(routes, `GET ${API_PULL}/reviews`).push(ourReview(990001, 'CHANGES_REQUESTED', w.src.shas['C7']!, (postsSent(w)[0]!.body as { body: string }).body));
+    routes[DISMISS_OURS] = { json: {} };
+    w.gh.setRoutes(routes);
+    const adopted = post(w, id, 'post');
+    expect(adopted).toMatchObject({ outcome: 'already-posted', reviewId: 990001, event: 'REQUEST_CHANGES' });
+    expect(adopted.problems.join()).toContain(`bound to ${w.src.shas['C7']!.slice(0, 7)}, not the reviewed head`);
+    expect(adopted.guards).toEqual([{ kind: 'withdraw-off-head', reviewId: 990001, status: 'done', attempts: 1, outcome: 'withdrawn: bound to another commit than the reviewed head' }]);
+    expect(writes(w).map((q) => `${q.method} ${q.path}`)).toEqual([`POST ${API_PULL}/reviews`, DISMISS_OURS]);
+    expect(getRound(w.h.store.db, id)).toMatchObject({ event_posted: 'REQUEST_CHANGES', review_id: 990001, posted_commit_id: w.src.shas['C7'] });
+  }, 60_000);
+
+  it('row 1: the posted state and the off-head withdrawal are one transaction: a crash between them records neither, and the next post adopts and withdraws', async () => {
+    const w = await world(approvable);
+    const { id } = await councilRound(w, { dryRun: false }, NEEDS_WORK);
+    post(w, id, 'dry-run');
+    const routes = pr2Routes(w.src.shas);
+    approvable(routes, w.src);
+    routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990001, login: 'repo-owner', commitId: w.src.shas['C7']! } };
+    w.gh.setRoutes(routes);
+    // The store fails right when the withdrawal is recorded: a crash between the posted state and the guard.
+    w.h.store.db.exec("CREATE TRIGGER crash_at_guard BEFORE INSERT ON post_guards WHEN NEW.kind = 'withdraw-off-head' BEGIN SELECT RAISE(ABORT, 'crashed at the guard'); END");
+    expect(() => post(w, id, 'post')).toThrow(/crashed at the guard/);
+    w.h.store.db.exec('DROP TRIGGER crash_at_guard');
+    expect(getRound(w.h.store.db, id)).toMatchObject({ event_posted: null, review_id: null, posted_commit_id: null });
+    expect(getEvents(w.h.store.db, id).map((x) => x.kind)).not.toContain('posted');
+    jsonList(routes, `GET ${API_PULL}/reviews`).push(ourReview(990001, 'CHANGES_REQUESTED', w.src.shas['C7']!, (postsSent(w)[0]!.body as { body: string }).body));
+    routes[DISMISS_OURS] = { json: {} };
+    w.gh.setRoutes(routes);
+    const adopted = post(w, id, 'post');
+    expect(adopted).toMatchObject({ outcome: 'already-posted', reviewId: 990001 });
+    expect(adopted.guards).toEqual([expect.objectContaining({ kind: 'withdraw-off-head', status: 'done', outcome: 'withdrawn: bound to another commit than the reviewed head' })]);
+    expect(postsSent(w)).toHaveLength(1);
+    expect(writes(w).map((q) => q.method)).toEqual(['POST', 'PUT']);
+  }, 60_000);
+});

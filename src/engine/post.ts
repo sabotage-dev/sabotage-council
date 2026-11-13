@@ -35,6 +35,10 @@ import { getEvents, getLegs, getRound, insertEvent, now, sha256, type RoundRow }
  *   round has stored, and refuses when more than one matches (row 4);
  * - the head is read again right before the POST (row 5), and the approval race withdraws our approval for any
  *   review that landed meanwhile unless it is a counted council review (row 3).
+ *
+ * P6 round 2: an interrupted post is reconciled before a moved head or a closed PR ends the call, and a review GitHub
+ * bound to another commit is adopted too, with its withdrawal recorded in the same transaction as the posted state
+ * (row 1).
  */
 
 export interface PostOptions {
@@ -238,9 +242,10 @@ function bodyMatches(landed: string, intent: Intent): boolean {
 }
 
 /**
- * The reviews an interrupted post may adopt (plan 9.4, row 4): ours (github.login), submitted on this head, first
- * line this round's marker, with the body and the event the post meant to send (a dismissed review's event is
- * unknown, so only its body is matched), and stored on no other round of this store.
+ * The reviews an interrupted post may adopt (plan 9.4, row 4): ours (github.login), submitted, first line this
+ * round's marker, with the body and the event the post meant to send (a dismissed review's event is unknown, so only
+ * its body is matched), and stored on no other round of this store. Wherever GitHub bound it: one bound to another
+ * commit than the reviewed head is ours too, and is adopted with its withdrawal owed (P6 round 2 row 1).
  */
 function adoptable(db: DatabaseSync, round: RoundRow, pr: PrSnapshot, login: string, intent: Intent): Review[] {
   const storedElsewhere = db.prepare('SELECT 1 FROM rounds WHERE review_id = ? AND id <> ?');
@@ -248,7 +253,6 @@ function adoptable(db: DatabaseSync, round: RoundRow, pr: PrSnapshot, login: str
     (r) =>
       r.state !== 'PENDING' &&
       sameLogin(r.login, login) &&
-      r.commitId.toLowerCase() === round.head_sha.toLowerCase() &&
       firstLine(r.body) === round.marker &&
       (intent.event === undefined || r.state === 'DISMISSED' || EVENT_OF_STATE[r.state] === intent.event) &&
       bodyMatches(r.body, intent) &&
@@ -280,6 +284,36 @@ export function pendingGuards(db: DatabaseSync, roundId: number): number {
 
 function addGuard(db: DatabaseSync, roundId: number, kind: GuardKind, reviewId: number | null): void {
   db.prepare("INSERT INTO post_guards (round_id, kind, review_id, status, created_at) VALUES (?, ?, ?, 'pending', ?)").run(roundId, kind, reviewId, now());
+}
+
+/** A review of the round that is on GitHub: posted by this call, or adopted after an interrupted one. */
+interface Landed {
+  event: ReviewEvent | null;
+  reviewId: number;
+  commitId: string;
+  postedAt: string;
+  bodySha256: string;
+}
+
+/**
+ * Records a review of the round as posted, and the withdrawal it owes when GitHub bound it to another commit than
+ * the reviewed head, in one transaction (P6 round 2 row 1): a crash can no longer leave the round posted with that
+ * guard missing.
+ */
+function recordPosted(db: DatabaseSync, round: RoundRow, landed: Landed, kind: 'posted' | 'post-adopted', detail: Record<string, unknown>): void {
+  immediate(db, () => {
+    db.prepare('UPDATE rounds SET event_posted = ?, review_id = ?, posted_commit_id = ?, posted_at = ?, posted_body_sha256 = ? WHERE id = ?').run(
+      landed.event,
+      landed.reviewId,
+      landed.commitId,
+      landed.postedAt,
+      landed.bodySha256,
+      round.id,
+    );
+    insertEvent(db, kind, round.id, detail);
+    // Row 5: a review GitHub bound to another commit than the reviewed head is withdrawn, whatever its event.
+    if (landed.commitId.toLowerCase() !== round.head_sha.toLowerCase()) addGuard(db, round.id, 'withdraw-off-head', landed.reviewId);
+  });
 }
 
 /**
@@ -500,12 +534,10 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     insertEvent(db, o.mode === 'post' ? 'superseded' : 'post-dry-run', round.id, { outcome: 'superseded', head: headNow });
     return result;
   };
-  // Guard: head moved (plan 3.7). The round is superseded and nothing posts.
-  if (pr.headSha.toLowerCase() !== head.toLowerCase()) return superseded(pr.headSha);
-  if (pr.state === 'closed' && o.mode === 'post') return refuse(`${ref.owner}/${ref.repo}#${ref.number} is closed: nothing posts`);
-
   // Plan 9.4 resume, for a post this round began and did not record (a crash between the POST and the store): a
-  // review with this round's marker, body and event on this head, that no other round stored, means it landed.
+  // review with this round's marker, body and event, that no other round stored, means it landed. It is reconciled
+  // first, before a moved head or a closed PR can end the call, so the guards that post owes still run (P6 round 2
+  // row 1); one GitHub bound to another commit is adopted with its withdrawal owed.
   const intent = latestIntent(db, round.id);
   if (intent !== undefined) {
     const found = adoptable(db, round, pr, cfg.login, intent);
@@ -514,27 +546,33 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     }
     const landed = found[0];
     if (landed !== undefined) {
+      const offHead = landed.commitId.toLowerCase() !== head.toLowerCase();
       result.outcome = 'already-posted';
       result.reviewId = landed.id;
       result.event = intent.event ?? EVENT_OF_STATE[landed.state] ?? null;
-      result.problems.push(`review ${landed.id} with this round's marker and body is already on this head`);
+      result.problems.push(
+        offHead
+          ? `review ${landed.id} with this round's marker and body is already on GitHub, bound to ${landed.commitId.slice(0, 7)}, not the reviewed head`
+          : `review ${landed.id} with this round's marker and body is already on this head`,
+      );
       if (o.mode === 'post') {
-        db.prepare('UPDATE rounds SET review_id = ?, event_posted = ?, posted_commit_id = ?, posted_at = ?, posted_body_sha256 = ? WHERE id = ?').run(
-          landed.id,
-          result.event,
-          landed.commitId,
-          landed.submittedAt === '' ? now() : landed.submittedAt,
-          intent.body_sha256 ?? sha256(landed.body),
-          round.id,
+        recordPosted(
+          db,
+          round,
+          { event: result.event, reviewId: landed.id, commitId: landed.commitId, postedAt: landed.submittedAt === '' ? now() : landed.submittedAt, bodySha256: intent.body_sha256 ?? sha256(landed.body) },
+          'post-adopted',
+          { review_id: landed.id, state: landed.state, commit_id: landed.commitId },
         );
-        insertEvent(db, 'post-adopted', round.id, { review_id: landed.id, state: landed.state });
-        // Row 2: the guards recorded with the intent still run.
+        // Row 2: the guards recorded with the intent still run, and the withdrawal of an off-head review with them.
         runGuards(store, o.api, getRound(db, round.id) ?? round, ref, cfg);
       }
       result.guards = reports(db, round.id);
       return result;
     }
   }
+  // Guard: head moved (plan 3.7). The round is superseded and nothing posts.
+  if (pr.headSha.toLowerCase() !== head.toLowerCase()) return superseded(pr.headSha);
+  if (pr.state === 'closed' && o.mode === 'post') return refuse(`${ref.owner}/${ref.repo}#${ref.number} is closed: nothing posts`);
 
   const ci = readCi(o.api, ref, head, pr.baseRef, auto.ci_gate);
   result.ci = ci;
@@ -680,17 +718,13 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   const posted = normalizeReview(o.api.send('POST', `${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number)}/reviews`, { commit_id: head, event: decision.event, body }));
   o.hooks?.afterPost?.();
   writeFileSync(join(roundDir, 'REVIEW.md'), body);
-  db.prepare('UPDATE rounds SET event_posted = ?, review_id = ?, posted_commit_id = ?, posted_at = ?, posted_body_sha256 = ? WHERE id = ?').run(
-    decision.event,
-    posted.id,
-    posted.commitId,
-    now(),
-    result.bodySha256,
-    round.id,
+  recordPosted(
+    db,
+    round,
+    { event: decision.event, reviewId: posted.id, commitId: posted.commitId, postedAt: now(), bodySha256: result.bodySha256 ?? sha256(body) },
+    'posted',
+    { review_id: posted.id, event: decision.event, row: decision.row, commit_id: posted.commitId, state: posted.state },
   );
-  insertEvent(db, 'posted', round.id, { review_id: posted.id, event: decision.event, row: decision.row, commit_id: posted.commitId, state: posted.state });
-  // Row 5: a review GitHub bound to another commit than the reviewed head is withdrawn, whatever its event.
-  if (posted.commitId.toLowerCase() !== head.toLowerCase()) addGuard(db, round.id, 'withdraw-off-head', posted.id);
   result.outcome = 'posted';
   result.reviewId = posted.id;
   runGuards(store, o.api, getRound(db, round.id) ?? round, ref, cfg);
