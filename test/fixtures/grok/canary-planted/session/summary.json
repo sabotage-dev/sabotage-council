@@ -1,0 +1,24 @@
+{
+  "info": {
+    "id": "4d523b24-918f-4209-b458-3397c6679c50",
+    "cwd": "__SC_ROOT__"
+  },
+  "agent_id": "ag1.82391d22c63a42d58502e2c389a53474",
+  "attempt_id": "at1.c323268feb4c47f0b50a836056e803ca",
+  "session_summary": "Sandbox Tool Permissions Test File Shell Fetch",
+  "created_at": "2026-11-13T01:29:36.564419Z",
+  "updated_at": "2026-11-13T01:29:49.069856Z",
+  "num_messages": 15,
+  "num_chat_messages": 12,
+  "current_model_id": "grok-4.7",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "request_id": "72ee11fa-cec1-4361-bc88-6d2e74c347c6",
+  "grok_home": "__SC_GROK_HOME__",
+  "last_active_at": "2026-11-13T01:29:49.069856Z",
+  "generated_title": "Sandbox Tool Permissions Test File Shell Fetch",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "low"
+}

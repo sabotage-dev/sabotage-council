@@ -87,7 +87,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     try {
       for (const seat of seats) {
         const occupants: Array<{ label: string; o: Occupant }> = [
-          { label: seat.id, o: { backend: seat.backend, model: seat.model, effort: seat.effort, authHome: seat.auth_home } },
+          { label: seat.id, o: { backend: seat.backend, model: seat.model, effort: seat.effort, authHome: seat.auth_home, sandbox: seat.sandbox } },
         ];
         if (seat.fallback) {
           occupants.push({

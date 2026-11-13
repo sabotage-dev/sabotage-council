@@ -23,12 +23,14 @@ export function cleanScratchAfterAll(): void {
 export const ROOT_PLACEHOLDER = '__SC_ROOT__';
 export const SESSION_PLACEHOLDER = '__SC_SESSION__';
 
-export type FixtureKind = 'codex' | 'claude' | 'antigravity' | 'kiro';
+export type FixtureKind = 'codex' | 'claude' | 'antigravity' | 'kiro' | 'grok' | 'opencode' | 'cursor' | 'muse';
 
 /** ACP fixtures also carry the canary's outside dir, the temp parent of both, and the leg dir. */
 export const OUTSIDE_PLACEHOLDER = '__SC_OUTSIDE__';
 export const TMP_PLACEHOLDER = '__SC_TMP__';
 export const LEG_PLACEHOLDER = '__SC_LEG__';
+/** grok fixtures: the grok home the leg ran on. */
+export const GROK_HOME_PLACEHOLDER = '__SC_GROK_HOME__';
 
 export function fixtureDir(kind: FixtureKind, name: string): string {
   return new URL(`../fixtures/${kind}/${name}`, import.meta.url).pathname;
@@ -61,7 +63,7 @@ export function materialize(kind: FixtureKind, name: string, replacements: Recor
   writeFileSync(join(outside, 'secret.txt'), 'outside the root\n');
   const dir = join(tmp, 'fixture');
   cpSync(fixtureDir(kind, name), dir, { recursive: true });
-  const all: Record<string, string> = { [ROOT_PLACEHOLDER]: root, [OUTSIDE_PLACEHOLDER]: outside, [TMP_PLACEHOLDER]: tmp, [LEG_PLACEHOLDER]: dir, ...replacements };
+  const all: Record<string, string> = { [ROOT_PLACEHOLDER]: root, [OUTSIDE_PLACEHOLDER]: outside, [TMP_PLACEHOLDER]: tmp, [LEG_PLACEHOLDER]: dir, [GROK_HOME_PLACEHOLDER]: join(tmp, 'grok-home'), ...replacements };
   for (const file of listFiles(dir)) {
     let text = readFileSync(file, 'utf8');
     for (const [from, to] of Object.entries(all)) text = text.split(from).join(to);

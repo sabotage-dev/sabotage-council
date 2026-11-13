@@ -1,0 +1,24 @@
+{
+  "info": {
+    "id": "d8bdcf01-123b-4e61-b02e-dbab1d667ca2",
+    "cwd": "__SC_ROOT__"
+  },
+  "agent_id": "ag1.1cc46dd9bde442b39e4eb4332920381d",
+  "attempt_id": "at1.76311b4d96434dd98639aeb39c919ce8",
+  "session_summary": "Sandbox Tool Permissions Canary Test",
+  "created_at": "2026-11-13T01:29:19.840567Z",
+  "updated_at": "2026-11-13T01:29:33.237090Z",
+  "num_messages": 18,
+  "num_chat_messages": 13,
+  "current_model_id": "grok-4.7",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "request_id": "680ecdd6-f201-43c0-92c4-e7ebaf2e4f64",
+  "grok_home": "__SC_GROK_HOME__",
+  "last_active_at": "2026-11-13T01:29:33.237090Z",
+  "generated_title": "Sandbox Tool Permissions Canary Test",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "low"
+}

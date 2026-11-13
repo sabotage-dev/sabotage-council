@@ -1,0 +1,26 @@
+{"ts":"2026-11-13T01:29:20.002Z","type":"mcp_config_resolved","servers":[{"name":"context7","transport":"stdio","source":"local"}],"disabled":[]}
+{"ts":"2026-11-13T01:29:20.030Z","type":"mcp_server_starting","server_name":"context7","transport":"stdio","target":"npx  -y @upstash/context7-mcp@latest","timeout_sec":30}
+{"ts":"2026-11-13T01:29:20.083Z","type":"turn_started","session_id":"d8bdcf01-123b-4e61-b02e-dbab1d667ca2","turn_number":0,"model_id":"grok-4.7","yolo_mode":false,"conversation_message_count":3,"session_relationship":"primary","schema_version":"1.0"}
+{"ts":"2026-11-13T01:29:20.389Z","type":"mcp_server_failed","server_name":"context7","transport":"stdio","target":"npx  -y @upstash/context7-mcp@latest","error_type":"handshake_failed","error_message":"MCP server 'context7' handshake failed: connection closed: initialize response","duration_ms":358,"timeout_sec":30}
+{"ts":"2026-11-13T01:29:20.389Z","type":"mcp_init_completed","total_servers":1,"succeeded":0,"failed":1,"auth_required":0,"total_tools":0,"duration_ms":358,"is_reinit":false,"failed_servers":["context7"]}
+{"ts":"2026-11-13T01:29:20.390Z","type":"loop_started","loop_index":0}
+{"ts":"2026-11-13T01:29:22.269Z","type":"first_token"}
+{"ts":"2026-11-13T01:29:25.472Z","type":"tool_started","tool_name":"read_file"}
+{"ts":"2026-11-13T01:29:25.474Z","type":"permission_requested","tool_name":"read_file"}
+{"ts":"2026-11-13T01:29:25.475Z","type":"permission_resolved","tool_name":"read_file","decision":"allow","wait_ms":1}
+{"ts":"2026-11-13T01:29:25.477Z","type":"tool_started","tool_name":"read_file"}
+{"ts":"2026-11-13T01:29:25.484Z","type":"permission_requested","tool_name":"read_file"}
+{"ts":"2026-11-13T01:29:25.484Z","type":"permission_resolved","tool_name":"read_file","decision":"allow","wait_ms":0}
+{"ts":"2026-11-13T01:29:25.484Z","type":"tool_started","tool_name":"grep"}
+{"ts":"2026-11-13T01:29:25.488Z","type":"permission_requested","tool_name":"grep"}
+{"ts":"2026-11-13T01:29:25.488Z","type":"permission_resolved","tool_name":"grep","decision":"allow","wait_ms":0}
+{"ts":"2026-11-13T01:29:25.488Z","type":"tool_started","tool_name":"list_dir"}
+{"ts":"2026-11-13T01:29:25.488Z","type":"permission_requested","tool_name":"list_dir"}
+{"ts":"2026-11-13T01:29:25.488Z","type":"permission_resolved","tool_name":"list_dir","decision":"allow","wait_ms":0}
+{"ts":"2026-11-13T01:29:25.550Z","type":"tool_completed","tool_name":"read_file","duration_ms":45,"outcome":"success","tool_call_id":"call-54de2b16-7879-4a63-98b6-89fdc2e2134f-1"}
+{"ts":"2026-11-13T01:29:25.554Z","type":"tool_completed","tool_name":"read_file","duration_ms":59,"outcome":"success","tool_call_id":"call-54de2b16-7879-4a63-98b6-89fdc2e2134f-0"}
+{"ts":"2026-11-13T01:29:25.558Z","type":"tool_completed","tool_name":"list_dir","duration_ms":45,"outcome":"success","tool_call_id":"call-54de2b16-7879-4a63-98b6-89fdc2e2134f-3"}
+{"ts":"2026-11-13T01:29:25.560Z","type":"tool_completed","tool_name":"grep","duration_ms":59,"outcome":"success","tool_call_id":"call-54de2b16-7879-4a63-98b6-89fdc2e2134f-2"}
+{"ts":"2026-11-13T01:29:25.560Z","type":"loop_started","loop_index":1}
+{"ts":"2026-11-13T01:29:27.713Z","type":"first_token"}
+{"ts":"2026-11-13T01:29:33.211Z","type":"turn_ended","outcome":"completed"}

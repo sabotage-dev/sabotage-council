@@ -1,0 +1,132 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "read_file",
+      "description": "Read a file.\n\n- The tool reads up to 1000 lines, starting at offset. A read that is too large fails, so use offset and limit to read a large file in parts. A SKILL.md, AGENTS.md, or CLAUDE.md file is always read whole if it fits in one read, and offset and limit are ignored for it.\n- The first line and every 10th line start with the line number and →, for example `10→`. The other lines show only their content. Count from the nearest number to find a line.\n- The tool can read PDF, PPTX, and image files. You see image files as images. A Jupyter notebook is shown as its JSON.",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "target_file"
+        ],
+        "type": "object",
+        "properties": {
+          "target_file": {
+            "description": "Path of the file to read. Use a path relative to the workspace or an absolute path.",
+            "type": "string"
+          },
+          "offset": {
+            "description": "Line number to start from.",
+            "type": "integer",
+            "default": 1
+          },
+          "limit": {
+            "description": "Number of lines to read.",
+            "type": "integer"
+          },
+          "pages": {
+            "description": "Page range to read from a PDF file, for example '1-5', '3', or '10-'. Required for a PDF with more than 10 pages. The maximum is 20 pages for each call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "description": "How to read a PDF file. 'image' shows the pages as images and is the default. 'text' extracts the text.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_dir",
+      "description": "List the files and directories in 'target_directory'. The path can be relative to the workspace root or absolute. The list leaves out dot-files and files that .gitignore ignores. For a large directory, the list shows file counts by extension.",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "target_directory"
+        ],
+        "type": "object",
+        "properties": {
+          "target_directory": {
+            "description": "Directory to list.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "grep",
+      "description": "Search file contents with a regular expression. This tool uses ripgrep.\n\n- To match a regex special character literally, escape it. For example, use `functionCall\\(` or `interface\\{\\}`.\n- Pass pattern as a raw regex with no quotes around it.\n- The search skips files that .gitignore ignores. To search those files too, pass a 'glob' that matches them, for example `*`.\n- Use 'type' or 'glob' only when you are sure of the file type. An import path can use a different extension than the source file, for example .js and .ts.\n- Results are grouped by file. A `:` marks a matching line and a `-` marks a context line. Large results are cut off and show \"at least\" counts.",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "pattern"
+        ],
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "description": "The regular expression pattern to search for in file contents (rg --regexp)",
+            "type": "string"
+          },
+          "path": {
+            "description": "File or directory to search in (rg pattern -- PATH). Defaults to workspace path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "glob": {
+            "description": "Glob pattern (rg --glob GLOB -- PATH) to filter files (e.g. \"*.js\", \"*.{ts,tsx}\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "-B": {
+            "description": "Number of lines to show before each match (rg -B).",
+            "type": "integer"
+          },
+          "-A": {
+            "description": "Number of lines to show after each match (rg -A).",
+            "type": "integer"
+          },
+          "-C": {
+            "description": "Number of lines to show before and after each match (rg -C).",
+            "type": "integer"
+          },
+          "-i": {
+            "description": "Case insensitive search (rg -i).",
+            "type": "boolean",
+            "default": false
+          },
+          "type": {
+            "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than glob for standard file types.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "head_limit": {
+            "description": "Limit output to the first N matching lines in content mode, or the first N entries in the other modes. Defaults to 200 lines or 500 entries.",
+            "type": "integer"
+          },
+          "multiline": {
+            "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall).",
+            "type": "boolean",
+            "default": false
+          }
+        }
+      }
+    }
+  }
+]

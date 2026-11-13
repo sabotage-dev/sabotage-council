@@ -1,0 +1,18 @@
+{
+  "nonce": "08a38818baf8",
+  "model": "grok-4.7",
+  "effort": "low",
+  "sandbox": "off",
+  "cliVersion": "1.0.70",
+  "rootMutated": false,
+  "plantSymlink": false,
+  "expect": {
+    "status": "FAIL",
+    "failureClass": "setup",
+    "failed": [
+      "mcp-started"
+    ]
+  },
+  "note": "Recorded live smoke (P4, grok 1.0.70, grok-4.7 effort low, --sandbox off, grok.com login, HOME isolated) on the planted-defect root, sanitized. Found the planted defect (HIGH rangesum.py:11), NONCE first line, 5 in-root reads. The user grok config started an MCP server (context7), so the leg fails (owner ruling); preflight had refused it and this was a diagnostic launch.",
+  "sessionId": "3040ea99-6777-4134-b6df-f7b45b26bee2"
+}
