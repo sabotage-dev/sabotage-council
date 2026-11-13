@@ -242,25 +242,26 @@ describe('pr rounds: preparation rules', () => {
   });
 
   it('takes the identity path when another PR approved this tree, and never advances the round count with it', async () => {
-    const w = await world((r, src) => {
+    const approvedElsewhere = (r: Routes, src: SourceRepo): void => {
       r['GET search/issues'] = { json: { items: [{ number: 2 }, { number: 9 }] } };
       r['GET repos/sabotage-dev/sabotage-council/pulls/9/reviews'] = { json: [{ id: 9101, user: { login: 'repo-owner' }, state: 'APPROVED', commit_id: src.shas['C6'], submitted_at: 'x', body: 'ok' }] };
       const tree = git(src.repo, ['rev-parse', `${src.shas['C7']!}^{tree}`]);
       r[`GET repos/sabotage-dev/sabotage-council/git/commits/${src.shas['C6']!}`] = { json: { tree: { sha: tree } } };
-    });
+    };
+    const w = await world(approvedElsewhere);
     const r = preparePrRound(w.h.store, w.options());
     expect(r).toMatchObject({ kind: 'identity', roundNo: 3, match: { number: 9, reviewId: 9101, commitId: w.src.shas['C6'] } });
     if (r.kind !== 'identity') return;
     const round = getRound(w.h.store.db, r.roundId)!;
     expect(round).toMatchObject({ kind: 'identity', status: 'identity', marker: `sabotage-council identity approval on sabotage-dev/sabotage-council#2 at ${w.src.shas['C7']!.slice(0, 7)}` });
     expect(roundSummary(w.h.store, w.h.layout, r.roundId)).toMatchObject({ scope: 'identity', legs: [], pr: { kind: 'identity', identity: { number: 9 } } });
-    // The search found PR 9 only because the tree matched; --no-identity takes a council round instead.
+    // --no-identity takes a council round instead.
     const council = preparePrRound(w.h.store, w.options({ identity: false }));
     expect(council.kind).toBe('council');
-    // A base that is not the default branch never takes the identity path.
-    const offMain = await world((rr) => {
+    // A base that is not the default branch never takes the identity path, even with the same approval to find.
+    const offMain = await world((rr, src) => {
+      approvedElsewhere(rr, src);
       Object.assign((json(rr, `GET ${API_PULL}`)['base'] as Json), { ref: 'release' });
-      rr['GET repos/sabotage-dev/sabotage-council/branches/release'] = { json: {} };
     });
     git(offMain.src.repo, ['branch', 'release', offMain.src.shas['BASE']!]);
     expect(preparePrRound(offMain.h.store, offMain.options()).kind).toBe('council');
