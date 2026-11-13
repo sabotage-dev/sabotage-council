@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   BACKENDS,
   CI_GATES,
+  CI_RED_EVENTS,
   INTERACTIVE_ADJUDICATION,
   SEAT_COUNT,
   UNTRUSTED_SEAT_POLICIES,
@@ -106,6 +107,8 @@ export const autoSchema = z.strictObject({
   include_assigned: z.boolean().default(false),
   approve: z.boolean().default(true),
   ci_gate: z.enum(CI_GATES).default('required-checks'),
+  /** What CI red posts when nothing is owed (plan 3.7 row 7): REQUEST_CHANGES, or COMMENT. */
+  ci_red_event: z.enum(CI_RED_EVENTS).default('REQUEST_CHANGES'),
   max_rounds_per_day: positiveInt.default(30),
   identity_approval: z.boolean().default(true),
   tests: z.record(repoName, repoTestsSchema).default({}),
