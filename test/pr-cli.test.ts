@@ -324,6 +324,28 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     await Promise.all(c.workers);
   }, 60_000);
 
+  it('credit Sabotage-Dev/Sabotage-Council#2 is counted by round start pr sabotage-dev/sabotage-council#2: one key per repository', async () => {
+    const src = sourceRepo();
+    const routes = pr2Routes(src.shas);
+    const unmarked = ghReview(6001, 'repo-owner', 'COMMENTED', src.shas['C5']!, '2026-11-12T18:20:00Z', 'Reviewed by hand; nothing owed.');
+    (routes[`GET ${PULL}/reviews`] as { json: Json[] }).json.push(unmarked);
+    // GitHub answers either spelling; the stub's routes are exact, so the credit's spelling gets its own route.
+    routes['GET repos/Sabotage-Dev/Sabotage-Council/pulls/2/reviews/6001'] = { json: unmarked };
+    const c = cli(routes, src);
+    const credited = await c.run('credit', 'Sabotage-Dev/Sabotage-Council#2', '6001');
+    expect(credited.code, credited.lines.join('\n')).toBe(0);
+    const after = await c.run('round', 'start', 'pr', 'sabotage-dev/sabotage-council#2', '--dry-run', '--json');
+    expect(JSON.parse(after.lines.at(-1)!)).toMatchObject({ round_no: 4, counted: { count: 4, events: 4 } });
+    const store = openStore(c.paths.dbPath);
+    try {
+      expect(store.db.prepare('SELECT repo FROM credits').all().map((r) => ({ ...r }))).toEqual([{ repo: 'github.com/sabotage-dev/sabotage-council' }]);
+      expect(store.db.prepare("SELECT repo FROM targets WHERE kind = 'pr'").all().map((r) => ({ ...r }))).toEqual([{ repo: 'github.com/sabotage-dev/sabotage-council' }]);
+    } finally {
+      store.close();
+    }
+    await Promise.all(c.workers);
+  }, 60_000);
+
   it('fails closed on a GitHub read that fails: round start exits 1 and stores no round', async () => {
     const src = sourceRepo();
     const routes = pr2Routes(src.shas);

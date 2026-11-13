@@ -8,7 +8,7 @@ import { decideEvent, type EventDecision, type EventFacts, type ReviewEvent } fr
 import { ForgeError, restPath, type GitHubApi } from '../forge/github.js';
 import { apiTreeOf, recheckIdentity, type IdentityMatch } from '../forge/identity.js';
 import { firstLine, namesPr, parseMarker } from '../forge/markers.js';
-import { normalizeReview, readPr, sameLogin, type PrRef, type PrSnapshot, type Review } from '../forge/pr.js';
+import { normalizeReview, readPr, repoKeyOf, sameLogin, type PrRef, type PrSnapshot, type Review } from '../forge/pr.js';
 import { renderBody, validateBody, type BodyLeg } from '../forge/render.js';
 import type { Store } from '../store/open.js';
 import { preparedDetail } from './facts.js';
@@ -315,6 +315,6 @@ export function addCredit(store: Store, api: GitHubApi, ref: PrRef, reviewId: nu
       `INSERT INTO credits (repo, num, review_id, commit_id, submitted_at, credited_by, credited_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (repo, num, review_id) DO UPDATE SET note = excluded.note`,
     )
-    .run(`github.com/${ref.owner}/${ref.repo}`, ref.number, r.id, r.commitId, r.submittedAt, by, now(), note);
+    .run(repoKeyOf(ref), ref.number, r.id, r.commitId, r.submittedAt, by, now(), note);
   return { commitId: r.commitId, submittedAt: r.submittedAt };
 }

@@ -29,8 +29,12 @@ export function parsePrRef(text: string): PrRef {
 
 export const prLabel = (ref: PrRef): string => `${ref.owner}/${ref.repo}#${ref.number}`;
 
-/** The run store's repo key for a GitHub repository (the same `host/owner/name` form as a git remote, P5). */
-export const repoKeyOf = (ref: Pick<PrRef, 'owner' | 'repo'>): string => `github.com/${ref.owner}/${ref.repo}`;
+/**
+ * The run store's repo key for a GitHub repository (the `host/owner/name` form of a git remote, P5), lower case:
+ * GitHub resolves owner and repository names case-insensitively, so `Org/Repo#5` and `org/repo#5` are one pull
+ * request, with one target, one set of credits and one set of our own reviews (P6 round 1, migration 003).
+ */
+export const repoKeyOf = (ref: Pick<PrRef, 'owner' | 'repo'>): string => `github.com/${ref.owner.toLowerCase()}/${ref.repo.toLowerCase()}`;
 
 export type ReviewState = 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED' | 'PENDING';
 
