@@ -90,9 +90,10 @@ check failed), `2` nothing loaded but some seat is unproven by `--deep`.
   (refused or not), skill message or user message naming a skill fails the leg.
 - **Cursor (`cursor-agent`).** Seats call the newest release under `~/.local/share/cursor-agent/versions/` by
   path, never `agent` on PATH (the Cursor installer repoints that name). Print mode needs `--trust`; the council
-  config and its deny-all-but-reads hook live in a per-leg `CURSOR_CONFIG_DIR`. With `CURSOR_API_KEY` the leg also
-  gets its own `HOME`; on the keychain login Cursor may import your `~/.claude` hooks, and `doctor` lists them.
-  `doctor` refuses Cursor seats in `auto`.
+  config and its deny-all-but-reads hook live in a per-leg `CURSOR_CONFIG_DIR` and in the leg's own `HOME`.
+  Cursor seats need `CURSOR_API_KEY`: the keychain login keeps your `HOME`, where the council hooks are never
+  read (and Cursor would import your `~/.claude` hooks), so preflight refuses it until a live run shows the hooks
+  loading there. `doctor` refuses Cursor seats in `auto`.
 - **Muse Code (`muse`).** Seats always run with contributor mode off (on by default for subscriptions, it lets
   Meta train on the reviewed code), the read-only permission profile, and never `--trust-workspace`.
   `META_API_KEY`, when set, wins over your `muse login` session and bills pay-as-you-go; `doctor` says which one a

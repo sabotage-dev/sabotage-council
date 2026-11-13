@@ -64,23 +64,10 @@ export const CURSOR_MODEL_MAP: Readonly<Record<string, { modelId: string; effort
  * `auto-review` or `unrestricted`; `sandbox.readBoundary` takes `system` (the default) or `workspace`, the narrowest
  * value (it still includes `~/.cursor`, which on the API-key route is the leg's own empty HOME). No documented key
  * turns off third-party (Claude Code) imports: that toggle is a Cursor app setting only, so the leg's own HOME is the
- * isolation, and the keychain route is refused wherever the user's HOME holds anything Cursor would import or read.
+ * isolation, and the keychain route (which keeps the user's HOME) is refused (round 2: the council hooks in the leg
+ * HOME would never load there).
  */
 export const CURSOR_READ_BOUNDARY = 'workspace';
-
-/** Files in a HOME that Cursor imports (Claude Code hooks, Cursor hooks, MCP, rules, skills, plugins) or reads. */
-export const CURSOR_USER_IMPORTS = [
-  '.claude/settings.json',
-  '.claude/settings.local.json',
-  '.claude/skills',
-  '.claude/plugins',
-  '.cursor/hooks.json',
-  '.cursor/mcp.json',
-  '.cursor/rules',
-  '.cursor/skills',
-  '.cursor/plugins',
-  '.cursor/projects',
-] as const;
 
 /** Flags a leg never passes. */
 export const CURSOR_FORBIDDEN_FLAGS = ['-f', '--force', '--yolo', '--approve-mcps'] as const;

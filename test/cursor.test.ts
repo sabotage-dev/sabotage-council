@@ -244,7 +244,7 @@ async function preflight(o: Partial<Occupant> = {}, opts: { version?: string; st
     if (args[0] === 'models') return out(opts.models ?? 'gpt-5.5-high\nclaude-opus-5-high\n');
     return out('', 2);
   };
-  const pre = await cursorPreflight({ backend: 'cursor', model: 'gpt-5.5-high', ...o }, { bin: opts.bin === undefined ? '/x/cursor-agent' : opts.bin, runner: run, env: opts.env ?? { HOME: scratch('sc-cursor-u-'), PATH: '/bin' }, root, legDir });
+  const pre = await cursorPreflight({ backend: 'cursor', model: 'gpt-5.5-high', ...o }, { bin: opts.bin === undefined ? '/x/cursor-agent' : opts.bin, runner: run, env: opts.env ?? { HOME: scratch('sc-cursor-u-'), PATH: '/bin', CURSOR_API_KEY: 'never-read' }, root, legDir });
   return { pre, calls };
 }
 
@@ -254,13 +254,12 @@ describe('cursor preflight (4.3), no model call', () => {
     expect(pre.ok, pre.reason ?? '').toBe(true);
     expect(pre.enforcement).toBe('weak');
     expect(pre.checks.find((x) => x.name === 'version')?.status).toBe('warn');
-    expect(calls).toEqual([['--version'], ['status'], ['models']]);
+    expect(calls).toEqual([['--version'], ['models']]);
   });
   it.each([
     ['no unpacked release', {}, { bin: null }, 'cursor-agent not installed'],
     ["another vendor's agent", {}, { version: 'grok 1.0.70 (f50904eaee6c) [stable]' }, 'not a Cursor binary'],
     ['an old release', {}, { version: '2026.09.28-0000000' }, 'below the floor'],
-    ['a logged-out CLI', {}, { status: 'Your stored authentication is invalid. Please log in again.' }, 'not logged in'],
     ['a slug the account does not list', { model: 'gpt-5.5-low' }, {}, 'not offered'],
     ['an effort that is not in the slug', { effort: 'low' }, {}, 'effort not in the slug'],
     ['auto routing', { model: 'auto' }, {}, 'bad model slug'],
@@ -273,20 +272,25 @@ describe('cursor preflight (4.3), no model call', () => {
     expect(pre.ok).toBe(false);
     expect(pre.reason).toContain(reason);
   });
-  it('refuses the keychain route when the user HOME holds anything Cursor imports or reads; the API-key route runs on its own HOME', async () => {
-    const home = scratch('sc-cursor-u-');
-    mkdirSync(join(home, '.claude'));
-    writeFileSync(join(home, '.claude', 'settings.json'), '{}');
-    mkdirSync(join(home, '.cursor', 'projects'), { recursive: true });
-    const { pre } = await preflight({}, { env: { HOME: home } });
-    expect(pre.ok).toBe(false);
-    expect(pre.reason).toBe('user HOME holds Cursor imports: .claude/settings.json, .cursor/projects');
-    const keyed = await preflight({}, { env: { HOME: home, CURSOR_API_KEY: 'never-read' } });
+  it('refuses the keychain route whatever the user HOME holds (round 2: the council hooks would never load); the API-key route runs on its own HOME', async () => {
+    for (const fill of [false, true]) {
+      const home = scratch('sc-cursor-u-');
+      if (fill) {
+        mkdirSync(join(home, '.claude'));
+        writeFileSync(join(home, '.claude', 'settings.json'), '{}');
+      }
+      const { pre, calls } = await preflight({}, { env: { HOME: home } });
+      expect(pre.ok).toBe(false);
+      expect(pre.failureClass).toBe('auth');
+      expect(pre.reason).toBe('keychain route refused: use CURSOR_API_KEY');
+      expect(pre.checks.find((c) => c.name === 'auth')?.detail).toContain('no live run shows the council hooks load on the keychain route');
+      expect(calls).toEqual([['--version']]);
+    }
+    const keyed = await preflight({}, { env: { HOME: scratch('sc-cursor-u-'), CURSOR_API_KEY: 'never-read' } });
     expect(keyed.pre.ok).toBe(true);
     expect(keyed.calls).toEqual([['--version'], ['models']]);
     expect(keyed.pre.userOwned).toEqual(['CURSOR_API_KEY']);
   });
-
   it('refuses a slug with no declared model_id, and an effort the slug does not carry', async () => {
     expect((await preflight({ model: 'gpt-9-high' })).pre.reason).toBe('no declared model_id for gpt-9-high');
     expect((await preflight({ model: 'gpt-5.5-high', effort: 'low' })).pre.reason).toBe('effort not in the slug');

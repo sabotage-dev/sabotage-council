@@ -1,22 +1,21 @@
-import { existsSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
 import type { FailureClass } from '../../config/vocab.js';
 import { workspaceConfigIn } from '../../root/sanitize.js';
 import type { CommandRunner } from '../../transport/headless.js';
 import type { Occupant, Preflight, PreflightCheck } from '../types.js';
-import { CURSOR_FLOOR, CURSOR_LABEL, CURSOR_MODEL_MAP, CURSOR_TESTED_VERSIONS, CURSOR_USER_IMPORTS, compareCursorVersions, parseCursorVersion } from './known.js';
+import { CURSOR_FLOOR, CURSOR_LABEL, CURSOR_MODEL_MAP, CURSOR_TESTED_VERSIONS, compareCursorVersions, parseCursorVersion } from './known.js';
 import { cursorEnv, cursorLegFiles, cursorVersionsDir, hasCursorKey, prepareCursorConfig } from './launch.js';
 
 /*
  * Cursor preflight (plan 4.3), with no model call:
  *   - the binary is an unpacked release under `~/.local/share/cursor-agent/versions/` (called by path), and its
  *     `--version` is a Cursor version (`YYYY.MM.DD-sha7`), not another vendor's `agent`;
- *   - the sign-in: `CURSOR_API_KEY`, else `status` must not report a missing or invalid login;
+ *   - the sign-in: `CURSOR_API_KEY` only. The keychain route is refused (round 2): it keeps the user's HOME, so the
+ *     council hooks written to the leg HOME are never read, and no live run shows them loading another way;
  *   - the slug (effort is part of it) is in `models`;
  *   - the root holds none of the files Cursor loads from a trusted workspace (`.cursor/`, `.claude/`, `AGENTS.md`,
  *     `CLAUDE.md`, `.cursorignore`, `.mcp.json`): `--trust` is required headless and would load them;
- *   - the council config dir is written outside the root; on the keychain login, what the user's HOME holds that
- *     Cursor imports (`~/.claude/settings.json` hooks, `~/.cursor` hooks, MCP and rules) is listed as user-owned.
+ *   - the council config dir is written outside the root, and again to the leg HOME's `.cursor/`.
  * Every version is untested (D14), so the label is `weak` and `doctor` refuses Cursor seats for `auto`.
  */
 
@@ -100,26 +99,14 @@ export async function cursorPreflight(o: Occupant, options: CursorPreflightOptio
   }
   checks.push({ name: 'version', status: 'warn', detail: `cursor-agent ${cliVersion}: no Cursor version is tested in v1 (D14${CURSOR_TESTED_VERSIONS.length > 0 ? `; tested ${CURSOR_TESTED_VERSIONS.join(', ')}` : ''}); label weak` });
 
-  if (apiKey) {
-    checks.push({ name: 'auth', status: 'ok', detail: 'CURSOR_API_KEY (the leg HOME is its own empty dir)' });
-  } else {
-    // The keychain route keeps the user's HOME: Cursor would import its Claude Code hooks and settings (no documented
-    // key turns that off for the CLI) and the workspace read boundary would include its ~/.cursor. Refused wherever
-    // that HOME holds any of it (round 1 row 3).
-    const home = options.env['HOME'] ?? '';
-    const present = CURSOR_USER_IMPORTS.filter((p) => home !== '' && existsSync(join(home, p)));
-    if (present.length > 0) {
-      fail('isolation', `the keychain route runs on your HOME, which holds ${present.map((p) => `~/${p}`).join(', ')}: Cursor would import or read them. Set CURSOR_API_KEY so the leg runs on its own HOME`);
-      return result(false, 'setup', `user HOME holds Cursor imports: ${present.join(', ')}`, cliVersion);
-    }
-    const status = await run(['status']);
-    const text = `${status.stdout}\n${status.stderr}`;
-    if (status.exitCode !== 0 || /not (?:logged in|authenticated)|authentication is invalid|log in again|run '?(?:agent|cursor-agent) login/i.test(text)) {
-      fail('auth', `cursor-agent status: ${text.trim().slice(0, 200) || `exit ${String(status.exitCode)}`}; run \`cursor-agent login\`, or set CURSOR_API_KEY`);
-      return result(false, 'auth', 'cursor is not logged in', cliVersion);
-    }
-    checks.push({ name: 'auth', status: 'ok', detail: 'Cursor login (keychain)' });
+  // Round 2 (codex F2, claude F1): on the keychain route HOME stays the user's, so the council hooks written to the
+  // leg HOME's .cursor are never read and every leg would fail its hook-log check. No live run shows the council
+  // hooks loading there, so the route is refused until one does.
+  if (!apiKey) {
+    fail('auth', 'no live run shows the council hooks load on the keychain route (HOME stays yours, so the hooks in the leg HOME are never read); use CURSOR_API_KEY');
+    return result(false, 'auth', 'keychain route refused: use CURSOR_API_KEY', cliVersion);
   }
+  checks.push({ name: 'auth', status: 'ok', detail: 'CURSOR_API_KEY (the leg HOME is its own empty dir, holding the council config and hooks)' });
   const models = await run(['models']);
   const escaped = o.model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (!new RegExp(`(^|[\\s,(])${escaped}([\\s,)]|$)`, 'm').test(models.stdout)) {
@@ -134,6 +121,6 @@ export async function cursorPreflight(o: Occupant, options: CursorPreflightOptio
     return result(false, 'setup', 'root not sanitized', cliVersion);
   }
   checks.push({ name: 'isolation', status: 'note', detail: `council config dir ${files.configDir} (deny rules, sandbox, the deny-all-but-reads hook), outside the root` });
-  userOwned.push(apiKey ? 'CURSOR_API_KEY' : 'the Cursor keychain login (the user HOME holds nothing Cursor imports)');
+  userOwned.push('CURSOR_API_KEY');
   return result(true, null, null, cliVersion);
 }

@@ -12,8 +12,8 @@ import { CURSOR_GATE_EVENTS, CURSOR_LOG_EVENTS, councilHookScript } from './hook
  *     the deny rules, a workspace read boundary) and `hooks.json` (the council hook on every gate and log event);
  *     both are also written to the leg HOME's `.cursor/`; nothing is written into the root at launch;
  *   - with `CURSOR_API_KEY`, `HOME` is the leg's own dir (no `~/.claude` hooks or user `~/.cursor` config can load,
- *     and the workspace read boundary's `~/.cursor` is the leg's own); the keychain route keeps the user's HOME, and
- *     preflight refuses it wherever that HOME holds anything Cursor imports or would read.
+ *     and the workspace read boundary's `~/.cursor` is the leg's own); the keychain route would keep the user's
+ *     HOME, so preflight refuses it (round 2).
  */
 
 export const CURSOR_ENV_ALLOW = [
