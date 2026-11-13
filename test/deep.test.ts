@@ -48,6 +48,9 @@ const okPre = (backend: Occupant['backend'], over: Partial<Preflight> = {}): Pre
   ...over,
 });
 
+/** The `--deep` section of doctor's output. */
+const deepOf = (lines: readonly string[]): string[] => lines.slice(lines.findIndex((l) => l.startsWith('deep (')));
+
 /** A stub adapter whose preflight does what `act` says with the root it is given. */
 function stub(backend: Occupant['backend'], act: (ctx: RoundCtx) => Preflight): SeatAdapter {
   return {
@@ -139,6 +142,8 @@ describe('the canary root', () => {
     ['a pass with a dump that lists nothing', okPre('codex', { data: { dumped: 'codex debug prompt-input' } }), [], 'isolated'],
     ['a dump that lists nothing, but a marker appeared', okPre('codex', { data: { dumped: 'codex debug prompt-input' } }), ['b-codex.codex-config.mcp.top'], 'loads'],
     ['a pass with no dump', okPre('claude'), [], 'unproven'],
+    ['a pass with no dump on a canary-proven (strong) version', okPre('claude', { cliVersion: '2.1.322', enforcement: 'strong' }), [], 'canary'],
+    ['a strong version that ran a planted hook', okPre('claude', { enforcement: 'strong' }), ['a-claude.claude-settings.SessionStart.top'], 'loads'],
     ['a sign-in failure', okPre('kiro', { ok: false, failureClass: 'auth', reason: 'kiro is not signed in' }), [], 'unchecked'],
   ])('judges %s', (_what, pre, markers, verdict) => {
     expect(judgeDeep(pre, markers, null).verdict).toBe(verdict);
@@ -153,7 +158,7 @@ describe('the canary root', () => {
 });
 
 describe('doctor --deep: fails any backend that loads a planted hook', () => {
-  it('fails a backend whose preflight runs a planted hook, and one whose dump lists a planted file; a refusal passes', async () => {
+  it('fails a backend whose preflight runs a planted hook, and one whose dump lists a planted file; a filename refusal is unproven', async () => {
     config([
       ['a', 'claude', 'claude-sonnet-5-5'],
       ['b', 'codex', 'gpt-6.1-sol'],
@@ -171,7 +176,7 @@ describe('doctor --deep: fails any backend that loads a planted hook', () => {
     expect(deep.find((l) => l.includes('a  claude'))).toMatch(/^fail .*loads: executed planted code during preflight: a-claude\.claude-settings\.SessionStart\.top/);
     expect(deep.find((l) => l.includes('b  codex'))).toMatch(/^fail .*loads: its own isolation dump lists planted files: repository AGENTS.md instructions/);
     // A refusal by filename is not a proof of isolation (claude F8): it fails the exit.
-    expect(deep.find((l) => l.includes('c  kiro'))).toMatch(/^fail .*refused: refused the planted root at preflight \(root not sanitized\), by a check that is not a load dump/);
+    expect(deep.find((l) => l.includes('c  kiro'))).toMatch(/^warn .*unproven by --deep \(refused\): refused the planted root at preflight \(root not sanitized\), by a check that is not a load dump/);
   });
 
   it('a repeated execution cannot hide behind a marker another occupant left (codex F3)', async () => {
@@ -186,27 +191,52 @@ describe('doctor --deep: fails any backend that loads a planted hook', () => {
     expect(deep.find((l) => l.includes('b  claude'))).toMatch(/^fail .*loads: .*b-claude\.claude-settings\.SessionStart\.top/);
   });
 
-  it('exits 0 only when every occupant is proven isolated by its own load dump', async () => {
+  it('exits 0 when every occupant is isolated by its load dump or proven by its own promotion canary', async () => {
     config([
       ['a', 'claude', 'claude-sonnet-5-5'],
       ['b', 'kiro', 'claude-sonnet-4.5'],
       ['c', 'muse', 'muse-spark-1.3'],
     ]);
-    const dumps: SeatAdapters = (backend) => stub(backend, () => okPre(backend, { data: { loaded: [], dumped: `${backend} dump` } }));
+    const dumps: SeatAdapters = (backend) =>
+      backend === 'claude' ? stub('claude', () => okPre('claude', { cliVersion: '2.1.323', enforcement: 'strong' })) : stub(backend, () => okPre(backend, { data: { loaded: [], dumped: `${backend} dump` } }));
     const plain = await doctor(dumps, false);
     expect(plain.lines.some((l) => l.startsWith('deep ('))).toBe(false);
     const proven = await doctor(dumps);
     expect(proven.code).toBe(0);
     expect(proven.lines.filter((l) => l.includes(': isolated: ')).every((l) => l.startsWith('ok '))).toBe(true);
-    expect(proven.lines).toContain('        3 of 3 occupant(s) proven isolated by their own load dump');
+    // claude has no load dump; its label is strong from its own recorded promotion canary, and the line says so.
+    expect(deepOf(proven.lines).find((l) => l.includes('a  claude'))).toMatch(/^ok {4}a {2}claude: proven by its promotion canary: isolation proven by its recorded promotion canary \(claude 2\.1\.323 is strong\), not by --deep/);
+    expect(proven.lines).toContain('        2 isolated by their load dump, 1 proven by their promotion canary, 0 unproven, 0 loading a planted file (of 3)');
+  });
+
+  it('exits 2 when nothing loaded but some occupant is unproven, each on an "unproven by --deep" line', async () => {
+    config([
+      ['a', 'claude', 'claude-sonnet-5-5'],
+      ['b', 'kiro', 'claude-sonnet-4.5'],
+      ['c', 'muse', 'muse-spark-1.3'],
+    ]);
     const adapters: SeatAdapters = (backend) =>
       backend === 'kiro' ? stub('kiro', (ctx) => (existsSync(join(ctx.root, 'AGENTS.md')) ? okPre('kiro', { ok: false, failureClass: 'setup', reason: 'root not sanitized' }) : okPre('kiro'))) : stub(backend, () => okPre(backend));
     const { code, lines } = await doctor(adapters);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(lines.filter((l) => / (?:loads):/.test(l))).toEqual([]);
-    expect(lines.find((l) => l.includes('a  claude: unproven'))).toMatch(/^fail /);
-    expect(lines.find((l) => l.includes('b  kiro: refused'))).toMatch(/^fail /);
-    expect(lines).toContain('        0 of 3 occupant(s) proven isolated by their own load dump');
+    // claude on an untested version (pending): no canary to lean on, so unproven like the rest.
+    expect(deepOf(lines).find((l) => l.includes('a  claude'))).toMatch(/^warn .*unproven by --deep \(unproven\)/);
+    expect(deepOf(lines).find((l) => l.includes('b  kiro'))).toMatch(/^warn .*unproven by --deep \(refused\)/);
+    expect(deepOf(lines).find((l) => l.includes('c  muse'))).toMatch(/^warn .*unproven by --deep \(unproven\)/);
+    expect(lines).toContain('        0 isolated by their load dump, 0 proven by their promotion canary, 3 unproven, 0 loading a planted file (of 3)');
+  });
+
+  it('exits 1 when any occupant loads a planted file, whatever the others are', async () => {
+    config([
+      ['a', 'claude', 'claude-sonnet-5-5'],
+      ['b', 'kiro', 'claude-sonnet-4.5'],
+      ['c', 'muse', 'muse-spark-1.3'],
+    ]);
+    const adapters: SeatAdapters = (backend) => (backend === 'kiro' ? stub('kiro', () => okPre('kiro', { data: { loaded: ['steering .kiro/steering/planted.md'] } })) : stub(backend, () => okPre(backend)));
+    const { code, lines } = await doctor(adapters);
+    expect(code).toBe(1);
+    expect(deepOf(lines).find((l) => l.includes('b  kiro'))).toMatch(/^fail .*loads: its own isolation dump lists planted files/);
   });
 
   it('runs the real grok preflight on the canary root: grok inspect lists the planted MCP config, so grok fails', async () => {

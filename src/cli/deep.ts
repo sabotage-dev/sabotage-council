@@ -15,14 +15,20 @@ import type { Preflight } from '../adapters/types.js';
  *   - isolated: the backend has an offline load dump (`Preflight.data.dumped` names it), the dump ran on the planted
  *     root and listed nothing from it, and no planted code ran. The only passing verdict. It proves what that dump
  *     covers and nothing about a model turn, which ratification checks per leg.
+ *   - canary: no load dump, but the backend's label is `strong` from its own recorded promotion canary on this
+ *     version (claude 2.1.322 and 2.1.323): isolation is proven by that canary, not by `--deep`.
  *   - refused: the preflight refused the planted root, by a filename scan or another check that is not a load dump.
- *     The leg would never start there, but the backend's own loading is not proven, so this does not pass.
+ *     The leg would never start there, but the backend's own loading is not proven by `--deep`.
  *   - unproven: the preflight passed on the planted root and the backend has no load dump.
  *   - unchecked: the preflight threw or failed for its own reasons (it fails on a clean root too).
- * `doctor --deep` exits non-zero unless every occupant is `isolated`.
+ * `doctor --deep` exits 1 when a backend loads a planted file, 2 when nothing loaded but some backend is refused,
+ * unproven or unchecked, and 0 when every backend is isolated or canary-proven.
  */
 
-export type DeepVerdict = 'loads' | 'refused' | 'isolated' | 'unproven' | 'unchecked';
+export type DeepVerdict = 'loads' | 'isolated' | 'canary' | 'refused' | 'unproven' | 'unchecked';
+
+/** The verdicts `--deep` cannot vouch for: nothing loaded, but nothing proves the backend's loading either. */
+export const UNPROVEN_VERDICTS: readonly DeepVerdict[] = ['refused', 'unproven', 'unchecked'];
 
 export interface DeepResult {
   verdict: DeepVerdict;
@@ -106,6 +112,12 @@ export function judgeDeep(pre: Preflight | null, newMarkers: readonly string[], 
   if (loaded.length > 0) return { verdict: 'loads', detail: `its own isolation dump lists planted files: ${loaded.join('; ')}` };
   const dumped = typeof pre.data['dumped'] === 'string' ? pre.data['dumped'] : null;
   if (dumped !== null) return { verdict: 'isolated', detail: `its own load dump (${dumped}) ran on the planted root and lists nothing from it; no planted code ran` };
+  if (pre.enforcement === 'strong') {
+    return {
+      verdict: 'canary',
+      detail: `isolation proven by its recorded promotion canary (${pre.backend} ${pre.cliVersion ?? '?'} is strong), not by --deep: it has no offline load dump; no planted code ran during preflight`,
+    };
+  }
   if (!pre.ok && !cleanOk) return { verdict: 'unchecked', detail: `preflight fails on a clean root too: ${pre.reason ?? 'unknown'}` };
   if (!pre.ok && (pre.failureClass === 'setup' || pre.failureClass === null)) {
     return { verdict: 'refused', detail: `refused the planted root at preflight (${pre.reason ?? 'isolation'}), by a check that is not a load dump: the leg would not start here, but what the backend loads is not proven` };

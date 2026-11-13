@@ -48,9 +48,11 @@ writes its own marker if anything runs it. What it proves: no planted code ran d
 backend with an offline load dump (codex `debug prompt-input`, grok `inspect --json`, opencode `debug config`),
 that the dump lists nothing from the root. It proves only what that dump covers (opencode's covers config
 sources, not instruction files, which ratification checks per leg) and nothing about a model turn. A seat whose
-backend has no load dump (claude, kiro, antigravity, cursor, muse) is reported `unproven` or, when its preflight
-refuses the planted root by a filename scan, `refused`; neither counts as a pass. `doctor --deep` exits non-zero
-unless every seat is proven `isolated`.
+backend has no load dump gets an "unproven by --deep" line (`unproven`, or `refused` when its preflight refused
+the planted root by a filename scan), except claude on a version whose label is `strong` from its own recorded
+promotion canary (2.1.322 and 2.1.323): its line says isolation is proven by that canary instead. Exit codes:
+`0` every seat proven (by its load dump or its canary), `1` some seat loaded a planted file (or another doctor
+check failed), `2` nothing loaded but some seat is unproven by `--deep`.
 
 ### Backend notes
 

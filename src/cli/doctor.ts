@@ -6,7 +6,7 @@ import type { Occupant, Preflight } from '../adapters/types.js';
 import { loadConfig, type AdapterRegistry, type ConfigIssue, type SeatConfig } from '../config/index.js';
 import { openStore } from '../store/index.js';
 import { packageInfo } from '../version.js';
-import { judgeDeep, markersIn, plantCanaryRoot, type DeepResult } from './deep.js';
+import { judgeDeep, markersIn, plantCanaryRoot, UNPROVEN_VERDICTS, type DeepResult, type DeepVerdict } from './deep.js';
 
 export interface DoctorOptions {
   configPath: string;
@@ -36,10 +36,12 @@ type Status = 'ok' | 'warn' | 'fail' | 'note';
 
 /**
  * `doctor` skeleton (plan 4.3): checks that need no CLI or model call. Runs every check even after a failure and
- * returns the exit code: 0 when nothing failed (warnings allowed), 1 otherwise.
+ * returns the exit code: 0 when nothing failed (warnings allowed), 1 when something failed (with `--deep`: a
+ * backend loaded a planted file), 2 when nothing failed but `--deep` left some backend unproven.
  */
 export async function runDoctor(options: DoctorOptions): Promise<number> {
   let failed = false;
+  let deepUnproven = false;
   const line = (status: Status, text: string): void => {
     if (status === 'fail') failed = true;
     options.write(`${status.padEnd(4)}  ${text}`);
@@ -149,17 +151,30 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       }
       if (options.deep === true) {
         const deep = await deepCheck(occupantsOf(seats), cleanOk, options, legDir, tmp);
-        // Only a load dump that lists nothing from the planted root passes; every other verdict fails the exit.
-        for (const { name, result } of deep) line(result.verdict === 'isolated' ? 'ok' : 'fail', `${name}: ${result.verdict}: ${result.detail}`);
-        const proven = deep.filter((d) => d.result.verdict === 'isolated').length;
-        options.write(`        ${proven} of ${deep.length} occupant(s) proven isolated by their own load dump`);
+        // A backend that loaded a planted file fails (exit 1). One proven by its load dump, or by its own recorded
+        // promotion canary, is ok. The rest are unproven by --deep: nothing loaded, but nothing proves it (exit 2).
+        for (const { name, result } of deep) {
+          if (result.verdict === 'loads') line('fail', `${name}: loads: ${result.detail}`);
+          else if (result.verdict === 'isolated') line('ok', `${name}: isolated: ${result.detail}`);
+          else if (result.verdict === 'canary') line('ok', `${name}: proven by its promotion canary: ${result.detail}`);
+          else {
+            deepUnproven = true;
+            line('warn', `${name}: unproven by --deep (${result.verdict}): ${result.detail}`);
+          }
+        }
+        const count = (v: DeepVerdict): number => deep.filter((d) => d.result.verdict === v).length;
+        options.write(
+          `        ${count('isolated')} isolated by their load dump, ${count('canary')} proven by their promotion canary, ${deep.filter((d) => UNPROVEN_VERDICTS.includes(d.result.verdict)).length} unproven, ${count('loads')} loading a planted file (of ${deep.length})`,
+        );
       }
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   }
 
-  return failed ? 1 : 0;
+  // 1: a failure (a backend loaded a planted file, or any other check failed). 2: `--deep` found nothing loaded,
+  // but some backend is unproven. 0: everything passed.
+  return failed ? 1 : deepUnproven ? 2 : 0;
 }
 
 /** Each seat's occupant, then its fallback. */

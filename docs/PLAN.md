@@ -659,9 +659,11 @@ Built in P4 (round 1 fold): each occupant gets its own fresh canary root and mar
 event, MCP server and plugin writes its own marker, named for the occupant, file, entry and level, outside the
 root if anything runs it. A backend fails (`loads`) when a marker appears during its preflight, or when its own
 load dump (codex `prompt-input`, grok `inspect`, opencode `debug config`, a relative path resolved against the
-root) lists a planted file. The only pass is `isolated`: the backend's load dump ran on the planted root and
-listed nothing from it. A refusal by a filename scan (`refused`), a pass with no load dump (`unproven`) and a
-preflight that fails on a clean root too (`unchecked`) all fail the exit.
+root) lists a planted file: exit 1. A backend passes as `isolated` (its load dump ran on the planted root and
+listed nothing from it) or, with no load dump, as proven by its own recorded promotion canary when its label is
+`strong` on that version (claude 2.1.322 and 2.1.323). A refusal by a filename scan (`refused`), a pass with no
+load dump (`unproven`) and a preflight that fails on a clean root too (`unchecked`) print "unproven by --deep":
+exit 2 when nothing loaded. Exit 0 only when every backend is proven.
 
 **Auth refresh:** run once, serially, before parallel launch. Parallel legs racing a token refresh was a measured
 failure.
