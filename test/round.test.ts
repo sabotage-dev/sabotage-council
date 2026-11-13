@@ -545,9 +545,15 @@ describe('fold row 1: deletes are contained, roots are created exclusively', () 
     symlinkSync(outside, link);
     expect(removeOwnedRoot(h.layout, outside).removed).toBe(false);
     expect(removeOwnedRoot(h.layout, join(rootsDir, '..', '..')).removed).toBe(false);
-    expect(removeOwnedRoot(h.layout, join(rootsDir, 'not-a-root')).removed).toBe(false);
+    // A real dir under the roots dir without a root name, and a real dir with a root name outside it: both stay.
+    mkdirSync(join(rootsDir, 'not-a-root'));
+    expect(removeOwnedRoot(h.layout, join(rootsDir, 'not-a-root'))).toMatchObject({ removed: false, why: expect.stringContaining('not a root name') });
+    expect(existsSync(join(rootsDir, 'not-a-root'))).toBe(true);
+    const named = join(outside, rootName(h.layout, 7, 1));
+    mkdirSync(named);
+    expect(removeOwnedRoot(h.layout, named)).toMatchObject({ removed: false, why: expect.stringContaining('not directly under the roots dir') });
+    expect(existsSync(named)).toBe(true);
     expect(removeOwnedRoot(h.layout, link)).toMatchObject({ removed: false, why: expect.stringContaining('not a directory') });
-    expect(removeOwnedRoot(h.layout, join(outside, rootName(h.layout, 7, 1))).removed).toBe(false);
     expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
     expect(removeOwnedRoot(h.layout, real).removed).toBe(true);
     expect(existsSync(real)).toBe(false);
