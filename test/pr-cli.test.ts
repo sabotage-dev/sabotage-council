@@ -253,6 +253,33 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     void d;
   }, 60_000);
 
+  it('credit: a vouched-for unmarked review counts at its own head and time (plan 3.6 step 4)', async () => {
+    const src = sourceRepo();
+    const routes = pr2Routes(src.shas);
+    // An unmarked review by a council login on C5, submitted between rounds 1 and 2: not counted until credited.
+    const unmarked = ghReview(6001, 'repo-owner', 'COMMENTED', src.shas['C5']!, '2026-11-12T18:20:00Z', 'Reviewed by hand; nothing owed.');
+    (routes[`GET ${PULL}/reviews`] as { json: Json[] }).json.push(unmarked);
+    routes[`GET ${PULL}/reviews/6001`] = { json: unmarked };
+    const c = cli(routes, src);
+    const before = await c.run('round', 'start', 'pr', 'sabotage-dev/sabotage-council#2', '--dry-run', '--json');
+    expect((JSON.parse(before.lines.at(-1)!) as { round_no: number }).round_no).toBe(3);
+    const credited = await c.run('credit', 'sabotage-dev/sabotage-council#2', '6001', '--note', 'hand review');
+    expect(credited.lines).toEqual([`credited review 6001 on sabotage-dev/sabotage-council#2: head ${src.shas['C5']!.slice(0, 7)}, submitted 2026-11-12T18:20:00Z`]);
+    const after = await c.run('round', 'start', 'pr', 'sabotage-dev/sabotage-council#2', '--dry-run', '--json');
+    // Four counted heads in time order: C4 (round 1 marker), C5 (the credit), C6 (round 2 marker: 3 heads, max(3, 2)),
+    // C7 (round 3 marker: 4 heads, max(4, 3)). C7 has an event, so it is round 4.
+    expect(JSON.parse(after.lines.at(-1)!)).toMatchObject({ round_no: 4, counted: { count: 4, head_counted: true, events: 4 } });
+    const store = openStore(c.paths.dbPath);
+    try {
+      expect(store.db.prepare('SELECT review_id, commit_id, submitted_at, credited_by, note FROM credits').all().map((r) => ({ ...r }))).toEqual([
+        { review_id: 6001, commit_id: src.shas['C5'], submitted_at: '2026-11-12T18:20:00Z', credited_by: 'repo-owner', note: 'hand review' },
+      ]);
+    } finally {
+      store.close();
+    }
+    await Promise.all(c.workers);
+  }, 60_000);
+
   it('fails closed on a GitHub read that fails: round start exits 1 and stores no round', async () => {
     const src = sourceRepo();
     const routes = pr2Routes(src.shas);
