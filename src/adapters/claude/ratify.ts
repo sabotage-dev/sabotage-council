@@ -218,7 +218,15 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
   check(checks, 'sidechains', (facts?.sidechains ?? 0) === 0, `${facts?.sidechains ?? 0} sidechain entr(ies)`);
 
   const denials = result && Array.isArray(result['permission_denials']) ? result['permission_denials'] : [];
-  check(checks, 'permission-denials', result !== null && denials.length === 0, `${denials.length} permission denial(s)${denials.length > 0 ? `: ${JSON.stringify(denials).slice(0, 300)}` : ''}`);
+  // A leg with no result line (killed at its cap, or cancelled) reports no denials: the missing result fails the
+  // `result` check, and tools-used and tool-paths judge every attempt from the stream and the transcript. Failing this
+  // check too made every timed-out leg CONTAMINATED, so plan 4.4's one relaunch never ran (P5 round 1 fold).
+  check(
+    checks,
+    'permission-denials',
+    denials.length === 0,
+    result === null ? 'no result line, so no denials reported (tools-used and tool-paths judge the attempts)' : `${denials.length} permission denial(s)${denials.length > 0 ? `: ${JSON.stringify(denials).slice(0, 300)}` : ''}`,
+  );
 
   const subtype = result ? str(result['subtype']) : null;
   check(checks, 'result', result !== null && result['is_error'] === false && subtype === 'success', result === null ? 'no result line' : `is_error ${String(result['is_error'])}, subtype ${String(subtype)}`);

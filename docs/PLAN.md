@@ -252,7 +252,20 @@ Rules that hold in every round:
 - **Fail closed.** If any read fails or is partial, the round does not run; the engine never guesses round 1.
 - **Plan and diff targets.** The run store keeps the round number:
   - plan targets are keyed by repo + path;
-  - diff targets are keyed by repo + branch.
+  - diff targets are keyed by repo + branch (`HEAD` is the checked-out branch; a branch name is itself). A raw
+    sha, a tag or a detached HEAD is keyed by its resolved head commit (with uncommitted work, the commit the
+    snapshot sits on): the same work re-run is the same target, two unrelated heads never share one, and a later
+    commit starts a new series, which `round start` warns about. `--series <name>` keys any diff target by that
+    name within the repo instead, for branch and non-branch heads alike, so the series survives new commits and a
+    moving base (P5 round 2 row 1);
+  - a head counts once a council round on it (two or more counted legs) is adjudicated: a solo-reviewed head is
+    never a baseline;
+  - plan targets count revisions of the plan (the content of the plan file and any in-repository `--context`
+    path), and fold on those paths only, so an unrelated commit is neither a new round nor in `FOLD.diff`. An
+    uncommitted change to any of those paths is in the round's snapshot, so it is a new revision and in `FOLD.diff`
+    (P5 round 2 row 4);
+  - when the baseline is a snapshot of uncommitted work whose commit is an ancestor of this head (the work went on,
+    or was committed), the fold is the delta between the two trees, not a rebase. (P5 round 1 fold.)
 - **Delta baseline.** The baseline head is the newest counted head other than the current one. The round falls
   back to a full review, keeping its number and its round rule, when the baseline is:
   - missing from the mirror;
@@ -889,8 +902,9 @@ A skipped seat can drop the round below quorum. The round then fails visibly; it
 
 ### 5.3 Review root
 
-- **Location.** A fresh directory per attempt under `~/.cache/sabotage-council/roots/<round-id>-a<N>/`, never
-  reused.
+- **Location.** A fresh directory per attempt under `~/.cache/sabotage-council/roots/<store tag>-<round-id>-a<N>/`
+  (the tag hashes the store's path, so two stores never share a name), created exclusively and never reused. The
+  engine deletes a root only by that name, as a direct child of the roots dir (P5 round 1 fold).
 - **Built from a bare mirror,** with git config isolated: `GIT_CONFIG_GLOBAL=/dev/null`, no hooks, no fsmonitor.
   `git archive` writes to a temp file and then extracts. Piping it failed rounds on macOS with SIGPIPE.
 - **Contents:**
@@ -930,6 +944,13 @@ SQLite at `~/.local/share/sabotage-council/council.db`. Raw artifacts go in roun
 
 Retention: DB rows are kept forever, because the scorecard needs history. Round dirs are kept for 90 days, and
 roots are deleted at round end (failed rounds keep them for 2 days) (Q6). The full schema is in section 8.
+
+Built in P5: a round dir is `rounds/<round id>/` beside the database (the brief, `round.json` with the round's
+inputs, `sealed.json`, the worker's record and log, one dir per leg with its stream, records, `answer.md`,
+`ratification.json` and `reply.json`, then `summary.json` and `ADJUDICATION.json`). Rows are written as the round
+goes: the round at `running`, each leg at `RUNNING` and then its final status, `awaiting-adjudication` (or `failed`
+with no ratified leg) when the legs settle, and `adjudicated` once `adjudicate` stores the verdict. The root is
+deleted when the adjudication is stored; pruning of round dirs and failed rounds' roots is P8.
 
 ## 6. Security model
 
@@ -1130,10 +1151,9 @@ Cross-checks enforced by code:
   `ruling`. It is also rejected when an earlier item or human ask that is owed-eligible under the round's rule
   (3.5) is `open` or `half-closed` without a linked owed finding (`fix_row`).
 - **Human asks.** Each ask in the brief's change-request section has one `findings` row with
-  `kind: "human_ask"`. `human_asks[]` entries point at that row, and the owed count covers those rows.
+  `kind: "human_ask"` and one `human_asks[]` row pointing at it, and the owed count covers those rows.
 - **Coverage.** Every earlier item has a row, except closed-context items (3.5). A regression in the code they
-  cover is caught by rule (a) of the delta round. Every ask in the brief's change-request section has a `human_asks`
-  row.
+  cover is caught by rule (a) of the delta round.
 - **Refutations.** `refuted` rows have proof. A finding raised by 2+ seats that would be owed under the round's
   rule (3.4 rule 3), and is `refuted`, forces `needs_ruling` in `auto`.
 - **Identity.** Nonce and head match.
@@ -1154,7 +1174,7 @@ Finding ids:
 | `targets` | id, kind (`pr`, `plan`, `diff`), repo, number, path, branch |
 | `rounds` | id, target_id, round_no, mode, head_sha, base_sha, baseline_sha, full_round_reason, nonce, roster_json (snapshot), started_at, finished_at, verdict, owed_count, approve, needs_ruling, event_posted, review_id, status, adjudicator_model_observed, adjudicator_tools_json, adjudicator_denials_json, adjudicator_cost_usd, adjudicator_turns, adjudicator_ms |
 | `occupants` | id, backend, model, effort, transport (one row per distinct occupant ever seated) |
-| `legs` | id, round_id, seat_id, occupant_id, attempt, role (`primary`, `fallback`), enforcement_label, cli_version, status (`PASS`, `FAIL`, `REFUSED`, `CONTAMINATED`, `PREFLIGHT_FAIL`), failure_class, verdict_raw, verdict_effective, model_observed, effort_observed, cwd_ok, tools_used_json, tools_offered_json, root_mutated, nonce_seen, started_at, finished_at, duration_ms, tokens_in, tokens_out, cost_usd, credits, quota_used_pct (numeric, from the CLI's own rate-limit record where it has one), quota_note, record_path |
+| `legs` | id, round_id, seat_id, occupant_id, attempt, role (`primary`, `fallback`), enforcement_label, cli_version, status (`PASS`, `FAIL`, `REFUSED`, `CONTAMINATED`, `PREFLIGHT_FAIL`; `RUNNING` while the leg is out), failure_class, verdict_raw, verdict_effective, model_observed, effort_observed, cwd_ok, tools_used_json, tools_offered_json, root_mutated, nonce_seen, started_at, finished_at, duration_ms, tokens_in, tokens_out, cost_usd, credits, quota_used_pct (numeric, from the CLI's own rate-limit record where it has one), quota_note, record_path |
 | `leg_findings` | id, leg_id, local_id (`F1`), severity_raw, severity, path, line, title, extracted_by (`leg`, `adjudicator`), mapped_round_id, mapped_finding_id (null when unmapped), unmapped_reason |
 | `findings` | PK (round_id, id); kind (`finding`, `human_ask`), title, path, line, severity, outcome, owner, proof_ref, same_as, closes_item, ruling_result (`upheld`, `overturned`, null), ruled_by, ruled_at |
 | `finding_sources` | round_id, finding_id, leg_finding_id: every seat that raised the finding, duplicates included, at its own severity |
@@ -1199,19 +1219,29 @@ evidence rows behind the flag. It never swaps a seat by itself.
 
 ### 9.1 `plan <file> [--context <path|repo@ref> ...]`
 
-- **Root:** the plan at its repo-relative path plus the named context, each pinned at a ref.
+- **Root:** the plan at its repo-relative path plus the named context, each pinned at a ref. A `--context` path
+  inside the repository is read from the round's head (the snapshot below), so its copy in the root, the revision
+  and `FOLD.diff` all hold the same content (P5 round 2 row 4). A `repo@ref` is pinned; a local path outside the
+  repository is copied as it is when the root is built. A local path that is the repository top, or contains it, is
+  refused, since its live copy would carry the repository's ignored files; `<repo>@<ref>` gives the committed tree
+  (P5 round 3 row 1).
 - **Brief questions:** what is infeasible, what is missing (failure modes, migrations, rollbacks), what
   contradicts itself, which assumptions are unverified.
 - **Later rounds:** round 2+ reviews the plan's diff since the last reviewed revision.
 - **Target:** keyed by repo + path. The plan should be committed so revisions have SHAs; the engine snapshots an
-  uncommitted file with `git hash-object`.
+  uncommitted plan, and any uncommitted in-repository `--context` path, into one snapshot commit on HEAD (a file
+  with `git hash-object`; a directory with its tracked changes and untracked, non-ignored files, secret-named files
+  left out with a warning).
 
 ### 9.2 `diff [<base>..<head>]`
 
 - **Default range:** merge-base with the default branch .. `HEAD`.
-- **Uncommitted changes:** the working tree is snapshotted to a commit object (`git stash create`, with a
-  `write-tree` fallback), never touching the user's index or branches.
-- **Target:** keyed by repo + branch. Round 2+ reviews from the last reviewed head.
+- **Uncommitted changes:** the working tree is snapshotted to a commit object through a private index
+  (`GIT_INDEX_FILE` set to a temp file: `read-tree HEAD`, `git add --all`, `write-tree`, `commit-tree -p HEAD`), so
+  untracked, non-ignored files are included and the user's index and branches are never touched. (`git stash
+  create`, the first design, leaves untracked files out; P5 round 1 owed row.)
+- **Target:** keyed by repo + branch; a sha, a tag or a detached HEAD by its head commit; or by `--series <name>`
+  for any head (3.6). Round 2+ reviews from the last reviewed head.
 - This is the "council runs against git diffs while building" loop.
 
 ### 9.3 `pr <owner/repo#num | url> [--post | --dry-run]`
@@ -1489,5 +1519,6 @@ a builder should reconcile when building the named phase.
 | N6, N7, N21 | Folded in P3: 4.1 names four conditions and says each ACP backend stays `pending` until its own canary (opencode's in P4) (N6); the P3 row says the adapter-declared mode (N7); 4.1 says a run caught only at ratification fails the canary (N21). | 4.1, 10 | P3 |
 | N22-N25 | Folded in rev 1.5 (council round 5's follow-ups): the codex native list is declared verbatim and enforced as an allowlist, orchestration calls are allowed at use, and P2 replays the exec-only and delegating fixtures. | 4.5, 10 | P2 |
 | N8, N12, N15-N18, N27-N32 | Folded in P2: the P2 row's child case reads "a subagent whose own rollout fails" (N8); 4.2 says how MCP names and child rollouts are found (N12), where a denial shows and what is parsed (N15, N16); 4.5 lists the fail-closed path rules, the reads, the offer-to-call map, exact membership, calls on children and the input stall (N17, N18, N28-N31); N27's delegating leg was recorded fresh with one cheap live run; N32's two references now say D17. | 4.2, 4.5, 3.5 | P2 |
+| N13 | Folded in P5: 7.3's Human asks bullet now carries the `human_asks` row, and Coverage no longer repeats it. | 7.3 | P5 |
 | N26 | 3.2's verdict-line wording vs the P1 split-line test; the P1 findings fixture should also cover YAML; this section's header and intro say "round 3" for items from later rounds. | 3.2, 10, 15 | P1 |
 | N1, N9 | Folded in P4: 5.2 names grok with its sandbox running and no MCP server `pending` (and the adapter labels it so), and `weak` with `--sandbox off` (N1); 4.2's grok read-path audit reads `updates.jsonl` `rawInput` and cross-checks it against the stream's tool uses, not `chat_history.jsonl` (N9). | 4.2, 5.2 | P4 |

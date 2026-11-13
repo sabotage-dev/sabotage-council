@@ -29,9 +29,10 @@ Planned modes:
 
 ## Status
 
-Building (P4). Built so far: the config schema and loader, the run store, the review root and brief, the reply
-parsers, the headless transport with the codex, claude, grok, cursor and muse seats, and the ACP transport with
-the antigravity, kiro and opencode seats. There are no review rounds yet. The v1 build plan is
+Building (P5). Built so far: the config schema and loader, the run store, the review root and brief, the reply
+parsers, the headless transport with the codex, claude, grok, cursor and muse seats, the ACP transport with the
+antigravity, kiro and opencode seats, and the round runner with the `plan` and `diff` modes, the `adjudicate`
+validator and the Claude Code plugin. `pr` and `auto` come later. The v1 build plan is
 [docs/PLAN.md](docs/PLAN.md).
 
 Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322 and 2.1.323, the
@@ -53,6 +54,55 @@ the planted root by a filename scan), except claude on a version whose label is 
 promotion canary (2.1.322 and 2.1.323): its line says isolation is proven by that canary instead. Exit codes:
 `0` every seat proven (by its load dump or its canary), `1` some seat loaded a planted file (or another doctor
 check failed), `2` nothing loaded but some seat is unproven by `--deep`.
+
+### Running a round
+
+From a git repository:
+
+```sh
+sabotage-council round start plan docs/PLAN.md --json   # or: round start diff [<base>..<head>] --json
+sabotage-council round wait <id>                         # blocks until the legs settle; prints JSON
+sabotage-council round show <id>                         # a readable summary, any time
+sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, print the effective verdict
+```
+
+- `round start plan <file>` reviews a written plan. `--context <path|repo@ref>` adds other paths or repositories
+  to the root, `--fact <text>` gives the seats an established fact they must not refile, and `--question <text>`
+  (at most 3) replaces the default questions. An uncommitted plan, and uncommitted changes to a `--context` path
+  inside the repository, are snapshotted together, and the round reviews that snapshot: its revision, `FOLD.diff`
+  and the root's copy of the context agree.
+- `round start diff [<base>..<head>]` reviews a branch diff; the default is the merge-base with the default branch
+  to HEAD, with uncommitted work snapshotted to a commit object (your index and branches are never touched; the
+  ignore rules `git status` uses apply, including the excludes file the repository's own config names, and
+  untracked files named like secrets, such as `.env*` or `*.pem`, are left out with a warning). An explicit range
+  reviews committed history; `--uncommitted` adds the work tree. Rounds on one branch form one series: they number
+  together and carry earlier items. A sha, a tag or a detached HEAD has no branch, so its series is keyed by the
+  head commit, and a later commit starts a new series (`round start` warns). `--series <name>` names the series
+  instead, for any head: rounds with that name in the repository form one series, whatever the head or the base.
+- `round start` numbers the round from the store (a head counts once a council round on it, with two or more
+  counted legs, is adjudicated; a plan round counts revisions of the plan, so an unrelated commit is not a new
+  round), builds and seals the root, writes the brief, and starts a detached worker that runs the legs; it prints
+  the round id (or JSON with `--json`) and returns. The worker preflights every seat and fallback serially,
+  launches the legs in parallel, moves a seat to its fallback within the round on `usage_limit` or `auth` (or when
+  its primary fails preflight), relaunches a leg once on `capacity`, `transport`, `empty` or `timeout` while the
+  round has time, rebuilds the root first if it changed, ratifies every leg, sweeps the root for residue, and
+  settles quorum over distinct occupants: 2 or more ratified legs is a council round, 1 is a labelled solo review
+  that never approves, 0 fails the round.
+- `round wait <id> [--timeout <minutes>]` exits 0 when the legs settle, 1 when the round failed (or its worker
+  died), and 3 when the timeout ran out first.
+- `adjudicate <id> <file> [--check]` checks `ADJUDICATION.json` (plan 7.3) against the round as the store
+  recorded it and stores it, once, only if every check passes; each rejection names its class (`[attribution]`,
+  `[round-rule]`, ...). `--check` validates only and lists every majority override with its proof, to show before
+  storing.
+- Every command takes `--config`, `--db` and `--roots`. The store defaults to
+  `~/.local/share/sabotage-council/council.db`, with round dirs in `rounds/<id>/` beside it; roots are built under
+  `~/.cache/sabotage-council/roots/` as `<store tag>-<round id>-a<attempt>` and deleted, by that name only, once the
+  round is adjudicated. A round dir's `round.json` is a display copy: the store decides.
+
+The Claude Code plugin in [plugin/](plugin/) runs this loop from a session: `/sabotage-council:council plan
+<file>` or `diff`, then the session adjudicates by [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md). The plugin
+pre-approves only the read-only commands and `adjudicate`: Claude Code asks you to approve every `round start`,
+since a round costs money and the session reads the legs' untrusted answers.
 
 ### Backend notes
 

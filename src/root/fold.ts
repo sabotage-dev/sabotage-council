@@ -28,8 +28,8 @@ function short(sha: string): string {
 }
 
 /** Read as bytes: a name that is not valid UTF-8 throws FileNameError rather than decoding with replacements. */
-function changedFiles(shadow: ShadowRepo, baseline: string, head: string): string[] {
-  const out = runGit(['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', baseline, head], { gitDir: shadow.gitDir });
+function changedFiles(shadow: ShadowRepo, baseline: string, head: string, paths: readonly string[]): string[] {
+  const out = runGit(['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', baseline, head, ...pathspec(paths)], { gitDir: shadow.gitDir });
   const where = `the diff from ${short(baseline)} to ${short(head)}`;
   return splitNul(out.stdout).map((raw) => decodeName(raw, where));
 }
@@ -39,7 +39,23 @@ function changedFiles(shadow: ShadowRepo, baseline: string, head: string): strin
  * (plan 3.6, D17). In P1 nothing beyond the local repository is tried for a missing baseline; P6 adds the exact
  * fetch. Checked in order: missing, not an ancestor (force-push or rebase), empty fold.
  */
-export function detectFold(shadow: ShadowRepo, baseline: string, head: string): FoldPlan {
+export interface FoldOptions {
+  /** Limit the fold (FOLD.diff, the changed files and the empty-fold check) to these repository paths. */
+  paths?: readonly string[] | undefined;
+  /**
+   * The baseline is a snapshot of uncommitted work whose parent is an ancestor of this head: the work went on, or
+   * was committed. Its tree is still the reviewed content, so the fold is a delta, not a rebase.
+   */
+  snapshotBaseline?: boolean | undefined;
+}
+
+/** `-- <paths>` (literal pathspecs), or nothing. */
+export function pathspec(paths: readonly string[] | undefined): string[] {
+  return paths === undefined || paths.length === 0 ? [] : ['--', ...paths.map((p) => `:(literal)${p}`)];
+}
+
+export function detectFold(shadow: ShadowRepo, baseline: string, head: string, options: FoldOptions = {}): FoldPlan {
+  const paths = options.paths ?? [];
   if (!commitExists(shadow, baseline)) {
     return {
       kind: 'fallback',
@@ -49,16 +65,16 @@ export function detectFold(shadow: ShadowRepo, baseline: string, head: string): 
       changedFiles: CHANGED_FILES_UNKNOWN,
     };
   }
-  if (!isAncestor(shadow, baseline, head)) {
+  if (options.snapshotBaseline !== true && !isAncestor(shadow, baseline, head)) {
     return {
       kind: 'fallback',
       baseline,
       fallback: 'not-ancestor',
       reason: `the baseline head ${short(baseline)} is not an ancestor of this head (force-push or rebase)`,
-      changedFiles: changedFiles(shadow, baseline, head),
+      changedFiles: changedFiles(shadow, baseline, head, paths),
     };
   }
-  const empty = runGit(['diff', '--quiet', '--no-ext-diff', baseline, head], { gitDir: shadow.gitDir, okStatuses: [0, 1] });
+  const empty = runGit(['diff', '--quiet', '--no-ext-diff', baseline, head, ...pathspec(paths)], { gitDir: shadow.gitDir, okStatuses: [0, 1] });
   if (empty.status === 0) {
     return {
       kind: 'fallback',

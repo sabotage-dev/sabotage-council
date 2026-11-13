@@ -233,6 +233,27 @@ export function checkFallbacksDiffer(seats: readonly SeatConfig[]): ConfigIssue[
   return issues;
 }
 
+/**
+ * A fallback must not be the occupant of another seat, or another seat's fallback (fold row 5): seated, it would let
+ * one model cast two votes toward quorum and the verdict.
+ */
+export function checkFallbacksAcrossSeats(seats: readonly SeatConfig[]): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  seats.forEach((seat, i) => {
+    const f = seat.fallback;
+    if (!f) return;
+    seats.forEach((other, j) => {
+      if (j === i) return;
+      if (sameOccupant(f, other)) {
+        issues.push({ path: `seats[${i}].fallback`, message: `seat "${seat.id}"'s fallback is the same occupant as seat "${other.id}" (${describe(other)}); seated, one model would vote twice` });
+      } else if (j > i && other.fallback && sameOccupant(f, other.fallback)) {
+        issues.push({ path: `seats[${j}].fallback`, message: `seats "${seat.id}" and "${other.id}" have the same fallback occupant (${describe(f)}); both seated, one model would vote twice` });
+      }
+    });
+  });
+  return issues;
+}
+
 function describe(o: OccupantKey): string {
   return [o.backend, o.model, o.effort].filter((part) => part !== undefined).join(' / ');
 }
