@@ -1086,4 +1086,42 @@ describe('pr rounds: post-step safety (P6 round 2)', () => {
     expect(post(w, id, 'post')).toMatchObject({ outcome: 'posted', event: 'APPROVE' });
     expect(postsSent(w)).toHaveLength(1);
   }, 60_000);
+
+  it('row 5: adoption takes a dismissed review for an interrupted APPROVE or REQUEST_CHANGES, never for a COMMENT', async () => {
+    // A COMMENT intent (the author's own PR): a dismissed review with its marker and body is not the comment it meant.
+    const w = await world((r, src) => {
+      reopen(r);
+      moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }), src);
+    });
+    const { id } = await councilRound(w, { dryRun: false }, APPROVE);
+    expect(post(w, id, 'dry-run').event).toBe('COMMENT');
+    const routes = pr2Routes(w.src.shas);
+    reopen(routes);
+    moveHead(routes, w.src.shas['D']!, w.src);
+    routes[`POST ${API_PULL}/reviews`] = { fail: 'gh: connection reset' };
+    w.gh.setRoutes(routes);
+    expect(() => post(w, id, 'post')).toThrow(/connection reset/);
+    const intended = (postsSent(w)[0]!.body as { body: string }).body;
+    jsonList(routes, `GET ${API_PULL}/reviews`).push(ourReview(990070, 'DISMISSED', w.src.shas['D']!, intended));
+    routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990071, login: 'repo-owner' } };
+    w.gh.setRoutes(routes);
+    expect(post(w, id, 'post')).toMatchObject({ outcome: 'posted', event: 'COMMENT', reviewId: 990071 });
+    expect(postsSent(w)).toHaveLength(2);
+
+    // An APPROVE intent: the same dismissed review is the approval it meant (dismissed since), so it is adopted.
+    const a = await world(approvable);
+    const ap = await councilRound(a, { dryRun: false }, APPROVE);
+    post(a, ap.id, 'dry-run');
+    const aroutes = pr2Routes(a.src.shas);
+    approvable(aroutes, a.src);
+    aroutes[`POST ${API_PULL}/reviews`] = { fail: 'gh: connection reset' };
+    a.gh.setRoutes(aroutes);
+    expect(() => post(a, ap.id, 'post')).toThrow(/connection reset/);
+    jsonList(aroutes, `GET ${API_PULL}/reviews`).push(ourReview(990001, 'DISMISSED', a.src.shas['D']!, (postsSent(a)[0]!.body as { body: string }).body));
+    a.gh.setRoutes(aroutes);
+    const adopted = post(a, ap.id, 'post');
+    expect(adopted).toMatchObject({ outcome: 'already-posted', event: 'APPROVE', reviewId: 990001 });
+    expect(adopted.guards).toEqual([expect.objectContaining({ kind: 'approval-race', status: 'done', outcome: 'our approval is already withdrawn' })]);
+    expect(postsSent(a)).toHaveLength(1);
+  }, 120_000);
 });

@@ -255,9 +255,11 @@ function bodyMatches(landed: string, intent: Intent): boolean {
 
 /**
  * The reviews an interrupted post may adopt (plan 9.4, row 4): ours (github.login), submitted, first line this
- * round's marker, with the body and the event the post meant to send (a dismissed review's event is unknown, so only
- * its body is matched), and stored on no other round of this store. Wherever GitHub bound it: one bound to another
- * commit than the reviewed head is ours too, and is adopted with its withdrawal owed (P6 round 2 row 1).
+ * round's marker, with the body and the event the post meant to send, and stored on no other round of this store. A
+ * dismissed review's event is unknown, so only its body is matched, and only for an APPROVE or REQUEST_CHANGES
+ * intent: GitHub dismisses no comment, so a dismissed review is never a COMMENT the post meant (P6 round 2 row 5).
+ * Wherever GitHub bound it: one bound to another commit than the reviewed head is ours too, and is adopted with its
+ * withdrawal owed (P6 round 2 row 1).
  */
 function adoptable(db: DatabaseSync, round: RoundRow, pr: PrSnapshot, login: string, intent: Intent): Review[] {
   const storedElsewhere = db.prepare('SELECT 1 FROM rounds WHERE review_id = ? AND id <> ?');
@@ -266,7 +268,7 @@ function adoptable(db: DatabaseSync, round: RoundRow, pr: PrSnapshot, login: str
       r.state !== 'PENDING' &&
       sameLogin(r.login, login) &&
       firstLine(r.body) === round.marker &&
-      (intent.event === undefined || r.state === 'DISMISSED' || EVENT_OF_STATE[r.state] === intent.event) &&
+      (intent.event === undefined || (r.state === 'DISMISSED' ? intent.event !== 'COMMENT' : EVENT_OF_STATE[r.state] === intent.event)) &&
       bodyMatches(r.body, intent) &&
       storedElsewhere.get(r.id, round.id) === undefined,
   );
