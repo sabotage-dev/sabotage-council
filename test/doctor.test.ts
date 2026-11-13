@@ -138,11 +138,12 @@ describe('doctor preflight per seat (plan 4.3)', () => {
     const home = mkdtempSync(join(tmpdir(), 'sc-kiro-auth-home-'));
     try {
       writeFileSync(configPath, PLAN_EXAMPLE.replace('effort = "high", on = ["usage_limit", "auth"] }', `effort = "high", auth_home = "${home}", on = ["usage_limit", "auth"] }`));
-      const adapters: SeatAdapters = (backend) => (backend === 'kiro' ? stubAdapter({ enforcement: 'pending', cliVersion: '3.2.1' }) : undefined);
+      const adapters: SeatAdapters = (backend) => (backend === 'kiro' ? stubAdapter({ enforcement: 'pending', cliVersion: '3.2.1', data: { credential: 'auth_home store' } }) : undefined);
       const { code, lines } = await doctor({ adapters });
       expect(code).toBe(0);
       expect(lines).toContain(`  a  codex / gpt-6.1-sol / high  (fallback kiro / gpt-5.6-sol / high, auth_home ${home} on usage_limit, auth)`);
       expect(lines).toContain(`        home  ${home} (auth_home)`);
+      expect(lines).toContain('        credential  auth_home store');
       writeFileSync(configPath, PLAN_EXAMPLE);
       const plain = await doctor({ adapters });
       expect(plain.lines).toContain("        home  the user's HOME (default)");

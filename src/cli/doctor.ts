@@ -118,7 +118,10 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
           }
           options.write(`  ${name}: ${pre.cliVersion !== null ? `${o.backend} ${pre.cliVersion}, ` : ''}enforcement ${pre.enforcement}`);
           // Which HOME a kiro seat signs in from (plan 4.3, the auth_home setting).
-          if (o.backend === 'kiro') options.write(`        home  ${o.authHome !== undefined ? `${o.authHome} (auth_home)` : "the user's HOME (default)"}`);
+          if (o.backend === 'kiro') {
+            options.write(`        home  ${o.authHome !== undefined ? `${o.authHome} (auth_home)` : "the user's HOME (default)"}`);
+            if (typeof pre.data['credential'] === 'string') options.write(`        credential  ${pre.data['credential']}`);
+          }
           for (const c of pre.checks) {
             if (c.status === 'fail') failed = true;
             options.write(`        ${c.status.padEnd(4)}  ${c.name}: ${c.detail}`);
