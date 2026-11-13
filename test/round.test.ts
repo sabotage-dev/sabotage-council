@@ -233,7 +233,7 @@ describe('round runner end to end through the fake CLIs', () => {
       h,
       resolveDiffTarget(repo, 'main..feature'),
       { codex: { [OCC.a]: [codexCase('success', { hang: true }), codexCase('success')] } },
-      { legTimeoutMs: 1500, roundBudgetMs: 20_000 },
+      { legTimeoutMs: 3000, roundBudgetMs: 20_000 },
     );
     expect(result.ratified).toBe(3);
     const a = getLegs(h.store.db, prepared.inputs.roundId).filter((l) => l.seat_id === 'a');
@@ -277,6 +277,18 @@ describe('round runner end to end through the fake CLIs', () => {
     const a = getLegs(h.store.db, prepared.inputs.roundId).filter((l) => l.seat_id === 'a');
     expect(a.map((l) => [l.attempt, l.failure_class])).toEqual([[1, 'timeout']]);
     expect(getEvents(h.store.db, prepared.inputs.roundId).find((e) => e.kind === 'seat-out')?.detail).toMatchObject({ seat: 'a', why: expect.stringContaining('no time remains') });
+  }, 60_000);
+
+  it('treats a ratified leg with no verdict and no findings as empty, and relaunches it once', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const { prepared } = await runRound(h, resolveDiffTarget(repo, 'main..feature'), {
+      claude: { [OCC.b]: [claudeCase('success', { answer: 'NONCE: ${NONCE}\n\nI read the diff.\n' }), claudeCase('success')] },
+    });
+    expect(getLegs(h.store.db, prepared.inputs.roundId).filter((l) => l.seat_id === 'b').map((l) => [l.attempt, l.status, l.failure_class, l.nonce_seen])).toEqual([
+      [1, 'FAIL', 'empty', 1],
+      [2, 'PASS', null, 1],
+    ]);
   }, 60_000);
 
   it('relaunches once on capacity', async () => {

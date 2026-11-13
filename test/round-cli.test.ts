@@ -177,7 +177,7 @@ describe('CLI: round start / wait / show and adjudicate', () => {
     const id = started.lines.at(-1)!;
     const waiting = await c.run('round', 'wait', id, '--timeout', '0.001');
     expect(waiting.code).toBe(3);
-    expect(JSON.parse(waiting.lines.join('\n'))).toMatchObject({ status: 'running' });
+    expect(JSON.parse(waiting.lines.join('\n'))).toMatchObject({ status: 'running', quorum: { note: 'running: 0 leg(s) ratified so far' } });
     // A worker record whose process is gone: the round fails visibly.
     writeFileSync(runnerFile(join(layoutOf(c.paths).roundsDir, id)), JSON.stringify({ pid: 2 ** 22 + 12345, started_at: new Date().toISOString() }));
     const dead = await c.run('round', 'wait', id);

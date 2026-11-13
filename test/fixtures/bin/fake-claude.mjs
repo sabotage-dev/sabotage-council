@@ -9,6 +9,7 @@
 // - `replay: true`: the fixture's nonce, model and effort (from its case.json) become the round's nonce (read from
 //   the brief on stdin) and the requested --model and --effort, so a recorded leg replays as this round's leg.
 // - `delayMs` and `writeIntoRoot`: wait, then write that file into the root before answering.
+// - `answer`: the result text to answer with instead of the fixture's (`${NONCE}` is the round's nonce).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -54,6 +55,14 @@ if (args[0] === '--version') {
   }
   const subst = (s) => replay(s.split('__SC_ROOT__').join(process.cwd()).split(FIXTURE_SESSION).join(session));
   const lines = subst(readFileSync(join(config.fixture, 'stream.jsonl'), 'utf8')).split('\n').filter((l) => l !== '');
+  // Round tests: replace the answer (`${NONCE}` stands for the round's nonce).
+  if (config.answer) {
+    const nonce = /NONCE: ([0-9a-f]{12})/.exec(stdin)?.[1] ?? '';
+    const at = lines.findIndex((l) => JSON.parse(l).type === 'result');
+    const result = JSON.parse(lines[at]);
+    result.result = config.answer.split('${NONCE}').join(nonce);
+    lines[at] = JSON.stringify(result);
+  }
   if (config.initTools || config.initVersion) {
     const init = JSON.parse(lines[0]);
     if (config.initTools) init.tools = config.initTools;

@@ -147,7 +147,7 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
   const inputs = readRoundInputs(roundDir);
   const legs = getLegs(store.db, roundId).map((l) => legSummary(roundDir, l));
   const ratified = legs.filter((l) => l.counted).length;
-  const label = round.status === 'running' ? (ratified >= 2 ? 'council' : ratified === 1 ? 'solo' : 'none') : quorumOf(ratified);
+  const label = quorumOf(ratified);
   const events = getEvents(store.db, roundId);
   const settled = events.find((e) => e.kind === 'legs-settled')?.ts ?? null;
   // Wall time to settlement (the legs); a failed round without a settlement event ends at finished_at.
@@ -168,7 +168,12 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
     nonce: round.nonce,
     snapshot: inputs.snapshot,
     status: round.status,
-    quorum: { label, ratified, seats: inputs.roster.seats.length, note: quorumNote(label, ratified) },
+    quorum: {
+      label,
+      ratified,
+      seats: inputs.roster.seats.length,
+      note: round.status === 'running' ? `running: ${ratified} leg(s) ratified so far` : quorumNote(label, ratified),
+    },
     round_dir: roundDir,
     root: inputs.root,
     brief_path: inputs.briefFile,
