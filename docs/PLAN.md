@@ -258,8 +258,8 @@ Rules that hold in every round:
     never a baseline;
   - plan targets count revisions of the plan (the content of the plan file and any in-repository `--context`
     path), and fold on those paths only, so an unrelated commit is neither a new round nor in `FOLD.diff`;
-  - a follow-up snapshot of uncommitted work builds on the last reviewed snapshot when that one sits on the same
-    HEAD, so the round is a delta, not a rebase. (P5 round 1 fold.)
+  - when the baseline is a snapshot of uncommitted work whose commit is an ancestor of this head (the work went on,
+    or was committed), the fold is the delta between the two trees, not a rebase. (P5 round 1 fold.)
 - **Delta baseline.** The baseline head is the newest counted head other than the current one. The round falls
   back to a full review, keeping its number and its round rule, when the baseline is:
   - missing from the mirror;
