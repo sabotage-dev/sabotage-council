@@ -29,12 +29,20 @@ Planned modes:
 
 ## Status
 
-Building (P3). Built so far: the config schema and loader, the run store, the review root and brief, the reply
-parsers, the headless transport with the codex and claude seats, and the ACP transport with the antigravity and
-kiro seats. There are no review rounds yet. The v1 build plan is [docs/PLAN.md](docs/PLAN.md).
+Building (P4). Built so far: the config schema and loader, the run store, the review root and brief, the reply
+parsers, the headless transport with the codex, claude, grok, cursor and muse seats, and the ACP transport with
+the antigravity, kiro and opencode seats. There are no review rounds yet. The v1 build plan is
+[docs/PLAN.md](docs/PLAN.md).
 
-Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong`, codex is `sandboxed-exec`, and
-antigravity and kiro are `pending`: their promotion canaries ran and did not prove every action (plan 14).
+Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on the version its canary ran on)
+and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their promotion canaries ran and did
+not prove every action was refused before it ran (plan 14). grok is `weak` with `--sandbox off` (it would be
+`pending` with its sandbox running). cursor and muse are `weak`: no live canary runs for them in v1. With the
+default `untrusted_seat_policy = "fallback"`, a round on a PR from an author without write access needs `strong`
+fallbacks for those seats, or it fails below quorum, visibly.
+
+`doctor --deep` runs every seat's preflight against a canary root of planted hooks, rules and MCP config for
+every backend, and fails a backend that loads one.
 
 ### Backend notes
 
@@ -51,6 +59,25 @@ antigravity and kiro are `pending`: their promotion canaries ran and did not pro
   `KIRO_HOME`. A seat may set `auth_home = "/abs/dir"` to use a separate Kiro login (for example a personal one
   beside a work one): kiro-cli then runs with `HOME` there, and `doctor` shows which home each seat uses. Log that
   home in once with `HOME=/abs/dir kiro-cli login`.
+- **Grok (`grok`).** Seats run headless with a read-only tool allowlist, `dontAsk`, deny rules and `HOME`
+  isolated per leg. `--sandbox read-only` refuses to start on a Mac whose Docker Desktop socket is a symlink, so
+  such a seat sets `sandbox = "off"` (label `weak`). An MCP server in your grok config would start inside the
+  leg, so a seat with one is refused at preflight, and a leg that started one fails: use `XAI_API_KEY` (the leg
+  then runs on its own empty grok home) or disable the server in your grok config yourself. Reads outside the
+  root are not refused before they run (measured): the ratifier catches them.
+- **opencode.** Seats run `opencode acp` with a council agent, on per-leg XDG dirs and database, so saved
+  opencode accounts never reach a leg: credentials come from provider environment variables, or use the free
+  `opencode/*` models. opencode refused an outside read by path itself; a read through a symlink inside the root
+  ran in the canary (the review root replaces such links with text files, but the label stays `pending`).
+- **Cursor (`cursor-agent`).** Seats call the newest release under `~/.local/share/cursor-agent/versions/` by
+  path, never `agent` on PATH (the Cursor installer repoints that name). Print mode needs `--trust`; the council
+  config and its deny-all-but-reads hook live in a per-leg `CURSOR_CONFIG_DIR`. With `CURSOR_API_KEY` the leg also
+  gets its own `HOME`; on the keychain login Cursor may import your `~/.claude` hooks, and `doctor` lists them.
+  `doctor` refuses Cursor seats in `auto`.
+- **Muse Code (`muse`).** Seats always run with contributor mode off (on by default for subscriptions, it lets
+  Meta train on the reviewed code), the read-only permission profile, and never `--trust-workspace`.
+  `META_API_KEY`, when set, wins over your `muse login` session and bills pay-as-you-go; `doctor` says which one a
+  seat uses.
 
 ## Development
 
