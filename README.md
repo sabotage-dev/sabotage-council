@@ -29,9 +29,28 @@ Planned modes:
 
 ## Status
 
-Building (P0). This phase is the scaffold: the config schema and loader, the run store and its migrations, and a
-`doctor` skeleton. There are no seat adapters and no review rounds yet. The v1 build plan is
-[docs/PLAN.md](docs/PLAN.md).
+Building (P3). Built so far: the config schema and loader, the run store, the review root and brief, the reply
+parsers, the headless transport with the codex and claude seats, and the ACP transport with the antigravity and
+kiro seats. There are no review rounds yet. The v1 build plan is [docs/PLAN.md](docs/PLAN.md).
+
+Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong`, codex is `sandboxed-exec`, and
+antigravity and kiro are `pending`: their promotion canaries ran and did not prove every action (plan 14).
+
+### Backend notes
+
+- **Antigravity (`agy`).** Seats run `agy acp`, the documented client route, never `agy -p`. Google's FAQ says
+  wrapping `agy` in third-party tools is not supported on consumer plans and can lead to account suspension.
+  The documented headless route is a Gemini API key: set `GEMINI_API_KEY` and the seat runs with
+  `modelProvider: "gemini"`. A consumer sign-in also works, at your own risk. Each leg runs on its own
+  `--gemini-dir`. Measured on agy 1.5.7 with no model call: agy then reads its settings and its MCP config from
+  that directory, not from `~/.gemini` (an MCP server planted in `~/.gemini` did not start). Not measured:
+  whether your global `GEMINI.md`, skills, plugins and hooks in `~/.gemini` stay out. The root sanitizer and the
+  per-call permission check apply either way. agy still runs with your real HOME, which its keyring sign-in
+  needs.
+- **Kiro (`kiro-cli`).** Seats run `kiro-cli acp` on the v2 engine with a council agent profile in a per-leg
+  `KIRO_HOME`. A seat may set `auth_home = "/abs/dir"` to use a separate Kiro login (for example a personal one
+  beside a work one): kiro-cli then runs with `HOME` there, and `doctor` shows which home each seat uses. Log that
+  home in once with `HOME=/abs/dir kiro-cli login`.
 
 ## Development
 

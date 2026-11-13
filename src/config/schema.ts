@@ -43,10 +43,20 @@ const githubLogin = z
   .string()
   .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/, { error: 'not a valid GitHub login' });
 
+/**
+ * `auth_home` (kiro seats and fallbacks only): the HOME kiro-cli runs with, so a separate Kiro login is read from
+ * its own token store. Absolute here; that it exists and the backend is kiro are checked in rules.ts.
+ */
+const authHome = z
+  .string()
+  .min(1)
+  .refine((p) => p.startsWith('/'), { error: 'auth_home must be an absolute path' });
+
 export const fallbackSchema = z.strictObject({
   backend,
   model: modelId,
   effort: effort.optional(),
+  auth_home: authHome.optional(),
   on: z
     .array(z.enum(FALLBACK_TRIGGERS, { error: 'fallback.on takes only usage_limit or auth (plan 3.1, 4.4)' }))
     .min(1, { error: 'fallback.on needs at least one failure class' }),
@@ -58,6 +68,7 @@ export const seatSchema = z.strictObject({
   model: modelId,
   effort: effort.optional(),
   sandbox: z.enum(GROK_SANDBOX_MODES).optional(),
+  auth_home: authHome.optional(),
   fallback: fallbackSchema.optional(),
 });
 

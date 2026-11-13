@@ -1,0 +1,5 @@
+I1112 15:22:11.875160      27 server.go:2449] Language server version: 1.5.7
+W1112 15:22:11.877171      82 cache.go:157] Cache(loadCodeAssistResponse): Singleflight refresh failed: error getting token source: You are not logged into Antigravity.
+I1112 15:22:11.955166      69 launcher.go:257] ACP app data directory: __SC_LEG__/gemini/antigravity-cli (cliDir="", mode=ccpa)
+I1112 15:22:13.191833      69 server.go:1233] Created conversation 1f20816b-ec50-473e-b39a-2c5fbd18159b (backend=BACKEND_TYPE_UNSPECIFIED)
+I1112 15:22:13.192519      69 server.go:2846] Setting default model override: Gemini 3.8 Flash (High)

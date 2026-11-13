@@ -20,15 +20,16 @@ const FORBIDDEN: ReadonlyArray<[string, RegExp]> = [
   ['a home path other than the placeholder', /\/home\/(?!user\b)[A-Za-z]/],
   ['an account or org uuid field', /creator_(?:user|account)_id|accountUuid|organizationUuid/],
   ['an em dash', /\u2014/],
+  ['a scratch or session path', /claude-\d{3}|scratchpad/],
+  ['a token field value', /"(?:access_token|refresh_token|client_secret)":\s*"[^"]/],
 ];
 
 describe('fixtures are sanitized', () => {
   const files = listFiles(FIXTURES);
 
-  it('scans the recorded fixtures of both adapters', () => {
+  it('scans the recorded fixtures of every adapter', () => {
     const rel = files.map((f) => relative(FIXTURES, f));
-    expect(rel.some((f) => f.startsWith('codex/'))).toBe(true);
-    expect(rel.some((f) => f.startsWith('claude/'))).toBe(true);
+    for (const kind of ['codex/', 'claude/', 'antigravity/', 'kiro/']) expect(rel.some((f) => f.startsWith(kind))).toBe(true);
   });
 
   it.each(FORBIDDEN)('no fixture contains %s', (_what, pattern) => {

@@ -27,6 +27,11 @@ export interface Occupant {
   backend: BackendId;
   model: string;
   effort?: string | undefined;
+  /**
+   * kiro seats only: the HOME kiro-cli runs with, so a separate Kiro login (for example a personal one beside a
+   * work one) is read from its own token store. Absent: the user's HOME.
+   */
+  authHome?: string | undefined;
 }
 
 /** What a seat needs to know about the round. */

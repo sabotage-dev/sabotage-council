@@ -1,0 +1,22 @@
+{
+  "exit": {
+    "startedAt": "2026-11-12T23:24:54.415Z",
+    "endedAt": "2026-11-12T23:25:01.584Z",
+    "durationMs": 7169,
+    "exitCode": 0,
+    "signal": null,
+    "doneBy": "record",
+    "recordDone": true,
+    "timedOut": false,
+    "cancelled": false,
+    "killedAfterDone": false,
+    "leftoverKilled": false,
+    "sigkilled": false,
+    "spawnError": null,
+    "recordError": null,
+    "phase": "done",
+    "sessionId": "a87caa6a-eafd-4bea-96f2-cea5b03b2d58",
+    "refused": null,
+    "killedOn": null
+  }
+}

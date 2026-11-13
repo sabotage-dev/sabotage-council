@@ -1,0 +1,16 @@
+{
+  "nonce": "b96a7868d276",
+  "model": "gemini-3.8-flash",
+  "effort": "low",
+  "label": "Gemini 3.8 Flash (Low)",
+  "slug": "gemini-3.8-flash-low",
+  "cliVersion": "1.5.7",
+  "rootMutated": false,
+  "plantSymlink": false,
+  "expect": {
+    "status": "PASS",
+    "failureClass": null,
+    "failed": []
+  },
+  "note": "Recorded live smoke (P3, agy 1.5.7, gemini-3.8-flash, thinking level low, consumer keyring sign-in) on the planted-defect root, sanitized. Four in-root reads ran with no permission request (agy allows workspace reads); the review found the planted defect."
+}

@@ -1,3 +1,6 @@
+import { existsSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { kiroTokenStore } from '../adapters/kiro/launch.js';
 import type { AdapterRegistry, ModelInfo } from './registry.js';
 import type { CouncilConfig, SeatConfig } from './schema.js';
 import { ADJUDICATOR_FAMILY, QUORUM, type BackendId } from './vocab.js';
@@ -56,6 +59,18 @@ interface OccupantKey {
   backend: BackendId;
   model: string;
   effort?: string | undefined;
+  /** kiro only: the login the occupant runs on (claude F10). Absent: the user's HOME. */
+  auth_home?: string | undefined;
+}
+
+/** A HOME as the login it names: its realpath when it exists, else as written; absent = the user's HOME. */
+function loginOf(authHome: string | undefined): string {
+  const home = authHome ?? homedir();
+  try {
+    return realpathSync(home);
+  } catch {
+    return home;
+  }
 }
 
 /**
@@ -66,6 +81,8 @@ interface OccupantKey {
  */
 export function sameOccupant(a: OccupantKey, b: OccupantKey): boolean {
   if (a.backend !== b.backend || a.model !== b.model) return false;
+  // The same kiro model on two logins (a personal one beside a work one) is two occupants: two quotas, two sign-ins.
+  if (a.backend === 'kiro' && loginOf(a.auth_home) !== loginOf(b.auth_home)) return false;
   return a.effort === undefined || b.effort === undefined || a.effort === b.effort;
 }
 
@@ -96,6 +113,77 @@ export function checkSandboxOnlyForGrok(seats: readonly SeatConfig[]): ConfigIss
     }
   });
   return issues;
+}
+
+/**
+ * `auth_home` is a kiro setting (a separate Kiro login): on any other backend it is an error, and the directory
+ * must exist (a typo would otherwise run on the user's own login or fail later at preflight).
+ */
+export function checkAuthHome(seats: readonly SeatConfig[], exists: (path: string) => boolean = isDirectory): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  seats.forEach((seat, i) => {
+    const occupants: Array<{ path: string; backend: string; authHome: string | undefined }> = [{ path: `seats[${i}].auth_home`, backend: seat.backend, authHome: seat.auth_home }];
+    if (seat.fallback) occupants.push({ path: `seats[${i}].fallback.auth_home`, backend: seat.fallback.backend, authHome: seat.fallback.auth_home });
+    for (const o of occupants) {
+      if (o.authHome === undefined) continue;
+      if (o.backend !== 'kiro') issues.push({ path: o.path, message: `auth_home applies only to kiro (this occupant is ${o.backend})` });
+      else if (!exists(o.authHome)) issues.push({ path: o.path, message: `auth_home ${o.authHome} is not an existing directory` });
+    }
+  });
+  return issues;
+}
+
+/**
+ * kiro login integrity (round 1): every kiro occupant's login store is resolved by realpath (`auth_home`, else the
+ * user's HOME). Two occupants that declare different homes (one `auth_home` against another, or against the user's
+ * HOME) but whose stores resolve to one file are an error: a symlinked `auth_home` would look like a separate login
+ * while sharing one sign-in, one quota and one token refresh. Two occupants that declare the same home share it on
+ * purpose and pass.
+ */
+export function checkKiroLogins(
+  seats: readonly SeatConfig[],
+  options: { home?: string; storeOf?: (home: string) => string } = {},
+): ConfigIssue[] {
+  const userHome = options.home ?? homedir();
+  const storeOf = options.storeOf ?? ((h: string) => kiroTokenStore(h));
+  const resolve = (path: string): string => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return path;
+    }
+  };
+  const occupants: Array<{ path: string; declared: string; store: string }> = [];
+  seats.forEach((seat, i) => {
+    const list: Array<{ path: string; backend: string; authHome: string | undefined }> = [{ path: `seats[${i}]`, backend: seat.backend, authHome: seat.auth_home }];
+    if (seat.fallback) list.push({ path: `seats[${i}].fallback`, backend: seat.fallback.backend, authHome: seat.fallback.auth_home });
+    for (const o of list) {
+      if (o.backend !== 'kiro') continue;
+      const home = o.authHome ?? userHome;
+      // The store by realpath when it exists, else the realpath of its home joined with the store's place in it.
+      const store = existsSync(storeOf(home)) ? resolve(storeOf(home)) : storeOf(resolve(home));
+      occupants.push({ path: o.path, declared: o.authHome ?? '(the user HOME)', store });
+    }
+  });
+  const issues: ConfigIssue[] = [];
+  occupants.forEach((o, j) => {
+    const other = occupants.find((p, k) => k < j && p.store === o.store && p.declared !== o.declared);
+    if (other) {
+      issues.push({
+        path: `${o.path}.auth_home`,
+        message: `the kiro login at ${o.declared} is the same store as ${other.path}'s (${other.declared}): two declared logins resolve to one sign-in`,
+      });
+    }
+  });
+  return issues;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** A fallback must be a different occupant from its seat's primary. */

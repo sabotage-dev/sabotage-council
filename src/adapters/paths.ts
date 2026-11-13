@@ -52,12 +52,19 @@ export function realpathOrNull(path: string): string | null {
 }
 
 /**
- * Judges one path from a record: inside the root lexically, and (when it exists) by realpath too. `~` and `$`
- * spellings are never inside: they name the home directory or an expansion the record does not resolve.
+ * Judges one path from a record: inside the root lexically, and (when it exists) by realpath too. `~` spellings
+ * are never inside: they name the home directory. A `$` is a shell expansion the record does not resolve, so it is
+ * never inside either, except with `literalDollar`: in a tool call's own path argument (ACP) nothing expands it,
+ * and `routes/$id.tsx` is a file name. The codex command check keeps the expansion rule.
  */
-export function pathInsideRoot(path: string, cwd: string, aliases: readonly string[]): { inside: boolean; resolved: string; why: string } {
+export function pathInsideRoot(
+  path: string,
+  cwd: string,
+  aliases: readonly string[],
+  options: { literalDollar?: boolean } = {},
+): { inside: boolean; resolved: string; why: string } {
   if (path.startsWith('~')) return { inside: false, resolved: path, why: 'names the home directory' };
-  if (path.includes('$')) return { inside: false, resolved: path, why: 'holds a shell expansion' };
+  if (options.literalDollar !== true && path.includes('$')) return { inside: false, resolved: path, why: 'holds a shell expansion' };
   const resolved = resolveLexical(path, cwd);
   if (!underRoot(resolved, aliases)) return { inside: false, resolved, why: 'resolves outside the root' };
   const real = realpathOrNull(resolved) ?? danglingLinkTarget(resolved);
