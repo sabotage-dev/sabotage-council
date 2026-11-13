@@ -24,16 +24,30 @@ export interface SourceRepo {
   shas: Shas;
 }
 
+/**
+ * The files each of PR #2's seven commits touched, as recorded (the base held LICENSE, README.md and docs/PLAN.md), so
+ * the synthetic history's diff from the base is exactly the 30 files GitHub lists for the PR (files.json).
+ */
+export const PR2_COMMIT_FILES: readonly string[][] = [
+  ['.github/workflows/ci.yml', '.gitignore', 'eslint.config.js', 'package-lock.json', 'package.json', 'src/config/index.ts', 'src/config/load.ts', 'src/config/registry.ts', 'src/config/rules.ts', 'src/config/schema.ts', 'src/config/validate.ts', 'src/config/vocab.ts', 'src/paths.ts', 'src/version.ts', 'test/config.test.ts', 'test/fake-registry.ts', 'test/fixtures/config/plan-example.toml', 'test/tsconfig.json', 'tsconfig.json'],
+  ['migrations/001_initial.sql', 'src/store/index.ts', 'src/store/migrate.ts', 'src/store/open.ts', 'src/store/sqlite.ts', 'test/store.test.ts'],
+  ['README.md', 'src/cli/doctor.ts', 'src/cli/index.ts', 'src/cli/program.ts', 'test/doctor.test.ts'],
+  ['test/store.test.ts'],
+  ['.github/workflows/ci.yml', 'src/config/rules.ts', 'test/config.test.ts', 'test/store.test.ts'],
+  ['src/config/rules.ts', 'src/config/schema.ts', 'src/config/validate.ts', 'src/config/vocab.ts', 'test/config.test.ts'],
+  ['src/config/rules.ts', 'src/config/validate.ts', 'test/config.test.ts'],
+];
+
 /** The stand-in remote: `main` at BASE, seven commits C1..C7 on the PR branch, `refs/pull/2/head` at C7. */
 export function sourceRepo(): SourceRepo {
   const repo = initRepo(join(scratch('sc-gh-source-'), REPO));
-  writeTree(repo, { 'README.md': '# widget\n', 'src/calc.py': 'def total(xs):\n    return sum(xs)\n' });
+  writeTree(repo, { LICENSE: 'MIT\n', 'README.md': '# sabotage-council\n', 'docs/PLAN.md': '# Plan\n' });
   const shas: Shas = { BASE: commitAll(repo, 'base') };
   git(repo, ['checkout', '--quiet', '-b', 'build/p0-scaffold']);
-  for (let i = 1; i <= 7; i++) {
-    writeTree(repo, { [`src/step${i}.py`]: `def step${i}(x):\n    return x + ${i}\n` });
-    shas[`C${i}`] = commitAll(repo, `step ${i}`);
-  }
+  PR2_COMMIT_FILES.forEach((files, i) => {
+    writeTree(repo, Object.fromEntries(files.map((f) => [f, `${f} as of commit ${i + 1}\n`])));
+    shas[`C${i + 1}`] = commitAll(repo, `commit ${i + 1}`);
+  });
   git(repo, ['update-ref', `refs/pull/${PR}/head`, shas['C7']!]);
   git(repo, ['checkout', '--quiet', 'main']);
   return { repo, shas };
@@ -48,6 +62,18 @@ export function pushCommit(src: SourceRepo, name: string, files: Record<string, 
   git(src.repo, ['update-ref', `refs/pull/${PR}/head`, sha]);
   git(src.repo, ['checkout', '--quiet', 'main']);
   return sha;
+}
+
+/** GitHub's changed-file list for a head of the synthetic history: the files that differ from the base. */
+export function filesFor(src: SourceRepo, head: string): Array<{ filename: string; status: string }> {
+  const out = git(src.repo, ['diff', '--name-status', '--no-renames', src.shas['BASE']!, head]);
+  return out
+    .split('\n')
+    .filter((l) => l !== '')
+    .map((l) => {
+      const [status, filename] = l.split('\t');
+      return { filename: filename!, status: status === 'A' ? 'added' : status === 'D' ? 'removed' : 'modified' };
+    });
 }
 
 /** Fills `__C7__` (a full sha) and `__C7_7__` (its first 7) placeholders. */
@@ -73,6 +99,7 @@ export function pr2Routes(shas: Shas): Routes {
     [`GET ${pulls}/comments`]: { json: recorded('review-comments.json', shas) },
     [`GET ${API}/issues/${PR}/comments`]: { json: recorded('issue-comments.json', shas) },
     [`GET ${pulls}/commits`]: { json: recorded('commits.json', shas) },
+    [`GET ${pulls}/files`]: { json: recorded('files.json', shas) },
     [`GET ${API}/collaborators/repo-owner/permission`]: { json: recorded('permission.json', shas) },
     graphql: { json: recorded('ci.json', shas) },
     [`GET ${API}/branches/main`]: { json: recorded('branch.json', shas) },

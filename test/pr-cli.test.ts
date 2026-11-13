@@ -9,7 +9,7 @@ import { openStore } from '../src/store/index.js';
 import { fakeRegistry } from './fake-registry.js';
 import { adjudicationFromSummary, type AdjOptions } from './helpers/adjudication.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
-import { API, FAKE_GH, fakeGh, ghReview, pr2Routes, pushCommit, sourceRepo, type FakeGh, type Routes, type SourceRepo } from './helpers/github.js';
+import { API, FAKE_GH, fakeGh, filesFor, ghReview, pr2Routes, pushCommit, sourceRepo, type FakeGh, type Routes, type SourceRepo } from './helpers/github.js';
 import { fakeAdapters, fakeHome, ROSTER_TOML } from './helpers/round.js';
 
 /*
@@ -95,6 +95,7 @@ function openWithNewHead(): { routes: Routes; src: SourceRepo; d: string } {
   const src = sourceRepo();
   const routes = pr2Routes(src.shas);
   const d = pushCommit(src, 'D', { 'src/step8.py': 'def step8(x):\n    return x + 8\n' });
+  routes[`GET ${PULL}/files`] = { json: filesFor(src, d) };
   Object.assign(json(routes, `GET ${PULL}`), { state: 'open', merged: false });
   (json(routes, `GET ${PULL}`)['head'] as Json)['sha'] = d;
   jsonList(routes, `GET ${PULL}/commits`).push({ sha: d });
@@ -186,6 +187,17 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     const again = await c.run('post', String(id), '--post');
     expect(again.lines[0]).toContain('already-posted');
     expect(posts(c.gh)).toHaveLength(1);
+  }, 60_000);
+
+  it('a CI read that fails is "CI unknown": the approval is held as a COMMENT (row 8), never posted as an APPROVE', async () => {
+    const { routes, src } = openWithNewHead();
+    const c = cli(routes, src, REVIEWER);
+    const { id } = await roundThrough(c, [], { outcome: 'refuted', verdict: 'SHIP', approve: true });
+    c.gh.setRoutes({ ...routes, graphql: { fail: 'gh: Something went wrong (HTTP 502)' } });
+    const r = await c.run('post', String(id), '--dry-run', '--json');
+    const out = JSON.parse(r.lines.join('\n')) as { event: string; row: number; body: string; ci: { state: string } };
+    expect([out.event, out.row, out.ci.state]).toEqual(['COMMENT', 8, 'unknown']);
+    expect(out.body).toContain('Approval held: CI unknown: CI could not be read: GraphQL query failed');
   }, 60_000);
 
   it('faked --post: the head moved before the post, so the round is superseded and nothing posts', async () => {

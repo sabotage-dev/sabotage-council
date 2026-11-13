@@ -59,6 +59,8 @@ export interface PrDetail {
   reviews_seen: number[];
   /** A missing baseline: whether the exact fetch found it (plan 3.6). */
   baseline_fetch: 'present' | 'fetched' | 'unavailable' | null;
+  /** GitHub's changed-file list, cross-checked against the fetched base and head. */
+  files: { listed: number; checked: boolean; note: string };
   /** The PR's participants (lower case): the only logins a posted body may mention (plan 3.7). */
   participants: string[];
   /** The seats' untrusted-PR policy as applied (plan 5.2), when the author lacks write access. */

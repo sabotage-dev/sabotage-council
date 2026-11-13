@@ -8,7 +8,7 @@ import { preparePrRound, type PrRoundOptions } from '../src/engine/pr.js';
 import { ghApi } from '../src/forge/github.js';
 import { parseConfigText, type CouncilConfig } from '../src/config/index.js';
 import { cleanScratchAfterAll } from './helpers/fixtures.js';
-import { FAKE_GH, fakeGh, pr2Routes, pushCommit, sourceRepo, type FakeGh, type Routes, type SourceRepo } from './helpers/github.js';
+import { FAKE_GH, fakeGh, filesFor, pr2Routes, pushCommit, sourceRepo, type FakeGh, type Routes, type SourceRepo } from './helpers/github.js';
 import { git } from './helpers/git-fixture.js';
 import { fakeAdapters, fakeHome, harness, ROSTER_TOML, type Harness } from './helpers/round.js';
 import { adjudicationFromSummary, type AdjOptions } from './helpers/adjudication.js';
@@ -73,8 +73,10 @@ describe('pr rounds: the recorded PR #2 replayed', () => {
     const root = r.prepared.inputs.root;
     expect(readFileSync(join(root, 'PR.md'), 'utf8')).toMatch(/^DATA: Title: build: P0 scaffold/);
     expect(readFileSync(join(root, 'PREVIOUS-REVIEWS.md'), 'utf8')).toContain('DATA: Item R5880077789 (from council review by repo-owner):');
-    expect(readFileSync(join(root, 'FOLD.diff'), 'utf8')).toContain('step7.py');
-    expect(existsSync(join(root, 'sabotage-council', 'src', 'step7.py'))).toBe(true);
+    const fold = readFileSync(join(root, 'FOLD.diff'), 'utf8');
+    expect([...fold.matchAll(/^diff --git a\/(\S+)/gm)].map((m) => m[1])).toEqual(['src/config/rules.ts', 'src/config/validate.ts', 'test/config.test.ts']);
+    expect(existsSync(join(root, 'sabotage-council', 'src', 'config', 'rules.ts'))).toBe(true);
+    expect((getEvents(w.h.store.db, i.roundId)[0]?.detail as { pr: { files: unknown } }).pr.files).toEqual({ listed: 30, checked: true, note: '30 changed file(s), as GitHub lists them' });
     const summary = roundSummary(w.h.store, w.h.layout, i.roundId);
     expect(summary.pr).toMatchObject({ kind: 'council', dry_run: true, author: 'repo-owner', trusted: true });
     expect(getEvents(w.h.store.db, i.roundId).map((e) => e.kind)).toEqual(['round-prepared']);
@@ -86,8 +88,9 @@ type Json = Record<string, unknown>;
 const json = (routes: Routes, key: string): Json => (routes[key] as { json: Json }).json;
 const jsonList = (routes: Routes, key: string): Json[] => (routes[key] as { json: Json[] }).json;
 
-/** Moves the PR's head to `sha` in the recorded JSON (pull, commits, CI). */
-function moveHead(routes: Routes, sha: string): void {
+/** Moves the PR's head to `sha` in the recorded JSON (pull, commits, CI, and the changed files when `src` has it). */
+function moveHead(routes: Routes, sha: string, src?: SourceRepo): void {
+  if (src !== undefined) routes[`GET ${API_PULL}/files`] = { json: filesFor(src, sha) };
   (json(routes, `GET ${API_PULL}`)['head'] as Json)['sha'] = sha;
   jsonList(routes, `GET ${API_PULL}/commits`).push({ sha });
   const pr = ((json(routes, 'graphql')['data'] as Json)['repository'] as Json)['pullRequest'] as Json;
@@ -105,6 +108,19 @@ describe('pr rounds: preparation rules', () => {
     });
     expect(() => preparePrRound(w.h.store, w.options())).toThrow(/GET repos\/sabotage-dev\/sabotage-council\/pulls\/2\/reviews failed: gh: Server Error/);
     expect(w.h.store.db.prepare('SELECT count(*) AS n FROM rounds').get()).toMatchObject({ n: 0 });
+  });
+
+  it("fails closed when GitHub's changed files differ from the fetched base and head", async () => {
+    const w = await world((r) => {
+      jsonList(r, `GET ${API_PULL}/files`).push({ filename: 'src/elsewhere.ts', status: 'added' });
+    });
+    expect(() => preparePrRound(w.h.store, w.options())).toThrow(/GitHub's changed files differ from the fetched base and head: GitHub lists "src\/elsewhere.ts"/);
+    expect(w.h.store.db.prepare('SELECT count(*) AS n FROM rounds').get()).toMatchObject({ n: 0 });
+    const renamed = await world((r) => {
+      const files = jsonList(r, `GET ${API_PULL}/files`);
+      files.splice(files.findIndex((f) => f['filename'] === 'test/doctor.test.ts'), 1);
+    });
+    expect(() => preparePrRound(renamed.h.store, renamed.options())).toThrow(/the fetched commits also change "test\/doctor.test.ts"/);
   });
 
   it('refuses a closed PR without --dry-run, and a PR whose head or base the mirror cannot fetch', async () => {
@@ -135,7 +151,7 @@ describe('pr rounds: preparation rules', () => {
   it('a new head after three rounds is round 4, HIGH only, a delta from round 3, carrying round 3 as an item', async () => {
     const w = await world((r, src) => {
       reopen(r);
-      moveHead(r, pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }));
+      moveHead(r, pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }), src);
     });
     const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
     if (r.kind !== 'council') throw new Error('expected a council round');
@@ -147,7 +163,7 @@ describe('pr rounds: preparation rules', () => {
   it('falls back to a full review on a rebase, listing the changed files, and keeps the round rule (D17)', async () => {
     const w = await world((r, src) => {
       reopen(r);
-      moveHead(r, pushCommit(src, 'R', { 'src/rebased.py': 'x = 1\n' }, src.shas['C5']));
+      moveHead(r, pushCommit(src, 'R', { 'src/rebased.py': 'x = 1\n' }, src.shas['C5']), src);
     });
     const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
     if (r.kind !== 'council') throw new Error('expected a council round');
@@ -195,7 +211,7 @@ describe('pr rounds: preparation rules', () => {
       const sha = git(src.repo, ['rev-parse', 'HEAD']);
       git(src.repo, ['update-ref', 'refs/pull/2/head', sha]);
       git(src.repo, ['checkout', '--quiet', 'main']);
-      moveHead(r, sha);
+      moveHead(r, sha, src);
     });
     const r = preparePrRound(w.h.store, w.options({ dryRun: false }));
     if (r.kind !== 'council') throw new Error('expected a council round');
@@ -301,7 +317,7 @@ describe('pr rounds: holds, asks and the post step', () => {
   it('an interrupted post adopts the review that landed, and refuses to re-post a body that changed', async () => {
     const open = (r: Routes, src: SourceRepo): void => {
       reopen(r);
-      moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }));
+      moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }), src);
     };
     const w = await world(open);
     const { id } = await councilRound(w, { dryRun: false }, { outcome: 'owed', verdict: 'NEEDS-WORK', approve: false });
@@ -402,7 +418,7 @@ describe('pr rounds: a superseded round', () => {
   it('posts nothing when the head moved, and its owed rows still carry into the next round', async () => {
     const open = (r: Routes, src: SourceRepo): void => {
       reopen(r);
-      moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }));
+      moveHead(r, src.shas['D'] ?? pushCommit(src, 'D', { 'src/step8.py': 'x = 8\n' }), src);
     };
     const w = await world(open);
     const { id } = await councilRound(w, { dryRun: false }, { outcome: 'owed', verdict: 'NEEDS-WORK', approve: false });
@@ -410,7 +426,7 @@ describe('pr rounds: a superseded round', () => {
     const routes = pr2Routes(w.src.shas);
     open(routes, w.src);
     const e = pushCommit(w.src, 'E', { 'src/step9.py': 'x = 9\n' }, w.src.shas['D']);
-    moveHead(routes, e);
+    moveHead(routes, e, w.src);
     w.gh.setRoutes(routes);
     const p = post(w, id, 'post');
     expect(p.outcome).toBe('superseded');

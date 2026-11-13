@@ -55,6 +55,15 @@ export interface ReviewComment {
   body: string;
 }
 
+/** A changed file as GitHub lists it: a rename also names the path it came from. */
+export interface PrFile {
+  path: string;
+  previous: string | null;
+}
+
+/** GitHub lists at most this many changed files for a PR; a longer change cannot be cross-checked. */
+export const PR_FILES_MAX = 3000;
+
 export interface IssueComment {
   id: number;
   login: string;
@@ -84,6 +93,8 @@ export interface PrSnapshot {
   reviewComments: ReviewComment[];
   issueComments: IssueComment[];
   commits: string[];
+  /** The changed files GitHub lists (P6 cross-checks them against the fetched base and head). */
+  files: PrFile[];
   requestedReviewers: string[];
   assignees: string[];
   /** The author's permission on the base repository; null when GitHub would not say (counted as untrusted). */
@@ -162,7 +173,7 @@ function normalizeIssueComment(v: unknown): IssueComment {
 }
 
 /** The pull request object's fields `pr` mode uses. */
-export function normalizePull(ref: PrRef, v: unknown): Omit<PrSnapshot, 'reviews' | 'reviewComments' | 'issueComments' | 'commits' | 'authorPermission'> {
+export function normalizePull(ref: PrRef, v: unknown): Omit<PrSnapshot, 'reviews' | 'reviewComments' | 'issueComments' | 'commits' | 'files' | 'authorPermission'> {
   const o = obj(v, 'the pull request');
   if (int(o, 'number', 'pull request') !== ref.number) throw new ForgeError(`GitHub returned pull request ${String(o['number'])}, not ${ref.number}`);
   const head = obj(o['head'], 'pull request head');
@@ -203,6 +214,11 @@ export function readPr(api: GitHubApi, ref: PrRef): PrSnapshot {
   const reviewComments = api.list(`${pulls}/comments`).map(normalizeReviewComment);
   const issueComments = api.list(`${base}/${restPath('issues', ref.number)}/comments`).map(normalizeIssueComment);
   const commits = api.list(`${pulls}/commits`).map((c) => sha(obj(c, 'a commit'), 'sha', 'commit'));
+  const files = api.list(`${pulls}/files`).map((f): PrFile => {
+    const o = obj(f, 'a changed file');
+    const previous = o['previous_filename'];
+    return { path: str(o, 'filename', 'changed file'), previous: typeof previous === 'string' ? previous : null };
+  });
   let authorPermission: string | null = null;
   try {
     const p = obj(api.get(`${base}/${restPath('collaborators', pull.author)}/permission`), 'permission');
@@ -211,7 +227,7 @@ export function readPr(api: GitHubApi, ref: PrRef): PrSnapshot {
     // GitHub answers this only for some callers and some users (a non-collaborator gives 404): unknown is untrusted.
     authorPermission = null;
   }
-  return { ...pull, reviews, reviewComments, issueComments, commits, authorPermission };
+  return { ...pull, reviews, reviewComments, issueComments, commits, files, authorPermission };
 }
 
 /** Write access (plan 5.2, 6.3): admin, maintain or write. Anything else, or unknown, is untrusted. */

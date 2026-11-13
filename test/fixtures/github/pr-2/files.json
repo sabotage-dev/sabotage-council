@@ -1,0 +1,122 @@
+[
+  {
+    "filename": ".github/workflows/ci.yml",
+    "status": "added"
+  },
+  {
+    "filename": ".gitignore",
+    "status": "added"
+  },
+  {
+    "filename": "README.md",
+    "status": "modified"
+  },
+  {
+    "filename": "eslint.config.js",
+    "status": "added"
+  },
+  {
+    "filename": "migrations/001_initial.sql",
+    "status": "added"
+  },
+  {
+    "filename": "package-lock.json",
+    "status": "added"
+  },
+  {
+    "filename": "package.json",
+    "status": "added"
+  },
+  {
+    "filename": "src/cli/doctor.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/cli/index.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/cli/program.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/config/index.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/config/load.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/config/registry.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/config/rules.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/config/schema.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/config/validate.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/config/vocab.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/paths.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/store/index.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/store/migrate.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/store/open.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/store/sqlite.ts",
+    "status": "added"
+  },
+  {
+    "filename": "src/version.ts",
+    "status": "added"
+  },
+  {
+    "filename": "test/config.test.ts",
+    "status": "added"
+  },
+  {
+    "filename": "test/doctor.test.ts",
+    "status": "added"
+  },
+  {
+    "filename": "test/fake-registry.ts",
+    "status": "added"
+  },
+  {
+    "filename": "test/fixtures/config/plan-example.toml",
+    "status": "added"
+  },
+  {
+    "filename": "test/store.test.ts",
+    "status": "added"
+  },
+  {
+    "filename": "test/tsconfig.json",
+    "status": "added"
+  },
+  {
+    "filename": "tsconfig.json",
+    "status": "added"
+  }
+]

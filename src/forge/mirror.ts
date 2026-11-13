@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { commitExists, FULL_SHA, initBare, runGit, type ShadowRepo } from '../root/git.js';
+import { decodeName, splitNul } from '../root/names.js';
 import { ForgeError } from './github.js';
-import type { PrRef } from './pr.js';
+import { PR_FILES_MAX, type PrFile, type PrRef } from './pr.js';
 
 /*
  * The bare mirror a PR root is built from (plan 5.3): one per repository, owned by the engine, under the run store's
@@ -108,4 +109,29 @@ export function treeOf(mirror: ShadowRepo, sha: string): string | null {
   const r = runGit(['rev-parse', '--verify', '--quiet', `${sha}^{tree}`], { gitDir: mirror.gitDir, okStatuses: [0, 1, 128] });
   const out = r.stdout.toString('utf8').trim();
   return r.status === 0 && FULL_SHA.test(out) ? out : null;
+}
+
+/**
+ * Cross-checks GitHub's changed-file list against the fetched base and head (P6): the files that differ between the
+ * merge-base and the head, renames as a deletion and an addition, must be exactly the paths GitHub lists (with each
+ * rename's previous path). A difference means the root would not hold the change GitHub shows, so the round stops.
+ * GitHub lists at most 3,000 files; a longer list cannot be checked, and says so.
+ */
+export function checkPrFiles(mirror: ShadowRepo, base: string, head: string, files: readonly PrFile[]): { checked: boolean; note: string } {
+  if (files.length >= PR_FILES_MAX) return { checked: false, note: `GitHub lists ${files.length} files, its limit: the list was not cross-checked` };
+  const mb = runGit(['merge-base', base, head], { gitDir: mirror.gitDir, okStatuses: [0, 1] });
+  const mergeBase = mb.stdout.toString('utf8').trim();
+  if (mb.status !== 0 || !FULL_SHA.test(mergeBase)) throw new ForgeError(`base ${base.slice(0, 7)} and head ${head.slice(0, 7)} have no merge-base`);
+  const out = runGit(['diff', '--name-only', '-z', '--no-renames', '--no-ext-diff', mergeBase, head], { gitDir: mirror.gitDir });
+  const local = new Set(splitNul(out.stdout).map((raw) => decodeName(raw, 'the changed files')));
+  const listed = new Set(files.flatMap((f) => (f.previous === null ? [f.path] : [f.path, f.previous])));
+  const onlyLocal = [...local].filter((p) => !listed.has(p));
+  const onlyListed = [...listed].filter((p) => !local.has(p));
+  if (onlyLocal.length > 0 || onlyListed.length > 0) {
+    const show = (xs: string[]): string => xs.slice(0, 5).map((x) => JSON.stringify(x)).join(', ') + (xs.length > 5 ? ` and ${xs.length - 5} more` : '');
+    throw new ForgeError(
+      `GitHub's changed files differ from the fetched base and head${onlyListed.length > 0 ? `: GitHub lists ${show(onlyListed)}` : ''}${onlyLocal.length > 0 ? `; the fetched commits also change ${show(onlyLocal)}` : ''}`,
+    );
+  }
+  return { checked: true, note: `${local.size} changed file(s), as GitHub lists them` };
 }

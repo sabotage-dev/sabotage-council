@@ -6,7 +6,7 @@ import { changeRequestAsks, countRounds, reviewItems, userChangeRequest, type Cr
 import { ForgeError, type GitHubApi } from '../forge/github.js';
 import { findIdentity, type IdentityMatch } from '../forge/identity.js';
 import { identityMarker, roundMarker } from '../forge/markers.js';
-import { ensureMirror, fetchExact, fetchPr, githubUrl, mirrorPath, treeOf, type MirrorSource } from '../forge/mirror.js';
+import { checkPrFiles, ensureMirror, fetchExact, fetchPr, githubUrl, mirrorPath, treeOf, type MirrorSource } from '../forge/mirror.js';
 import { authorTrusted, prLabel, readPr, repoKeyOf, type PrRef, type PrSnapshot } from '../forge/pr.js';
 import type { PrData } from '../root/data-files.js';
 import { commitExists, type ShadowRepo } from '../root/git.js';
@@ -186,6 +186,8 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
   const mirror = ensureMirror(mirrorPath(join(dirname(o.layout.dbPath), 'mirrors'), o.ref));
   const source = o.source?.(o.ref) ?? { url: githubUrl(o.ref) };
   fetchPr(mirror, source, o.ref, pr.baseRef, pr.headSha, pr.baseSha);
+  const files = checkPrFiles(mirror, pr.baseSha, pr.headSha, pr.files);
+  if (!files.checked) warnings.push(files.note);
   const headTree = treeOf(mirror, pr.headSha);
   if (headTree === null) throw new ForgeError(`the head ${pr.headSha.slice(0, 7)} has no tree in the mirror`);
 
@@ -227,6 +229,7 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
     review_items: items.map((i) => i.id),
     reviews_seen: pr.reviews.map((r) => r.id),
     baseline_fetch: baselineFetch,
+    files: { listed: pr.files.length, checked: files.checked, note: files.note },
     participants,
     untrusted,
   });

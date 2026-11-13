@@ -30,7 +30,7 @@ export function adjudicationFromSummary(s: RoundSummary, o: AdjOptions): Record<
   }
   const severity = raisedBy.reduce<keyof typeof RANK>((m, r) => (RANK[r.severity] > RANK[m] ? r.severity : m), 'LOW');
   const title = 'the replayed finding';
-  const path = 'sabotage-council/src/step7.py';
+  const path = 'sabotage-council/src/config/rules.ts';
   const findings: Array<Record<string, unknown>> = [];
   if (raisedBy.length > 0) {
     findings.push({
@@ -41,7 +41,7 @@ export function adjudicationFromSummary(s: RoundSummary, o: AdjOptions): Record<
       severity,
       outcome: o.outcome,
       owner: 'this',
-      proof: 'sabotage-council/src/step7.py:1 checked against the root',
+      proof: 'sabotage-council/src/config/rules.ts:1 checked against the root',
       kind: 'finding',
       raised_by: raisedBy,
       same_as: null,
@@ -59,13 +59,13 @@ export function adjudicationFromSummary(s: RoundSummary, o: AdjOptions): Record<
       severity: 'MEDIUM',
       outcome: status === 'open' ? 'owed' : 'noted',
       owner: 'this',
-      proof: 'sabotage-council/src/step7.py:1 shows it',
+      proof: 'sabotage-council/src/config/rules.ts:1 shows it',
       kind: 'human_ask',
       raised_by: [],
       same_as: null,
       closes_item: null,
     });
-    return { id, status, evidence: 'sabotage-council/src/step7.py:1', fix_row: fid };
+    return { id, status, evidence: 'sabotage-council/src/config/rules.ts:1', fix_row: fid };
   });
   const blocking = o.outcome === 'owed';
   return {
@@ -78,7 +78,7 @@ export function adjudicationFromSummary(s: RoundSummary, o: AdjOptions): Record<
     reason: 'replayed legs',
     findings,
     unmapped: [],
-    earlier_items: s.earlier_items.filter((i) => !i.closed_context).map((i) => ({ source: i.id, status: 'closed', evidence: 'sabotage-council/src/step7.py:1 closes it', fix_row: null })),
+    earlier_items: s.earlier_items.filter((i) => !i.closed_context).map((i) => ({ source: i.id, status: 'closed', evidence: 'sabotage-council/src/config/rules.ts:1 closes it', fix_row: null })),
     human_asks: asks,
     leg_verdicts: counted.map((l) => {
       const raw = l.verdict_raw ?? 'none';
