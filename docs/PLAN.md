@@ -1326,7 +1326,9 @@ Built in P6 as two commands, since the post comes after the adjudication: `round
 [--no-identity]` prepares the round (or takes the identity path), and `post <round> --dry-run | --post` renders or
 posts its review (3.7). A round started with `--dry-run` never posts, and a closed or merged PR takes only
 `--dry-run`. `round start pr` reads the PR through the user's `gh` login (the engine never handles the token), fails
-closed on any read that fails, and refuses an author without write access unless `pr.interactive_adjudication =
+closed on any read that fails, stops when GitHub's changed-file list differs from the files the fetched base and head
+change (the root would not hold the change GitHub shows; a list at GitHub's 3,000-file limit is not checked), and
+refuses an author without write access unless `pr.interactive_adjudication =
 "untrusted-too"`, since the interactive adjudicator reads the legs and the restricted headless one (6.4) is P7.
 With `untrusted-too`, every seat whose preflight label is not `strong` follows `council.untrusted_seat_policy`
 (5.2): `fallback` runs the seat's fallback when that is `strong`, else the seat is out; `skip` takes the seat out;

@@ -95,7 +95,8 @@ sabotage-council post <id> --post                        # pr: post it, one revi
   PR through your `gh` login (the engine never handles the token), fetches its head and base into the engine's own
   bare mirror beside the store, and numbers the round from the PR's review history: every review by `github.login`
   or a `council_logins` login whose first line is a council marker counts its `commit_id` as a reviewed head, so a
-  PR another council already reviewed continues at its round (plan 3.6). The root holds the PR head, the merge base,
+  PR another council already reviewed continues at its round (plan 3.6). GitHub's changed-file list must match what
+  the fetched base and head change, or the round stops. The root holds the PR head, the merge base,
   `PR.md` and the earlier reviews as data; your own change request on an earlier head becomes asks the seats must
   answer, and one on this head holds the round for your ruling. Any GitHub read that fails stops the round. A PR
   from an author without write access is refused unless `pr.interactive_adjudication = "untrusted-too"` (then
