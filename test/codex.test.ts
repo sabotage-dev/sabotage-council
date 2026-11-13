@@ -371,6 +371,9 @@ describe('codex ratification details', () => {
     );
     expect(failedNames(r)).toEqual([]);
     expect(r.checks.find((c) => c.name === 'write-denial')?.detail).toContain('a note');
+    // The note reaches round show and round wait through the ratification's notes (P5 fold row 15).
+    expect(r.notes).toHaveLength(1);
+    expect(r.notes?.[0]).toContain('Permission denied');
   });
 
   it('fails a rollout whose last line is torn', () => {

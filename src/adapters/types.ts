@@ -144,6 +144,11 @@ export interface Ratification {
   durationMs: number | null;
   nonceSeen: boolean;
   rootMutated: boolean | null;
+  /**
+   * Things the record shows that do not fail the leg but an operator should see (fold row 15): for example codex
+   * denial text in a command's output. `round show` and `round wait` print them.
+   */
+  notes?: string[] | undefined;
   /** Adapter-specific evidence (commands, children, permission denials). */
   detail: Record<string, unknown>;
 }

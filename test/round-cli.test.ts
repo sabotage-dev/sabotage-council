@@ -220,7 +220,15 @@ describe('CLI: round start / wait / show and adjudicate', () => {
           status: 'CONTAMINATED', counted: false, failure_class: 'contaminated', enforcement: null, cli_version: null,
           verdict_raw: null, verdict_reason: null, verdict_effective: null, findings: [], findings_extracted_by: null,
           findings_problem: null, answer_path: null, leg_dir: '/r/legs/a-primary-1',
-          ratification: { status: 'CONTAMINATED', failed_checks: [{ name: 'write-denial', detail: `line one\n  line two ${'x'.repeat(300)}` }], model_observed: null, effort_observed: null, session_id: null, record_path: null },
+          ratification: {
+            status: 'CONTAMINATED',
+            failed_checks: [{ name: 'write-denial', detail: `line one\n  line two ${'x'.repeat(300)}` }],
+            notes: ['leg t1: denial text in a command output (a note: the commands, records and root-unchanged checks decide): Permission denied'],
+            model_observed: null,
+            effort_observed: null,
+            session_id: null,
+            record_path: null,
+          },
           started_at: null, finished_at: null, duration_ms: null, tokens_in: null, tokens_out: null, cost_usd: null, credits: null,
         },
       ],
@@ -237,6 +245,7 @@ describe('CLI: round start / wait / show and adjudicate', () => {
     expect(failed.startsWith('        failed write-denial: line one line two xxx')).toBe(true);
     expect(failed.endsWith('...')).toBe(true);
     expect(lines.every((l) => !l.includes('\n'))).toBe(true);
+    expect(lines).toContain('        note leg t1: denial text in a command output (a note: the commands, records and root-unchanged checks decide): Permission denied');
   });
 });
 

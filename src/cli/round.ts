@@ -246,6 +246,7 @@ export function renderSummary(s: RoundSummary): string[] {
     const found = l.counted ? ` ${l.findings_extracted_by === 'adjudicator-needed' ? 'findings block needs extraction' : `${l.findings.length} finding(s)`}` : '';
     out.push(`  ${l.seat}  ${l.role} ${l.attempt}  ${occupant(l)}  ${l.status}${l.failure_class !== null ? ` (${l.failure_class})` : ''}${verdict}${found}${cost}${time}`);
     for (const c of l.ratification?.failed_checks ?? []) out.push(`        failed ${c.name}: ${oneLine(c.detail, 160)}`);
+    for (const n of l.ratification?.notes ?? []) out.push(`        note ${oneLine(n, 200)}`);
   }
   if (s.earlier_items.length > 0) {
     out.push('earlier items:');

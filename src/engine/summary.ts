@@ -39,6 +39,8 @@ export interface LegSummary {
   ratification: {
     status: string;
     failed_checks: Array<{ name: string; detail: string }>;
+    /** Notes from the record that do not fail the leg (for example codex denial text in a read's output). */
+    notes: string[];
     model_observed: string | null;
     effort_observed: string | null;
     session_id: string | null;
@@ -120,6 +122,7 @@ function legSummary(roundDir: string, l: LegRow, settled: boolean): LegSummary {
       ? {
           status: r.status,
           failed_checks: r.checks.filter((c) => !c.ok).map((c) => ({ name: c.name, detail: c.detail })),
+          notes: r.notes ?? [],
           model_observed: r.modelObserved,
           effort_observed: r.effortObserved,
           session_id: r.sessionId,

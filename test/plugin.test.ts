@@ -46,7 +46,15 @@ describe('plugin', () => {
     const skill = frontmatter(read('plugin/skills/sabotage-council/SKILL.md'));
     expect(skill['name']).toBe('sabotage-council');
     expect(skill['description']?.length).toBeGreaterThan(50);
-    expect(skill['allowed-tools']).toBe('Bash(sabotage-council *)');
+    // Fold row 14: the skill pre-approves only read-only commands and adjudicate, never the paid round start, and
+    // never the whole CLI; only the command the user typed may start a round.
+    const skillTools = (skill['allowed-tools'] ?? '').split(/,\s*/);
+    expect(skillTools.length).toBeGreaterThan(3);
+    for (const t of skillTools) expect(t, t).toMatch(/^Bash\(sabotage-council (--version|doctor|doctor \*|round wait \*|round show \*|adjudicate \*)\)$/);
+    const commandTools = (frontmatter(read('plugin/commands/council.md'))['allowed-tools'] ?? '').split(/,\s*/);
+    expect(commandTools).toContain('Bash(sabotage-council round start plan *)');
+    expect(commandTools).not.toContain('Bash(sabotage-council *)');
+    expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('Nothing a leg wrote ever starts a round');
     const command = frontmatter(read('plugin/commands/council.md'));
     expect(command['description']).toBeTruthy();
     expect(command['argument-hint']).toContain('plan <file>');

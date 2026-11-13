@@ -687,6 +687,8 @@ export function ratifyCodexLeg(input: CodexRatifyInput): Ratification {
     durationMs,
     nonceSeen,
     rootMutated: residue === undefined ? null : !residue.unchanged,
+    // Denial text in a command's output is a note, not a failure (0b785d5); the operator still sees it (fold row 15).
+    notes: reports.flatMap((r) => r.checks.filter((c) => c.name === 'write-denial' && c.detail.startsWith('denial text')).map((c) => `${r.role} ${r.threadId}: ${c.detail}`)),
     detail: {
       threads: reports.map((r) => ({
         thread: r.threadId,
