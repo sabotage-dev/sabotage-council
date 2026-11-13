@@ -256,7 +256,9 @@ Rules that hold in every round:
      join the counted reviews as **events** in one list, ordered by `submitted_at` (then by review id) and
      de-duplicated by review id only, never by head. A credit added later sits at its review's own time, not at the
      time it was added. When a credit and a counted marker share a review id they are one event, the marker's,
-     with its `round <N>` (N19).
+     with its `round <N>` (N19). A review whose first line carries a round, identity or `markers_also_count`
+     marker cannot be credited: the marker rules already decide whether it counts (a stranger's, a sha mismatch or
+     an identity approval never does), and a credit must not overrule them (P6 round 1 row 17).
   5. **Count heads.** Walk every event in order:
      - add 1 the first time a `commit_id` appears, so two councils reviewing one head make one round;
      - a counted marker that states `round <N>` raises the running count to N at that marker's own `submitted_at`,
@@ -270,6 +272,10 @@ Rules that hold in every round:
      **counted head**; any counted head can serve as a baseline.
 
 - **Fail closed.** If any read fails or is partial, the round does not run; the engine never guesses round 1.
+- **One key per repository.** GitHub resolves owner and repository names case-insensitively, so the run store keys
+  pr targets and credits by the lower-case `github.com/<owner>/<repo>`: `credit Org/Repo#5` counts for
+  `round start pr org/repo#5`, and the two spellings share one target and one set of our own reviews (P6 round 1
+  row 6; migration 003 normalizes older rows and merges case duplicates).
 - **Plan and diff targets.** The run store keeps the round number:
   - plan targets are keyed by repo + path;
   - diff targets are keyed by repo + branch (`HEAD` is the checked-out branch; a branch name is itself). A raw
@@ -285,7 +291,9 @@ Rules that hold in every round:
     uncommitted change to any of those paths is in the round's snapshot, so it is a new revision and in `FOLD.diff`
     (P5 round 2 row 4);
   - when the baseline is a snapshot of uncommitted work whose commit is an ancestor of this head (the work went on,
-    or was committed), the fold is the delta between the two trees, not a rebase. (P5 round 1 fold.)
+    or was committed), the fold is the delta between the two trees, not a rebase. (P5 round 1 fold.) This applies
+    to plan and diff rounds only: a pr round's baseline is a GitHub head, never an engine snapshot, so a PR commit
+    forged with the snapshot identity and message cannot skip the not-ancestor check (P6 round 1 row 15).
 - **Delta baseline.** The baseline head is the newest counted head other than the current one: for PR targets, the
   counted head whose first event is the latest (a council that reviews an older head again later does not make it
   newer); for plan and diff targets, the head of the latest adjudicated council round (N20). The round falls
@@ -333,26 +341,51 @@ Rules that hold in every round:
 | 7 | CI red | `REQUEST_CHANGES` "CI red: <checks>" (`auto.ci_red_event = "COMMENT"` makes it a `COMMENT`) |
 | 8 | Any other hold (legs not clear, solo, tests failed or held, hold list, CI pending or unreadable, adjudicator declined, `auto.approve` off) | `COMMENT` "approval held: <why>" |
 
+Rows 3 and 5 also need every standing human change request (the user's own unmarked one, a `council_logins`
+reviewer's unmarked one, any other reviewer's newest standing one) to be one the round carried when it was prepared
+(asks, a hold or an R item; for an identity round, one it saw). A change request that came after, on any head, was
+never adjudicated: it holds the approval (row 4 or row 8) with the line "a change request by <login> (review N) came
+after this round was prepared, so its asks were never adjudicated: re-run the round", and such a round dismisses no
+stale change request of ours (P6 round 1 row 12).
+
 `pr` mode follows the `[auto]` settings for one PR (9.3): `approve`, `ci_gate`, `ci_red_event`, `repos_hold`,
 `identity_approval` and `tests`, with their defaults when there is no `[auto]` table. The council approval row
 checks `auto.approve` too, as the identity row does (P6). Opt-in tests run in P8; until then a repository with
 `auto.tests` configured is held ("tests held"). CI is read for the reviewed head in one GraphQL query: under
-`required-checks` the checks GitHub marks required for the PR, plus any context the base branch's protection or
+`required-checks` the checks GitHub marks required for the PR, plus any check the base branch's protection or
 rulesets require that has not reported (pending, never green); a read that fails is "CI unknown" and never
-approves.
+approves. A required check keeps the GitHub App it is bound to (classic protection's `checks[].app_id`, a ruleset's
+`integration_id`; `-1`, none or a bare `contexts` name binds none), each reported check run keeps the app that ran it,
+and a requirement is satisfied only by a check of its name from its app: a same-name check from another app, or a
+commit status (which names no app), leaves it pending (P6 round 1 row 11).
 
 **Guards:**
-- **Head moved.** Re-check the head before posting. If it moved, the round is `superseded` and nothing posts.
-- **Approval race.** After an APPROVE, re-read the PR. If the head moved during the call, or a review without a
-  council marker landed after the pre-post read, dismiss our approval (a failed re-read dismisses it too).
+- **Head moved.** Re-check the head before posting, and again right before the POST, after the CI and identity
+  reads (P6 round 1 row 5). If it moved, the round is `superseded` and nothing posts. A review GitHub binds to
+  another commit than the reviewed head is withdrawn whatever its event (a comment cannot be dismissed on GitHub and
+  sets no standing, so that guard notes it).
+- **Approval race.** After an APPROVE, re-read the PR. If the head moved during the call, or any submitted review the
+  pre-post read did not see landed and it is not a counted council review of this PR by 3.6's rules (an allowlisted
+  login, a marker naming this PR, no sha that disagrees with its `commit_id`), dismiss our approval; a failed
+  re-read dismisses it too. A stranger's marker-shaped first line is not a council review, and a review that was
+  pending on the pre-post read and is submitted meanwhile counts as landed (P6 round 1 row 3).
 - **Stale change request.** After a COMMENT with owed 0 and no ruling needed, dismiss our own earlier
   REQUEST_CHANGES reviews (by `github.login`, with our round marker for this PR) that still stand. Never dismiss a
   human's, or any unmarked review. A ruling-row COMMENT never dismisses: the ruling may be about a blocking finding,
   and the stale change request keeps the PR blocked until the user rules (N11, decided stricter than "owed is 0").
-- **One review per round.** A round that posted refuses a second post. A post records its intent (event, body
-  hash) before the POST; if that POST was interrupted, the next `post` first looks for a review of ours with this
-  round's marker on this head and adopts it, and re-posts only the same body (9.4). A marker review on the head
-  without that intent is another council's (the same round number, 3.6), not ours.
+- **One review per round.** `post --post` claims the round in the store, in one IMMEDIATE transaction, before any
+  network call; a second `post` on a claimed round is refused, and a claim whose process is gone (or that is older
+  than an hour) is taken over (P6 round 1 row 9). A round that posted refuses a second post. A post records its
+  intent (event, body, body hash, the reviews it saw) before the POST; if that POST was interrupted, the next `post`
+  first looks for a review of ours with this round's marker on this head, with the body and event the intent
+  recorded, that no other round of the store has stored, and adopts it; more than one such review refuses; else it
+  re-posts only the same body (9.4, P6 round 1 row 4). A marker review on the head without that intent is another
+  council's (the same round number, 3.6), not ours.
+- **Guards survive a crash or a failed call.** The guards a post owes (the approval race for an APPROVE, the
+  dismissal of each stale change request of ours) are recorded as pending with the intent, before the POST; each is
+  marked done once it ran, and a failed call leaves it pending with why. The next `post` resumes the pending ones,
+  both when the round is already posted and when it adopts a review that landed; `post --post` exits non-zero while
+  any guard is pending (P6 round 1 row 2).
 
 **Validation by code before posting.** The body must contain:
 - no nonce;
@@ -362,18 +395,27 @@ approves.
 
 It must also fit GitHub's size limit (60,000 bytes), and the counts must match `ADJUDICATION.json`.
 
-Built in P6: the renderer neutralizes each of the four in every string it takes from the adjudication (the text
-can quote leg answers, which quote the reviewed tree): the nonce becomes `[nonce]`, a credential shape
-`[redacted credential]`, the `@` of a mention outside the participants (author, `github.login`, `council_logins`,
-reviewers, commenters, assignees) a full-width `＠`, and the `#` of an auto-close reference a full-width `＃`
-(an issue URL loses its scheme). The validator then checks the whole body with the same patterns, plus the marker
-as the first line, the owed count on the verdict line and in the fix table, and the size; a body that fails is not
-posted. Long lists are cut, with a count of the rest, until the body fits.
+Built in P6: the renderer neutralizes each of the four in every string it takes from the adjudication, the PR or
+the CI read (the text can quote leg answers, which quote the reviewed tree, and any workflow names its own checks):
+the nonce becomes `[nonce]`, a credential shape `[redacted credential]`, the `@` of a mention outside the
+participants (author, `github.login`, `council_logins`, reviewers, commenters, assignees) a full-width `＠`, and the
+`#` of an auto-close reference a full-width `＃` (an issue URL loses its scheme). A mention is an `@name` anywhere but
+right after a word character, so one after `.`, `/`, `-`, a backtick or `@` is defused and `a@b.com` is spared.
+One-line values (file paths, titles, owners, evidence, proofs, CI check names, the event's line) render as one
+escaped line (`\n`, `\t`, `\u{..}`), so a newline in a path never starts a section or a row; the summary and the
+blocker call keep their line breaks, but a line that would open a heading, an underline or a code fence gets a
+backslash (P6 round 1 row 16). The validator then checks the whole body with the same patterns, plus the marker as
+the first line, the body's own sections exactly and in order (with "Ruling needed" when the event carries it), no
+other line that opens a heading, an underline or a fence, the owed count on the verdict line and in the fix table,
+and the size; a body that fails is not posted. Long lists are cut, with a count of the rest, until the body fits.
 
-The post step is `sabotage-council post <round> --dry-run | --post` (7.1 step 5). `--dry-run` re-reads the PR,
-maps the event, renders and validates the body, prints both and posts nothing. `--post` does the same, then posts
-one review with `commit_id` = the reviewed head, then runs the guards. A round started with `round start pr
---dry-run` can never post.
+The post step is `sabotage-council post <round> --dry-run | --post [--expect <sha256>]` (7.1 step 5). Both first
+check that `gh` is logged in as `github.login` (row 10). `--dry-run` re-reads the PR, maps the event, renders and
+validates the body, prints both with the body's sha256, and posts nothing. `--post` does the same, then posts only
+what a dry run showed the user: the fresh render's event and body hash must equal those of the round's dry run that
+`--expect` names, or else its latest; otherwise it refuses, records why and prints the new render, which posts only
+after a new dry run and a new go (P6 round 1 row 8). It then posts one review with `commit_id` = the reviewed head,
+and runs the guards. A round started with `round start pr --dry-run` can never post.
 
 ### 3.8 Needs-ruling and holds
 
@@ -381,7 +423,10 @@ A round enters `needs-ruling` in any of these cases:
 - the adjudicator marks a finding `ruling`;
 - the user's own change request stands on the current head (a review by `github.login` that carries no council
   or identity marker: the engine posts as the same login, and its own marker reviews are never the user's
-  request);
+  request). A later marked APPROVE or REQUEST_CHANGES by the same login replaces it, as GitHub keeps one standing
+  review per reviewer; a later marked COMMENT, or one since dismissed, does not (P6 round 1 row 18). A
+  `council_logins` reviewer's unmarked change request is that reviewer's ask, by the same rule: an earlier item
+  (3.5), like any other reviewer's (P6 round 1 row 13);
 - the adjudicator's output fails validation twice, after one retry that feeds the validator errors back to it. This
   fixes the private council's silent-ruling gap.
 
@@ -405,14 +450,21 @@ When all of the following hold, the engine approves the PR by identity, with no 
 - the PR's base is the default branch;
 - an earlier APPROVE review by `github.login` on another PR of the same repo was bound to a commit whose tree is
   byte-identical to this head's tree;
-- re-checked live: that review is still APPROVED, and the trees still match;
+- re-checked live: the PR's base is still the default branch, that review is still the login's standing review on
+  the other PR (its newest APPROVED, CHANGES_REQUESTED or DISMISSED one) and is APPROVED, and the trees still match
+  (P6 round 1 row 1: a PR retargeted after its round started, or an approval the login later replaced by a change
+  request, takes row 4);
 - the user has no open change request of their own on the PR (their newest unmarked standing review is not
   CHANGES_REQUESTED), on any head: no seat checks its asks (N2).
 
 Built in P6: `round start pr` looks for candidates in GitHub's search (`is:pr reviewed-by:<login>`, the 30 most
 recently updated) and compares commit trees through the API; `--no-identity` takes a council round instead. The
 identity round is a round row of kind `identity` with no legs; `post` maps it by rows 3 and 4 and re-checks the
-approval and the trees live first.
+base, the approval and the trees live first. The candidates' approvals are judged the same way: only the login's
+standing review on a candidate PR can match. The body says the approval still stands and the trees still match only
+when the re-check passed; otherwise it says what the re-check found. On the user's own PR the author row (row 1)
+keeps the "Ruling needed" section when the round recorded one or the user's change request stands now (N10; P6
+round 1 row 14).
 
 The typical case is a promotion PR whose content was already reviewed. The review body's first line is the
 identity marker `sabotage-council identity approval on <owner>/<repo>#<num> at <sha7>`, not the round marker
@@ -1326,7 +1378,12 @@ evidence rows behind the flag. It never swaps a seat by itself.
 Built in P6 as two commands, since the post comes after the adjudication: `round start pr <target> [--dry-run]
 [--no-identity]` prepares the round (or takes the identity path), and `post <round> --dry-run | --post` renders or
 posts its review (3.7). A round started with `--dry-run` never posts, and a closed or merged PR takes only
-`--dry-run`. `round start pr` reads the PR through the user's `gh` login (the engine never handles the token), fails
+`--dry-run`. `post --post` sends only the review a dry run of the round showed the user (`--expect <sha256>` names
+it; P6 round 1 row 8). `round start pr` reads the PR through the user's `gh` login, which must be the `github.login`
+account (`gh api user`, checked before a round is prepared and before a post; P6 round 1 row 10). The engine never
+reads, stores or logs the token: the mirror's fetch runs `gh auth git-credential` as git's only credential helper in
+the same environment as the API calls, so a setup that authenticates `gh` only by `GH_TOKEN` can fetch a private
+repository, and the token reaches git's environment only for that helper (P6 round 1 row 7). It fails
 closed on any read that fails, stops when GitHub's changed-file list differs from the files the fetched base and head
 change (the root would not hold the change GitHub shows; a list at GitHub's 3,000-file limit is not checked), and
 refuses an author without write access unless `pr.interactive_adjudication =
@@ -1334,7 +1391,8 @@ refuses an author without write access unless `pr.interactive_adjudication =
 With `untrusted-too`, every seat whose preflight label is not `strong` follows `council.untrusted_seat_policy`
 (5.2): `fallback` runs the seat's fallback when that is `strong`, else the seat is out; `skip` takes the seat out;
 `allow` runs it and records the acknowledgement. `credit <pr> <review-id> [--note]` records a hand credit (3.6
-step 4) from the review's own `commit_id` and `submitted_at`.
+step 4) from the review's own `commit_id` and `submitted_at`, and refuses a review that starts with a council or
+identity marker (P6 round 1 row 17).
 
 ### 9.4 `auto`
 
