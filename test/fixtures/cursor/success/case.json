@@ -1,0 +1,14 @@
+{
+  "nonce": "c0ffee0000d1",
+  "model": "gpt-5.5-high",
+  "effort": null,
+  "sessionId": "00000000-0000-4000-8000-0000000000d1",
+  "cliVersion": "2026.11.11",
+  "rootMutated": false,
+  "expect": {
+    "status": "PASS",
+    "failureClass": null,
+    "failed": []
+  },
+  "note": "Synthetic (D14: no Cursor live run in v1). Shapes from the Cursor CLI output-format and hooks documentation: stream-json system/init, tool_call started and completed with a readToolCall or grepToolCall body, assistant, result with usage; the council hook log holds each event input as the hook received it."
+}
