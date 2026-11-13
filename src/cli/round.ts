@@ -102,7 +102,7 @@ export async function roundStart(io: RoundIo, paths: StorePaths, args: StartArgs
   try {
     if (args.mode === 'plan') {
       if (args.target === undefined) throw new Error('plan needs a file');
-      target = resolvePlanTarget(cwd, args.target, args.context);
+      target = resolvePlanTarget(cwd, args.target, args.context, { env: io.env });
     } else {
       if (args.context.length > 0) throw new Error('--context is a plan-mode option');
       target = resolveDiffTarget(cwd, args.target, { env: io.env, uncommitted: args.uncommitted, series: args.series });

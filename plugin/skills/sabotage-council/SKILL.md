@@ -15,7 +15,8 @@ engine logic.
 ## When to use which mode
 
 - **plan**: the user has a written plan (a Markdown file in a git repository) and wants holes poked in it before
-  building. Target: the file. An uncommitted plan is snapshotted; other uncommitted files are not included.
+  building. Target: the file. An uncommitted plan, and any uncommitted `--context` path inside the repository, are
+  snapshotted together; other uncommitted files are not included.
 - **diff**: the user is building on a branch and wants the change reviewed. Default range: the merge-base with the
   default branch to HEAD, uncommitted work included (snapshotted to a commit object; the user's index and branches
   are never touched). Or an explicit `<base>..<head>`.

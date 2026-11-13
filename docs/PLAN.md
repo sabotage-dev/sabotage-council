@@ -261,7 +261,9 @@ Rules that hold in every round:
   - a head counts once a council round on it (two or more counted legs) is adjudicated: a solo-reviewed head is
     never a baseline;
   - plan targets count revisions of the plan (the content of the plan file and any in-repository `--context`
-    path), and fold on those paths only, so an unrelated commit is neither a new round nor in `FOLD.diff`;
+    path), and fold on those paths only, so an unrelated commit is neither a new round nor in `FOLD.diff`. An
+    uncommitted change to any of those paths is in the round's snapshot, so it is a new revision and in `FOLD.diff`
+    (P5 round 2 row 4);
   - when the baseline is a snapshot of uncommitted work whose commit is an ancestor of this head (the work went on,
     or was committed), the fold is the delta between the two trees, not a rebase. (P5 round 1 fold.)
 - **Delta baseline.** The baseline head is the newest counted head other than the current one. The round falls
@@ -1217,12 +1219,17 @@ evidence rows behind the flag. It never swaps a seat by itself.
 
 ### 9.1 `plan <file> [--context <path|repo@ref> ...]`
 
-- **Root:** the plan at its repo-relative path plus the named context, each pinned at a ref.
+- **Root:** the plan at its repo-relative path plus the named context, each pinned at a ref. A `--context` path
+  inside the repository is read from the round's head (the snapshot below), so its copy in the root, the revision
+  and `FOLD.diff` all hold the same content (P5 round 2 row 4). A `repo@ref` is pinned; a local path outside the
+  repository is copied as it is when the root is built.
 - **Brief questions:** what is infeasible, what is missing (failure modes, migrations, rollbacks), what
   contradicts itself, which assumptions are unverified.
 - **Later rounds:** round 2+ reviews the plan's diff since the last reviewed revision.
 - **Target:** keyed by repo + path. The plan should be committed so revisions have SHAs; the engine snapshots an
-  uncommitted file with `git hash-object`.
+  uncommitted plan, and any uncommitted in-repository `--context` path, into one snapshot commit on HEAD (a file
+  with `git hash-object`; a directory with its tracked changes and untracked, non-ignored files, secret-named files
+  left out with a warning).
 
 ### 9.2 `diff [<base>..<head>]`
 

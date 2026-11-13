@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { basename, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import type { ContextSource } from '../root/build.js';
 import { FULL_SHA, GitError, runGit } from '../root/git.js';
+import { pathspec } from '../root/fold.js';
 import { decodeName, splitNul } from '../root/names.js';
 
 /*
@@ -164,10 +165,12 @@ export interface SnapshotTree {
 
 /**
  * The tree of the uncommitted work, built in a temporary index so the user's index and branches are never touched
- * (plan 9.1, 9.2): filled from `headSha`, then (`paths` given) those files only, each with `git hash-object`; else
- * every tracked change (`add --update`) and every untracked file git lists with the user's own excludes honoured
- * (the repository's `.gitignore` files, `.git/info/exclude` and the excludes file of the repository's effective
- * config, fold row 2 and round 2 row 2), minus files whose names look like secrets, which are named in a warning.
+ * (plan 9.1, 9.2), filled from `headSha`. With `paths` (a plan round: the plan and its in-repository context, round 2
+ * row 4), only those: a file with `git hash-object`, a directory as below but limited to it. Else the whole work
+ * tree: every tracked change (`add --update`) and every untracked file git lists with the user's own excludes
+ * honoured (the repository's `.gitignore` files, `.git/info/exclude` and the excludes file of the repository's
+ * effective config, fold row 2 and round 2 row 2), minus files whose names look like secrets, which are named in a
+ * warning.
  */
 export function snapshotTree(top: string, headSha: string, options: { paths?: readonly string[] | undefined; env?: NodeJS.ProcessEnv | undefined } = {}): SnapshotTree {
   const dir = mkdtempSync(join(tmpdir(), 'sc-snapshot-'));
@@ -176,19 +179,14 @@ export function snapshotTree(top: string, headSha: string, options: { paths?: re
   try {
     const env = { GIT_INDEX_FILE: join(dir, 'index') };
     git(['read-tree', headSha], top, env);
-    if (options.paths !== undefined) {
-      for (const p of options.paths) {
-        const abs = join(top, p);
-        if (!existsSync(abs)) throw new TargetError(`${p} does not exist in the work tree`);
-        const blob = git(['hash-object', '-w', '--', p], top).out;
-        const mode = (statSync(abs).mode & 0o111) !== 0 ? '100755' : '100644';
-        git(['update-index', '--add', '--cacheinfo', `${mode},${blob},${p}`], top, env);
-      }
-    } else {
-      // No pathspec: `add --update -- .` fails ("did not match any file(s)") when the head tracks no file.
-      git(['add', '--update'], top, env);
-      const excludes = effectiveExcludesFile(top, options.env);
-      const listed = runGit(['-c', `core.excludesFile=${excludes ?? '/dev/null'}`, 'ls-files', '--others', '--exclude-standard', '-z'], { cwd: top, env });
+    let excludes: { file: string | null } | null = null;
+    // Tracked changes and untracked, non-ignored files: the whole tree (`within` null) or one directory.
+    const addWork = (within: string | null): void => {
+      const spec = within === null ? [] : pathspec([within]);
+      // `add --update` with a pathspec that matches no tracked file fails, as does `-- .` on a head that tracks none.
+      if (within === null || runGit(['ls-files', '-z', ...spec], { cwd: top, env }).stdout.length > 0) git(['add', '--update', ...spec], top, env);
+      excludes ??= { file: effectiveExcludesFile(top, options.env) };
+      const listed = runGit(['-c', `core.excludesFile=${excludes.file ?? '/dev/null'}`, 'ls-files', '--others', '--exclude-standard', '-z', ...spec], { cwd: top, env });
       const untracked = splitNul(listed.stdout).map((raw) => decodeName(raw, 'the untracked files'));
       const add: string[] = [];
       for (const p of untracked) {
@@ -196,11 +194,26 @@ export function snapshotTree(top: string, headSha: string, options: { paths?: re
         else add.push(p);
       }
       for (let i = 0; i < add.length; i += 200) git(['update-index', '--add', '--', ...add.slice(i, i + 200)], top, env);
-      if (skipped.length > 0) {
-        warnings.push(
-          `left out of the snapshot, as their names look like secrets (commit them or rename them to include them): ${skipped.map((x) => JSON.stringify(x)).join(', ')}`,
-        );
+    };
+    if (options.paths !== undefined) {
+      for (const p of options.paths) {
+        const abs = join(top, p);
+        if (!existsSync(abs)) throw new TargetError(`${p} does not exist in the work tree`);
+        if (statSync(abs).isDirectory()) {
+          addWork(p);
+          continue;
+        }
+        const blob = git(['hash-object', '-w', '--', p], top).out;
+        const mode = (statSync(abs).mode & 0o111) !== 0 ? '100755' : '100644';
+        git(['update-index', '--add', '--cacheinfo', `${mode},${blob},${p}`], top, env);
       }
+    } else {
+      addWork(null);
+    }
+    if (skipped.length > 0) {
+      warnings.push(
+        `left out of the snapshot, as their names look like secrets (commit them or rename them to include them): ${skipped.map((x) => JSON.stringify(x)).join(', ')}`,
+      );
     }
     const tree = git(['write-tree'], top, env).out;
     const headTree = git(['rev-parse', `${headSha}^{tree}`], top).out;
@@ -250,13 +263,17 @@ function insideTop(top: string, abs: string): string | null {
 }
 
 /**
- * `plan <file>` (plan 9.1): the plan at its repo-relative path. The head is HEAD; when the plan file itself is
- * uncommitted (modified or untracked), the head is a snapshot holding HEAD plus that one file (`git hash-object`),
- * so the plan's revision has a sha. Other uncommitted files are not part of a plan round. The fold and the round
- * number follow the plan, not the repository (fold row 11): `foldPaths` is the plan plus any `--context` path inside
- * the repository, and `revision` hashes their content at the head, so an unrelated commit is not a new revision.
+ * `plan <file>` (plan 9.1): the plan at its repo-relative path. The head is HEAD; when the plan, or an in-repository
+ * `--context` path, has uncommitted changes (modified or untracked), the head is a snapshot holding HEAD plus those
+ * paths as they are in the work tree (a file with `git hash-object`, a directory with its tracked changes and
+ * untracked, non-ignored files, secret-named files left out with a warning), so every revision has a sha. Other
+ * uncommitted files are not part of a plan round. The fold and the round number follow the plan, not the repository
+ * (fold row 11): `foldPaths` is the plan plus any `--context` path inside the repository, and `revision` hashes their
+ * content at the head, so an unrelated commit is not a new revision. The root copies in-repository context from that
+ * same head, so the revision, FOLD.diff and the root's copy agree (round 2 row 4). Context outside the repository
+ * is unchanged: `repo@ref` is pinned, and a local path is copied as it is when the root is built.
  */
-export function resolvePlanTarget(cwd: string, file: string, contexts: readonly string[] = []): ResolvedTarget {
+export function resolvePlanTarget(cwd: string, file: string, contexts: readonly string[] = [], options: { env?: NodeJS.ProcessEnv | undefined } = {}): ResolvedTarget {
   const top = repoTopOf(cwd);
   const abs = resolve(cwd, file);
   if (!existsSync(abs) || !statSync(abs).isFile()) throw new TargetError(`${file} is not a file`);
@@ -264,12 +281,23 @@ export function resolvePlanTarget(cwd: string, file: string, contexts: readonly 
   const rel = insideTop(top, real);
   if (rel === null) throw new TargetError(`${file} is not inside the repository at ${top}`);
   const headCommit = resolveSha(top, 'HEAD');
-  const snap = snapshotTree(top, headCommit, { paths: [rel] });
-  const head = snap.tree === null ? headCommit : commitSnapshot(top, snap.tree, headCommit);
-  const { repoKey, repoName } = repoIdentity(top);
-  const context = contexts.map((c) => parseContext(c, cwd));
-  const inRepo = context.flatMap((c) => ('path' in c ? [insideTop(top, realpathSync(c.path))] : [])).filter((p): p is string => p !== null);
+  const parsed = contexts.map((c) => parseContext(c, cwd));
+  const inRepoOf = (c: ContextSource): string | null => ('path' in c ? insideTop(top, realpathSync(c.path)) : null);
+  const inRepo = parsed.map(inRepoOf).filter((p): p is string => p !== null);
   const foldPaths = [rel, ...inRepo];
+  const snap = snapshotTree(top, headCommit, { paths: foldPaths, env: options.env });
+  const head = snap.tree === null ? headCommit : commitSnapshot(top, snap.tree, headCommit);
+  for (const p of inRepo) {
+    if (objectAt(top, head, p) === null) {
+      throw new TargetError(`context ${p} holds no file the snapshot can include: every file in it is ignored or named like a secret`);
+    }
+  }
+  const context = parsed.map((c): ContextSource => {
+    const sub = inRepoOf(c);
+    return sub === null || !('path' in c) ? c : { name: c.name ?? basename(c.path), repo: top, ref: head, subpath: sub };
+  });
+  const changed = foldPaths.filter((p, i) => foldPaths.indexOf(p) === i && objectAt(top, headCommit, p) !== objectAt(top, head, p));
+  const { repoKey, repoName } = repoIdentity(top);
   return {
     mode: 'plan',
     repoTop: top,
@@ -278,25 +306,28 @@ export function resolvePlanTarget(cwd: string, file: string, contexts: readonly 
     head,
     headCommit,
     snapshotTree: snap.tree,
-    snapshot: snap.tree === null ? null : `HEAD ${headCommit.slice(0, 7)} plus the uncommitted ${rel}`,
+    snapshot: snap.tree === null ? null : `HEAD ${headCommit.slice(0, 7)} plus the uncommitted ${changed.join(', ')}`,
     base: null,
     branch: null,
     planPath: rel,
     label: rel,
     targetKey: `plan:${repoKey}:${rel}`,
     context,
-    warnings: [],
+    warnings: snap.warnings,
     foldPaths,
     revision: contentRevision(top, head, foldPaths),
   };
 }
 
+/** The object id at a repository path of a commit, or null when the commit has nothing there. */
+function objectAt(top: string, commit: string, path: string): string | null {
+  const r = git(['rev-parse', '--verify', '--quiet', `${commit}:${path}`], top, undefined, [0, 1, 128]);
+  return r.status === 0 ? r.out : null;
+}
+
 /** The content of some repository paths at a commit, as one hash (a missing path counts as missing). */
 export function contentRevision(top: string, commit: string, paths: readonly string[]): string {
-  const parts = paths.map((p) => {
-    const r = git(['rev-parse', '--verify', '--quiet', `${commit}:${p}`], top, undefined, [0, 1, 128]);
-    return `${p}\0${r.status === 0 ? r.out : 'missing'}`;
-  });
+  const parts = paths.map((p) => `${p}\0${objectAt(top, commit, p) ?? 'missing'}`);
   return `content:${createHash('sha256').update(parts.join('\n')).digest('hex')}`;
 }
 

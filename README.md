@@ -66,9 +66,11 @@ sabotage-council round show <id>                         # a readable summary, a
 sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, print the effective verdict
 ```
 
-- `round start plan <file>` reviews a written plan (an uncommitted plan file is snapshotted). `--context
-  <path|repo@ref>` adds other paths or repositories to the root, `--fact <text>` gives the seats an established fact
-  they must not refile, and `--question <text>` (at most 3) replaces the default questions.
+- `round start plan <file>` reviews a written plan. `--context <path|repo@ref>` adds other paths or repositories
+  to the root, `--fact <text>` gives the seats an established fact they must not refile, and `--question <text>`
+  (at most 3) replaces the default questions. An uncommitted plan, and uncommitted changes to a `--context` path
+  inside the repository, are snapshotted together, and the round reviews that snapshot: its revision, `FOLD.diff`
+  and the root's copy of the context agree.
 - `round start diff [<base>..<head>]` reviews a branch diff; the default is the merge-base with the default branch
   to HEAD, with uncommitted work snapshotted to a commit object (your index and branches are never touched; the
   ignore rules `git status` uses apply, including the excludes file the repository's own config names, and

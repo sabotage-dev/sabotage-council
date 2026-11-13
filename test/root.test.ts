@@ -291,6 +291,28 @@ describe('root builder: input checks', () => {
     ).toThrow(/malformed/);
   });
 
+  it('archives one path of a commit as context: a directory as its subtree, a file as its blob; refuses a path that is not plain or not there', () => {
+    const at = { repo: fx.repo, ref: fx.head };
+    const b = buildRoot(join(fx.roots, 'sub1'), { repo: fx.repo, name: 'fixture', head: fx.head, context: [{ name: 'src', ...at, subpath: 'src' }, { name: 'app.ts', ...at, subpath: 'src/app.ts' }] });
+    expect(readFileSync(join(b.root, 'context/src/new.ts'), 'utf8')).toBe('export const added = true;\n');
+    expect(readFileSync(join(b.root, 'context/app.ts'), 'utf8')).toBe('export const answer = 42;\n');
+    expect(b.context.map((c) => [c.name, c.kind, c.sha, c.isDir])).toEqual([
+      ['src', 'git', fx.head, true],
+      ['app.ts', 'git', fx.head, false],
+    ]);
+    expect(b.context.map((c) => c.label)).toEqual(['fixture/src', 'fixture/src/app.ts']);
+    expect(b.expected.get('context/app.ts')).toMatchObject({ kind: 'file', size: 26 });
+    expect(b.expected.get('context/src/util.ts')).toMatchObject({ kind: 'file' });
+    for (const [dir, subpath, why] of [
+      ['sub2', '../outside', /not a plain path/],
+      ['sub3', '/etc', /not a plain path/],
+      ['sub4', 'src/./app.ts', /not a plain path/],
+      ['sub5', 'nope', /nope is not in/],
+    ] as const) {
+      expect(() => buildRoot(join(fx.roots, dir), { repo: fx.repo, name: 'fixture', head: fx.head, context: [{ name: 'c', ...at, subpath }] }), subpath).toThrow(why);
+    }
+  });
+
   it('refuses a head that is not in the repository', () => {
     expect(() => buildRoot(join(fx.roots, 'bad6'), { ...inputs, head: 'f'.repeat(40) })).toThrow(/not a commit/);
   });

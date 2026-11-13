@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { adjudicate, findingIdOf } from '../src/adjudicate/index.js';
@@ -1031,6 +1031,109 @@ describe('round 2 row 1: a non-branch diff head is keyed by its commit, and --se
     }
     expect(resolveDiffTarget(repo, 'main..feature', { series: 'team/range_fix-2.1' }).branch).toBe('series:team/range_fix-2.1');
   });
+});
+
+describe('round 2 row 4: a plan round snapshots its in-repository context with the plan', () => {
+  const adjudicated = async (h: Harness, t: ReturnType<typeof resolvePlanTarget>) => {
+    const r = await runRound(h, t);
+    const res = adjudicate(h.store, h.layout, r.prepared.inputs.roundId, adjudicationFor(h, r.prepared.inputs.roundId));
+    expect(res.outcome.ok, JSON.stringify(res.outcome)).toBe(true);
+    return r;
+  };
+
+  it('an uncommitted context edit is a new revision and shows in FOLD.diff, and the root copies the snapshot, not the live file', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const headSha = commitChange(repo, 'docs/NOTES.md', 'notes v1\n', 'docs: notes');
+    const ctx = join(repo, 'docs', 'NOTES.md');
+    const t1 = resolvePlanTarget(repo, 'docs/PLAN.md', [ctx]);
+    expect(t1).toMatchObject({ snapshot: null, foldPaths: ['docs/PLAN.md', 'docs/NOTES.md'] });
+    await adjudicated(h, t1);
+    // Only the context changes, uncommitted.
+    writeFileSync(ctx, 'notes v2: a new constraint\n');
+    const t2 = resolvePlanTarget(repo, 'docs/PLAN.md', [ctx]);
+    expect(t2.snapshot).toBe(`HEAD ${headSha.slice(0, 7)} plus the uncommitted docs/NOTES.md`);
+    expect(t2.revision).not.toBe(t1.revision);
+    expect(git(repo, ['show', `${t2.head}:docs/NOTES.md`])).toBe('notes v2: a new constraint');
+    // The live file moves on after the snapshot: the round still reviews the snapshot.
+    writeFileSync(ctx, 'notes v3: written after the snapshot\n');
+    const r2 = await runRound(h, t2);
+    const i2 = r2.prepared.inputs;
+    expect(i2).toMatchObject({ roundNo: 2, scope: 'delta', baseline: t1.head });
+    const fold = readFileSync(join(i2.root, 'FOLD.diff'), 'utf8');
+    expect(fold).toContain('+notes v2: a new constraint');
+    expect(fold).not.toContain('v3');
+    expect(readFileSync(join(i2.root, 'context', 'NOTES.md'), 'utf8')).toBe('notes v2: a new constraint\n');
+    expect(readFileSync(join(i2.root, 'widget', 'docs', 'NOTES.md'), 'utf8')).toBe('notes v2: a new constraint\n');
+    expect(readFileSync(i2.briefFile, 'utf8')).toContain(`- context/NOTES.md: context, widget/docs/NOTES.md at ${t2.head}`);
+    // The user's index and branch are untouched.
+    expect(git(repo, ['diff', '--cached', '--name-only'])).toBe('');
+    expect(git(repo, ['rev-parse', 'HEAD'])).toBe(headSha);
+  }, 120_000);
+
+  it('snapshots an in-repo context directory: tracked changes and new files, ignored and secret-named files left out', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    writeFileSync(join(repo, '.gitignore'), '*.log\n');
+    writeFileSync(join(repo, 'calc', 'old.md'), 'old notes\n');
+    commitChange(repo, 'calc/keep.md', 'keep\n', 'calc: notes');
+    const ctx = join(repo, 'calc');
+    const t1 = resolvePlanTarget(repo, 'docs/PLAN.md', [ctx]);
+    await adjudicated(h, t1);
+    writeFileSync(join(repo, 'calc', 'new.md'), 'a new note\n');
+    writeFileSync(join(repo, 'calc', 'scratch.log'), 'ignored\n');
+    writeFileSync(join(repo, 'calc', '.env'), 'TOKEN=secret\n');
+    writeFileSync(join(repo, 'calc', 'keep.md'), 'keep, edited\n');
+    rmSync(join(repo, 'calc', 'old.md'));
+    writeFileSync(join(repo, 'unrelated.txt'), 'not part of the plan round\n');
+    const t2 = resolvePlanTarget(repo, 'docs/PLAN.md', [ctx]);
+    expect(t2.warnings.join('\n')).toContain('"calc/.env"');
+    const files = git(repo, ['ls-tree', '-r', '--name-only', t2.head]).split('\n');
+    expect(files).toEqual(expect.arrayContaining(['calc/new.md', 'calc/keep.md', 'calc/rangesum.py']));
+    for (const f of ['calc/scratch.log', 'calc/.env', 'calc/old.md', 'unrelated.txt']) expect(files, f).not.toContain(f);
+    const r2 = await runRound(h, t2);
+    const i2 = r2.prepared.inputs;
+    expect(i2).toMatchObject({ roundNo: 2, scope: 'delta' });
+    const fold = readFileSync(join(i2.root, 'FOLD.diff'), 'utf8');
+    for (const s of ['+a new note', '+keep, edited', '-old notes']) expect(fold, s).toContain(s);
+    expect(fold).not.toContain('unrelated');
+    expect(readdirSync(join(i2.root, 'context', 'calc')).sort()).toEqual(['keep.md', 'new.md', 'rangesum.py']);
+    expect(readFileSync(join(i2.root, 'context', 'calc', 'keep.md'), 'utf8')).toBe('keep, edited\n');
+    expect(git(repo, ['diff', '--cached', '--name-only'])).toBe('');
+  }, 120_000);
+
+  it('refuses an in-repo context directory the snapshot can hold nothing of', () => {
+    const { repo } = fixtureRepo();
+    writeFileSync(join(repo, '.gitignore'), 'build/\n');
+    mkdirSync(join(repo, 'build'));
+    writeFileSync(join(repo, 'build', 'out.txt'), 'ignored\n');
+    expect(() => resolvePlanTarget(repo, 'docs/PLAN.md', [join(repo, 'build')])).toThrow(/context build holds no file the snapshot can include/);
+  });
+
+  it('a rebuilt root reproduces the seal from the snapshot, whatever the live in-repo context became', async () => {
+    const h = harness();
+    const { repo } = fixtureRepo();
+    const ctx = join(repo, 'docs', 'NOTES.md');
+    writeFileSync(ctx, 'notes as sealed\n');
+    const { prepared } = await runRound(
+      h,
+      resolvePlanTarget(repo, 'docs/PLAN.md', [ctx]),
+      { codex: { [OCC.a]: [codexCase('usage-limit')] } },
+      {
+        beforeNextLeg: () => {
+          writeFileSync(join(rootPathOf(h.layout, 1, 1), 'planted.txt'), 'changed\n');
+          writeFileSync(ctx, 'notes changed since\n');
+        },
+      },
+    );
+    const legs = getLegs(h.store.db, prepared.inputs.roundId).filter((l) => l.seat_id === 'a');
+    expect(legs.map((l) => [l.role, l.status])).toEqual([
+      ['primary', 'FAIL'],
+      ['fallback', 'PASS'],
+    ]);
+    expect(getEvents(h.store.db, prepared.inputs.roundId).some((e) => e.kind === 'root-rebuilt')).toBe(true);
+    expect(readFileSync(join(rootPathOf(h.layout, 1, 2), 'context', 'NOTES.md'), 'utf8')).toBe('notes as sealed\n');
+  }, 60_000);
 });
 
 describe('fold rows 12-13: a clean root for every fallback and relaunch; one seat never orphans the others', () => {

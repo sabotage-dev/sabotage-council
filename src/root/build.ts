@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { extractTree, listTree } from './archive.js';
@@ -44,6 +44,12 @@ export interface ContextFromRepo {
   name?: string | undefined;
   repo: string;
   ref: string;
+  /**
+   * Only this repository-relative file or directory at the ref, not the whole tree. A plan round's in-repository
+   * `--context` path is read this way from the round's head (the snapshot), so the root's copy is the content the
+   * revision and FOLD.diff hold (P5 round 2 row 4).
+   */
+  subpath?: string | undefined;
 }
 
 export type ContextSource = ContextFromPath | ContextFromRepo;
@@ -205,6 +211,35 @@ function build(root: string, work: string, inputs: RootInputs, items: readonly E
     expected.set(name, { kind: 'file', size: size === 0 ? Buffer.byteLength(emptyText) : size, origin: 'engine' });
   };
 
+  /**
+   * One repository-relative path of a commit into `dest`: a directory as its subtree (listed and archived like a
+   * whole tree), a file or link as its blob with the tree's mode. Returns whether it is a directory.
+   */
+  const extractSubpath = (from: ShadowRepo, sha: string, sub: string, dest: string, name: string): boolean => {
+    if (sub.startsWith('/') || sub.split('/').some((s) => s === '' || s === '.' || s === '..')) {
+      throw new RootError(`context ${name}: "${sub}" is not a plain path inside the repository`);
+    }
+    const origin = `context:${name}@${short(sha)}`;
+    const entries = listTree(from, sha);
+    const file = entries.find((e) => e.path === sub);
+    if (file === undefined) {
+      if (!entries.some((e) => e.path.startsWith(`${sub}/`))) throw new RootError(`context ${name}: ${sub} is not in ${short(sha)}`);
+      extract(from, `${sha}:${sub}`, dest, origin);
+      return true;
+    }
+    if (file.size === null) throw new RootError(`context ${name}: ${sub} is a submodule, not a file or directory`);
+    const blob = runGit(['cat-file', 'blob', `${sha}:${sub}`], { gitDir: from.gitDir }).stdout;
+    const abs = join(root, dest);
+    if (file.mode === '120000') {
+      symlinkSync(blob.toString('utf8'), abs);
+      expected.set(dest, { kind: 'symlink', size: blob.length, origin });
+    } else {
+      writeFileSync(abs, blob, { flag: 'wx', mode: file.mode === '100755' ? 0o777 : 0o666 });
+      expected.set(dest, { kind: 'file', size: blob.length, origin });
+    }
+    return false;
+  };
+
   const shadow = shadowFor(inputs.repo);
   for (const [sha, what] of [
     [inputs.head, 'head'],
@@ -255,6 +290,14 @@ function build(root: string, work: string, inputs: RootInputs, items: readonly E
         sha = resolveCommit(source.repo, source.ref);
       } catch (err) {
         throw new RootError(`context ${name}: ${source.ref} does not resolve to a commit in ${source.repo} (${(err as Error).message})`);
+      }
+      if (source.subpath !== undefined) {
+        const sub = source.subpath;
+        const isDir = extractSubpath(shadowFor(source.repo), sha, sub, dest, name);
+        // The reviewed repository is named as the root names it (`<repo>/`); another one by its directory name.
+        const owner = resolve(source.repo) === resolve(inputs.repo) ? inputs.name : defaultContextName({ repo: source.repo, ref: source.ref });
+        context.push({ name, kind: 'git', label: `${owner}/${sub}`, sha, isDir });
+        continue;
       }
       extract(shadowFor(source.repo), sha, dest, `context:${name}@${short(sha)}`);
       const label = `${defaultContextName(source)}@${source.ref}`;
