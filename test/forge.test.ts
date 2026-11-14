@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { judgeCi, readCiContexts, readRequiredChecks, type CiState } from '../src/forge/ci.js';
-import type { GitHubApi } from '../src/forge/github.js';
+import { ghApi, type GitHubApi } from '../src/forge/github.js';
 import { changeRequestAsks, countRounds, reviewItems, userChangeRequest, type Credit, type MarkerConfig } from '../src/forge/count.js';
 import { decideEvent, type EventFacts } from '../src/forge/events.js';
 import { firstLine, identityMarker, parseMarker, roundMarker, stripWrapper } from '../src/forge/markers.js';
-import { parsePrRef, type Review, type ReviewComment } from '../src/forge/pr.js';
+import { loginMismatch, parsePrRef, readLogin, type Review, type ReviewComment } from '../src/forge/pr.js';
 import { BODY_MAX_BYTES, renderBody, validateBody, type CouncilBody } from '../src/forge/render.js';
 import { FULLWIDTH_AT, FULLWIDTH_HASH, neutralize, textProblems } from '../src/forge/text.js';
 import type { Adjudication } from '../src/adjudicate/schema.js';
+import { cleanScratchAfterAll } from './helpers/fixtures.js';
+import { FAKE_GH, fakeGh } from './helpers/github.js';
+
+cleanScratchAfterAll();
 
 /*
  * P6's pure rules: the round count of plan 3.6 (with N14, N19, N20), the user's change request (3.8), the earlier
@@ -530,5 +534,21 @@ describe('the review body (plan 3.7)', () => {
     expect(body).not.toContain('- item 50 ');
     expect(body).toContain('- (350 more in the round record)');
     expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1, ruling: false })).toEqual([]);
+  });
+});
+
+describe('the account check without GET user (P6 follow-up, P8)', () => {
+  it('names an App token account through the GraphQL viewer, and refuses plainly when neither can', () => {
+    const app = fakeGh({ 'GET user': { fail: 'gh: Resource not accessible by integration (HTTP 403)' }, 'graphql#viewer': { json: { data: { viewer: { login: 'council-bot[bot]' } } } } });
+    const api = ghApi({ bin: FAKE_GH, env: app.env });
+    expect(readLogin(api)).toBe('council-bot[bot]');
+    expect(loginMismatch(api, 'council-bot[bot]')).toBeNull();
+    expect(loginMismatch(api, 'someone')).toMatch(/gh is logged in as council-bot\[bot\]/);
+    const none = fakeGh({ 'GET user': { fail: 'gh: Resource not accessible by integration (HTTP 403)' }, 'graphql#viewer': { fail: 'gh: Resource not accessible by integration' } });
+    expect(() => readLogin(ghApi({ bin: FAKE_GH, env: none.env }))).toThrow(/GitHub refused GET user for this token .* the GraphQL viewer could not name the account either/);
+    // Any other failure is not guessed around.
+    const down = fakeGh({ 'GET user': { fail: 'gh: Server Error (HTTP 502)' } });
+    expect(() => readLogin(ghApi({ bin: FAKE_GH, env: down.env }))).toThrow(/HTTP 502/);
+    expect(down.requests().map((r) => r.key)).toEqual(['GET user']);
   });
 });

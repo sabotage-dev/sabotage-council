@@ -5,6 +5,8 @@
 //   { "json": <value> } | { "file": "<path>" } | { "fail": "<stderr text>" }
 //   | { "echoReview": { "id": n, "login": "x", "commitId"?: "<sha GitHub binds it to, default the request's>" } }
 //   | { "seq": [<response>, ...] }  (one per call, the last repeats)
+// A more specific key wins over the bare one: "GET search/issues q=<the decoded q parameter>", "graphql#<the query's
+// first field>" (viewer, repository).
 // Every call appends one JSON line to $FAKE_GH_DIR/requests.jsonl: method, path, args, and the body read from stdin.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -56,7 +58,17 @@ const key = bare === 'graphql' ? 'graphql' : `${method} ${bare}`;
 appendFileSync(join(dir, 'requests.jsonl'), `${JSON.stringify({ method, path, key, paginate, slurp, fields: key === 'graphql' ? { ...fields, query: undefined } : fields, body: body === null ? null : JSON.parse(body) })}\n`);
 
 const routes = JSON.parse(readFileSync(join(dir, 'routes.json'), 'utf8'));
-let route = routes[key];
+// More specific keys first (P8): a REST path's `q` parameter ("GET search/issues q=<decoded q>"), and a GraphQL
+// query's first field ("graphql#viewer", "graphql#repository"); then the bare key.
+const specific = [];
+const qs = path.includes('?') ? new URLSearchParams(path.slice(path.indexOf('?') + 1)) : null;
+if (qs !== null && qs.get('q') !== null) specific.push(`${method} ${bare} q=${qs.get('q')}`);
+if (bare === 'graphql') {
+  const field = /\{\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(fields.query ?? '')?.[1];
+  if (field) specific.push(`graphql#${field}`);
+}
+const routeKey = specific.find((k) => routes[k] !== undefined) ?? key;
+let route = routes[routeKey];
 if (route === undefined) {
   process.stderr.write(`gh: Not Found (HTTP 404) for ${key}\n`);
   process.exit(1);
@@ -64,8 +76,8 @@ if (route === undefined) {
 if (route.seq) {
   const stateFile = join(dir, 'state.json');
   const state = existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : {};
-  const n = state[key] ?? 0;
-  state[key] = n + 1;
+  const n = state[routeKey] ?? 0;
+  state[routeKey] = n + 1;
   writeFileSync(stateFile, JSON.stringify(state));
   route = route.seq[Math.min(n, route.seq.length - 1)];
 }

@@ -246,9 +246,37 @@ export function authorTrusted(pr: Pick<PrSnapshot, 'authorPermission'>): boolean
 
 export const sameLogin = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
-/** The login `gh` is authenticated as (`GET user`). */
+/** How GitHub refuses `GET user` for a token that is not a user's (a GitHub App installation, Actions' GITHUB_TOKEN). */
+export const INTEGRATION_REFUSAL = /Resource not accessible by integration|HTTP 403/i;
+
+export const VIEWER_QUERY = 'query { viewer { login } }';
+
+/**
+ * The login `gh` is authenticated as. `GET user` first; GitHub refuses it for a GitHub App installation token
+ * ("Resource not accessible by integration", HTTP 403), which names its account through GraphQL's `viewer` instead
+ * (the bot account, `<app>[bot]`; P8, the P6 round 1 follow-up). Any other failure, or a viewer that cannot be read
+ * either, is a refusal that says so: the engine never guesses the account it posts as.
+ */
 export function readLogin(api: GitHubApi): string {
-  const login = obj(api.get('user'), 'the authenticated user')['login'];
+  let user: unknown;
+  try {
+    user = api.get('user');
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    if (!INTEGRATION_REFUSAL.test(why)) throw error;
+    let viewer: unknown;
+    try {
+      viewer = (obj(api.graphql(VIEWER_QUERY, {}), 'the GraphQL data')['viewer'] ?? null) as unknown;
+    } catch (inner) {
+      throw new ForgeError(
+        `GitHub refused GET user for this token (${why}), as it does for a GitHub App or Actions token, and the GraphQL viewer could not name the account either (${inner instanceof Error ? inner.message : String(inner)}): sabotage-council posts only as an account it can name; log gh in as github.login (gh auth login), or use a token that can read its own viewer`,
+      );
+    }
+    const login = viewer !== null && typeof viewer === 'object' ? (viewer as Obj)['login'] : undefined;
+    if (typeof login !== 'string' || login === '') throw new ForgeError(`GitHub refused GET user for this token (${why}), and the GraphQL viewer returned no login`);
+    return login;
+  }
+  const login = obj(user, 'the authenticated user')['login'];
   if (typeof login !== 'string' || login === '') throw new ForgeError('GET user returned no login');
   return login;
 }
