@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import { CLAIM_STALE_MS, claimRow } from '../src/auto/ledger.js';
+import { serviceInstalled } from '../src/auto/service.js';
 import { getEvents, getRound, roundSummary } from '../src/engine/index.js';
 import { releaseRound, ruleFinding } from '../src/engine/ruling.js';
 import { postRound } from '../src/engine/post.js';
@@ -380,7 +381,7 @@ describe('caffeinate (macOS: rounds run under caffeinate -i)', { timeout: 120_00
 });
 
 describe('the auto and ruling commands', { timeout: 120_000 }, () => {
-  it('auto run-once --dry-run, status, pause and resume, install --no-load into a temp dir, and ruling', async () => {
+  it('auto run-once --dry-run, status, pause and resume, install --dry-run (a preview) and --shadow --no-load into a temp dir, and ruling', async () => {
     const w = await world();
     const dir = scratch('sc-auto-cli-');
     const configPath = join(dir, 'config.toml');
@@ -423,12 +424,24 @@ describe('the auto and ruling commands', { timeout: 120_000 }, () => {
     const loop = await run('auto', 'run', '--dry-run', '--passes', '1');
     expect(loop.code).toBe(0);
     expect(loop.lines.find((l) => l.startsWith('pass '))).toMatch(/^pass done \(dry run: nothing posts\)/);
-    const inst = await run('auto', 'install', '--dry-run', '--no-load', '--dir', serviceDir);
+    // P8 round 1 row 13: install --dry-run previews only; --shadow installs the shadow mode.
+    const preview = await run('auto', 'install', '--shadow', '--dry-run', '--dir', serviceDir);
+    expect(preview.code, preview.lines.join('\n')).toBe(0);
+    expect(preview.lines[0]).toBe('dry run: nothing is written, created or loaded');
+    expect(preview.lines).toContain(`would write ${join(serviceDir, 'dev.sabotage-council.auto.plist')}, running auto run --dry-run (the shadow mode: renders reviews, posts nothing):`);
+    expect(preview.lines).toContain('    <string>--dry-run</string>');
+    expect(preview.lines.some((l) => l.startsWith('would run: launchctl bootstrap gui/'))).toBe(true);
+    expect(existsSync(serviceDir)).toBe(false);
+    const inst = await run('auto', 'install', '--shadow', '--no-load', '--dir', serviceDir);
     expect(inst.code, inst.lines.join('\n')).toBe(0);
     const plist = readFileSync(join(serviceDir, 'dev.sabotage-council.auto.plist'), 'utf8');
     expect(plist).toContain('<string>--dry-run</string>');
     expect(plist).toContain(`<string>${configPath}</string>`);
     expect(inst.lines.some((l) => l.startsWith('to load it: launchctl bootstrap gui/'))).toBe(true);
+    expect(serviceInstalled('darwin', serviceDir)).toMatchObject({ installed: true, shadow: true });
+    const real = await run('auto', 'install', '--no-load', '--dir', serviceDir);
+    expect(real.lines[0]).toMatch(/running auto run \(posts reviews\)/);
+    expect(readFileSync(join(serviceDir, 'dev.sabotage-council.auto.plist'), 'utf8')).not.toContain('--dry-run');
     const un = await run('auto', 'uninstall', '--no-load', '--dir', serviceDir);
     expect(un.lines[0]).toMatch(/^removed /);
     expect((await run('ruling', '1', 'approve')).lines).toEqual([

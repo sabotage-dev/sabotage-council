@@ -1,15 +1,16 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /*
  * `auto install | uninstall` (plan 9.4): a launchd agent on macOS, a systemd user unit on Linux, running
- * `sabotage-council auto run` (the daemon loop) with the config, store and roots it was installed with. The service
- * file is rendered, written, validated (macOS: `plutil -lint`; Linux: the unit's own checks, and `systemd-analyze
- * verify` when it is installed), and then loaded unless `--no-load`: `launchctl bootstrap gui/<uid>` or
- * `systemctl --user enable --now`. The environment it gets is PATH and HOME only, so the user's CLIs and their logins
- * are found as in a shell; no token is written into the file.
+ * `sabotage-council auto run` (the daemon loop) with the config, store and roots it was installed with; `--shadow`
+ * installs the shadow mode (`auto run --dry-run`, which never posts). The service file is rendered, written,
+ * validated (macOS: `plutil -lint`; Linux: the unit's own checks, and `systemd-analyze verify` when it is installed),
+ * and then loaded unless `--no-load`: `launchctl bootstrap gui/<uid>` or `systemctl --user enable --now`.
+ * `auto install --dry-run` only previews: it writes, creates and loads nothing. The environment the service gets is
+ * PATH and HOME only, so the user's CLIs and their logins are found as in a shell; no token is written into the file.
  *
  * Loading is refused for a file rendered outside the default directory unless the caller names the loader itself:
  * tests render into a temp directory and never reach the real launchctl or systemctl.
@@ -27,17 +28,17 @@ export interface ServiceSpec {
   configPath: string;
   dbPath: string;
   rootsPath: string;
-  /** Install the shadow mode: `auto run --dry-run`. */
-  dryRun: boolean;
+  /** The shadow mode (`auto install --shadow`): the service runs `auto run --dry-run`, which never posts. */
+  shadow: boolean;
   /** PATH and HOME for the service. */
   path: string;
   home: string;
-  /** Where the daemon's output goes (macOS; systemd keeps it in the journal). */
+  /** Where the daemon's output goes (macOS; systemd keeps it in the journal). Its dir is created 0700 at install. */
   logFile: string;
 }
 
 export function serviceArgs(s: ServiceSpec): string[] {
-  return [s.node, s.cli, 'auto', 'run', '--config', s.configPath, '--db', s.dbPath, '--roots', s.rootsPath, ...(s.dryRun ? ['--dry-run'] : [])];
+  return [s.node, s.cli, 'auto', 'run', '--config', s.configPath, '--db', s.dbPath, '--roots', s.rootsPath, ...(s.shadow ? ['--dry-run'] : [])];
 }
 
 export function defaultServiceDir(platform: ServicePlatform, home: string = homedir()): string {
@@ -183,7 +184,21 @@ function unloadCommands(o: ServiceOptions): string[][] {
   return [['--user', 'disable', '--now', SYSTEMD_UNIT]];
 }
 
-/** Writes, validates and (unless `load` is off) loads the service. Nothing loads when validation finds a problem. */
+/**
+ * `auto install --dry-run` (P8 round 1 row 13): what an install would write and run, by the engine's own checks.
+ * Nothing is written, created or loaded.
+ */
+export function previewService(spec: ServiceSpec, o: Pick<ServiceOptions, 'platform' | 'dir' | 'home' | 'uid'>): { file: string; text: string; problems: string[]; logDir: string; commands: string[][] } {
+  const file = join(o.dir ?? defaultServiceDir(o.platform, o.home), serviceFileName(o.platform));
+  const text = o.platform === 'darwin' ? renderPlist(spec) : renderUnit(spec);
+  return { file, text, problems: serviceProblems(o.platform, text, spec), logDir: dirname(spec.logFile), commands: loadCommands({ ...o, load: false }, file) };
+}
+
+/**
+ * Writes, validates and (unless `load` is off) loads the service. Nothing loads when validation finds a problem. The
+ * log file's dir is created (0700) before the file is written (P8 round 1 row 9): launchd does not create it, and a
+ * first start before any pass made it would fail to open the log.
+ */
 export function installService(spec: ServiceSpec, o: ServiceOptions): ServiceResult {
   const dir = o.dir ?? defaultServiceDir(o.platform, o.home);
   const file = join(dir, serviceFileName(o.platform));
@@ -192,6 +207,7 @@ export function installService(spec: ServiceSpec, o: ServiceOptions): ServiceRes
   const problems = serviceProblems(o.platform, text, spec);
   const result: ServiceResult = { file, written: false, removed: false, problems, commands: [], loaded: false };
   if (problems.length > 0) return result;
+  mkdirSync(dirname(spec.logFile), { recursive: true, mode: 0o700 });
   mkdirSync(dir, { recursive: true, mode: 0o755 });
   writeFileSync(file, text, { mode: 0o644 });
   result.written = true;
@@ -242,10 +258,10 @@ export function uninstallService(o: ServiceOptions): ServiceResult {
   return result;
 }
 
-/** Whether the service file is in place (status only reads it). */
-export function serviceInstalled(platform: ServicePlatform, dir?: string, home?: string): { file: string; installed: boolean; dryRun: boolean | null } {
+/** Whether the service file is in place, and whether it runs the shadow mode (status only reads it). */
+export function serviceInstalled(platform: ServicePlatform, dir?: string, home?: string): { file: string; installed: boolean; shadow: boolean | null } {
   const file = join(dir ?? defaultServiceDir(platform, home), serviceFileName(platform));
-  if (!existsSync(file)) return { file, installed: false, dryRun: null };
+  if (!existsSync(file)) return { file, installed: false, shadow: null };
   const text = readFileSync(file, 'utf8');
-  return { file, installed: true, dryRun: text.includes('--dry-run') };
+  return { file, installed: true, shadow: text.includes('--dry-run') };
 }

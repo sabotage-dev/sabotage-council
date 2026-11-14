@@ -1,10 +1,10 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, type ConfigIssue } from '../config/index.js';
 import type { CouncilConfig } from '../config/schema.js';
 import { allRows, claimLive, FINAL_STATES, MAX_ATTEMPTS } from '../auto/ledger.js';
 import { autoDir, lastReport, pauseState, PassError, roundsSince, runPass, setPaused, type PassOptions, type PassReport } from '../auto/pass.js';
-import { installService, serviceInstalled, uninstallService, type ServicePlatform } from '../auto/service.js';
+import { installService, previewService, serviceInstalled, uninstallService, type ServicePlatform } from '../auto/service.js';
 import { releaseRound, ruleFinding, type ReleaseDecision } from '../engine/ruling.js';
 import { ghApi } from '../forge/github.js';
 import { openStore, type Store } from '../store/index.js';
@@ -162,7 +162,7 @@ export function autoStatus(io: AutoIo, paths: StorePaths, json: boolean): void {
       return;
     }
     io.write(`paused: ${status.paused.paused ? `yes (${status.paused.reason ?? 'no reason given'}, since ${status.paused.at ?? '?'})` : 'no'}`);
-    io.write(`service: ${status.service.installed ? `installed${status.service.dryRun === true ? ' (dry run)' : ''}` : 'not installed'} (${status.service.file})`);
+    io.write(`service: ${status.service.installed ? `installed${status.service.shadow === true ? ' (shadow: auto run --dry-run, posts nothing)' : ''}` : 'not installed'} (${status.service.file})`);
     io.write(`rounds in the last 24 h: ${status.rounds_last_24h}`);
     const counts = Object.entries(status.counts)
       .map(([k, v]) => `${k} ${v}`)
@@ -245,7 +245,12 @@ export function autoPause(io: AutoIo, paths: StorePaths, paused: boolean, reason
 
 const CLI_ENTRY = fileURLToPath(new URL('./index.js', import.meta.url));
 
-export async function autoInstall(io: AutoIo, paths: StorePaths, o: { dryRun: boolean; dir?: string | undefined; load: boolean; uninstall: boolean }): Promise<void> {
+/**
+ * `auto install [--shadow] [--dry-run] [--dir] [--no-load]` and `auto uninstall [--dir] [--no-load]` (plan 9.4).
+ * `--shadow` installs the shadow mode (the service runs `auto run --dry-run`); `--dry-run` previews the install and
+ * writes, creates and loads nothing (P8 round 1 row 13).
+ */
+export async function autoInstall(io: AutoIo, paths: StorePaths, o: { shadow: boolean; preview: boolean; dir?: string | undefined; load: boolean; uninstall: boolean }): Promise<void> {
   const platform = io.servicePlatform ?? (process.platform === 'darwin' ? 'darwin' : process.platform === 'linux' ? 'linux' : null);
   if (platform === null) {
     io.write(`error: auto install supports macOS (launchd) and Linux (systemd), not ${process.platform}`);
@@ -274,16 +279,31 @@ export async function autoInstall(io: AutoIo, paths: StorePaths, o: { dryRun: bo
       configPath: paths.configPath,
       dbPath: paths.dbPath,
       rootsPath: paths.rootsPath,
-      dryRun: o.dryRun,
+      shadow: o.shadow,
       path: io.env['PATH'] ?? '/usr/bin:/bin',
       home: io.env['HOME'] ?? '',
       logFile: join(autoDir(layoutOf(paths)), 'daemon.log'),
     };
+    const loader = platform === 'darwin' ? 'launchctl' : 'systemctl';
+    const mode = o.shadow ? 'auto run --dry-run (the shadow mode: renders reviews, posts nothing)' : 'auto run (posts reviews)';
+    if (o.preview) {
+      const p = previewService(spec, common);
+      io.write(`dry run: nothing is written, created or loaded`);
+      io.write(`would create ${p.logDir} (mode 0700) for the daemon's log`);
+      io.write(`would write ${p.file}, running ${mode}:`);
+      io.write('----- file -----');
+      for (const l of p.text.replace(/\n$/, '').split('\n')) io.write(l);
+      io.write('----- end -----');
+      for (const x of p.problems) io.write(`problem ${x}`);
+      if (o.load) for (const c of p.commands) io.write(`would run: ${loader} ${c.join(' ')}`);
+      io.setExitCode(p.problems.length > 0 ? 1 : 0);
+      return;
+    }
     const r = installService(spec, common);
-    if (r.written) io.write(`wrote ${r.file}`);
+    if (r.written) io.write(`wrote ${r.file}, running ${mode}; its log in ${dirname(spec.logFile)}`);
     for (const p of r.problems) io.write(`problem ${p}`);
-    for (const c of r.commands) io.write(`${r.loaded ? 'ran' : 'to load it'}: ${platform === 'darwin' ? 'launchctl' : 'systemctl'} ${c.join(' ')}`);
-    io.write(r.loaded ? `loaded: the daemon runs auto run${o.dryRun ? ' --dry-run' : ''} every ${cfg.auto.interval_minutes} min; sabotage-council auto status shows it` : 'not loaded');
+    for (const c of r.commands) io.write(`${r.loaded ? 'ran' : 'to load it'}: ${loader} ${c.join(' ')}`);
+    io.write(r.loaded ? `loaded: the daemon runs ${mode} every ${cfg.auto.interval_minutes} min; sabotage-council auto status shows it` : 'not loaded');
     io.setExitCode(r.problems.length > 0 ? 1 : 0);
   } catch (error) {
     io.write(`error: ${error instanceof Error ? error.message : String(error)}`);

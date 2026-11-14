@@ -299,11 +299,12 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     autoCmd
       .command('install')
       .description('write the launchd agent (macOS) or systemd user unit (Linux) that runs auto run, validate it, and load it')
-      .option('--dry-run', 'install the shadow mode: auto run --dry-run')
+      .option('--shadow', 'install the shadow mode: the service runs auto run --dry-run, which renders reviews and posts nothing')
+      .option('--dry-run', 'preview only: print the file and the commands; write, create and load nothing')
       .option('--dir <dir>', 'where the service file goes (default ~/Library/LaunchAgents or ~/.config/systemd/user)')
       .option('--no-load', 'write and validate only; print the command that loads it'),
-  ).action(async (opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; dir?: string; load?: boolean }) => {
-    await autoInstall(autoIo, pathsOf(opts), { dryRun: opts.dryRun === true, dir: opts.dir, load: opts.load !== false, uninstall: false });
+  ).action(async (opts: { config?: string; db?: string; roots?: string; shadow?: boolean; dryRun?: boolean; dir?: string; load?: boolean }) => {
+    await autoInstall(autoIo, pathsOf(opts), { shadow: opts.shadow === true, preview: opts.dryRun === true, dir: opts.dir, load: opts.load !== false, uninstall: false });
   });
   storeOptions(
     autoCmd
@@ -312,7 +313,7 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .option('--dir <dir>', 'where the service file is')
       .option('--no-load', 'remove the file only; print the command that unloads it'),
   ).action(async (opts: { config?: string; db?: string; roots?: string; dir?: string; load?: boolean }) => {
-    await autoInstall(autoIo, pathsOf(opts), { dryRun: false, dir: opts.dir, load: opts.load !== false, uninstall: true });
+    await autoInstall(autoIo, pathsOf(opts), { shadow: false, preview: false, dir: opts.dir, load: opts.load !== false, uninstall: true });
   });
 
   storeOptions(

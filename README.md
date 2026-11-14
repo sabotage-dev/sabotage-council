@@ -189,9 +189,13 @@ allows nothing, and a search result outside it is dropped before anything about 
 ```sh
 sabotage-council auto run-once --dry-run   # one pass; renders reviews, posts nothing
 sabotage-council auto status               # paused or not, the service, open ledger rows, the last pass
-sabotage-council auto install --dry-run    # a launchd agent (macOS) or systemd user unit (Linux) running the shadow mode
+sabotage-council auto install --dry-run    # preview only: prints the service file and its commands; writes and loads nothing
+sabotage-council auto install --shadow     # a launchd agent (macOS) or systemd user unit (Linux) running the shadow mode
 sabotage-council auto install              # the same, posting; auto uninstall removes it; auto pause / resume
 ```
+
+The shadow mode is `auto run --dry-run`: every pass renders its reviews and posts nothing. `auto install` creates the
+daemon's log dir (`auto/` beside the store, mode 0700) before it writes and loads the service.
 
 - **Queue.** GitHub's search for open, non-draft PRs with a review requested from you (`review-requested:@me`, which
   includes your teams; `auto.include_team_requests = false` keeps direct requests only; `include_assigned = true`

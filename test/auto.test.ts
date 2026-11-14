@@ -7,7 +7,7 @@ import { claimLive, claimRow, CLAIM_STALE_MS, getRow, heartbeat, release, update
 import { commandDeliver, desktopDeliver, notify, DEDUPE_MS, type Notice } from '../src/auto/notify.js';
 import { autoDir, PASS_LOCK_STALE_MS, takePassLock, type PassLock } from '../src/auto/pass.js';
 import { inScope, narrowOwners, searchQueries, searchQueue, type QueueConfig } from '../src/auto/queue.js';
-import { installService, renderPlist, renderUnit, serviceArgs, serviceProblems, systemdWord, uninstallService, type ServiceSpec } from '../src/auto/service.js';
+import { installService, previewService, renderPlist, renderUnit, serviceArgs, serviceProblems, systemdWord, uninstallService, type ServiceSpec } from '../src/auto/service.js';
 import { runTests, testGate, testsFor, testsMarkdown } from '../src/auto/tests.js';
 import { ghApi } from '../src/forge/github.js';
 import { openStore } from '../src/store/index.js';
@@ -342,7 +342,7 @@ const SPEC: ServiceSpec = {
   configPath: '/home/u/.config/sabotage-council/config.toml',
   dbPath: '/home/u/.local/share/sabotage-council/council.db',
   rootsPath: '/home/u/.cache/sabotage-council/roots',
-  dryRun: true,
+  shadow: true,
   path: '/usr/bin:/bin',
   home: '/home/u',
   logFile: '/home/u/.local/share/sabotage-council/auto/daemon.log',
@@ -365,19 +365,20 @@ describe('auto install: the launchd agent and the systemd unit (plan 9.4)', () =
 
   it('writes and validates into a temp dir (plutil -lint on macOS), and loads only through the loader it is given', () => {
     const dir = scratch('sc-service-');
+    const spec = { ...SPEC, logFile: join(dir, 'store', 'auto', 'daemon.log') };
     const calls: Array<{ bin: string; args: readonly string[] }> = [];
     const run = (bin: string, args: readonly string[]) => {
       calls.push({ bin, args });
       return { status: 0, stdout: '', stderr: '' };
     };
     const plutil = existsSync('/usr/bin/plutil') ? '/usr/bin/plutil' : null;
-    const lint = installService(SPEC, { platform: 'darwin', dir, load: false, plutil });
+    const lint = installService(spec, { platform: 'darwin', dir, load: false, plutil });
     expect(lint).toMatchObject({ written: true, loaded: false, problems: [] });
     expect(lint.commands).toEqual([['bootstrap', `gui/${process.getuid?.() ?? 0}`, join(dir, 'dev.sabotage-council.auto.plist')]]);
     // No loader named, a dir that is not the default: refused before anything runs.
-    expect(() => installService(SPEC, { platform: 'darwin', dir, load: true, plutil: null, run })).toThrow(/refusing to load/);
+    expect(() => installService(spec, { platform: 'darwin', dir, load: true, plutil: null, run })).toThrow(/refusing to load/);
     expect(calls).toEqual([]);
-    const loaded = installService(SPEC, { platform: 'linux', dir, load: true, loader: '/fake/systemctl', run, home: '/nowhere' });
+    const loaded = installService(spec, { platform: 'linux', dir, load: true, loader: '/fake/systemctl', run, home: '/nowhere' });
     expect(loaded.loaded).toBe(true);
     expect(calls.map((c) => [c.bin, ...c.args].join(' '))).toEqual(['/fake/systemctl --user daemon-reload', '/fake/systemctl --user enable --now sabotage-council-auto.service']);
     const gone = uninstallService({ platform: 'linux', dir, load: true, loader: '/fake/systemctl', run });
@@ -388,8 +389,30 @@ describe('auto install: the launchd agent and the systemd unit (plan 9.4)', () =
   it('reports a plist plutil rejects, and loads nothing', () => {
     const dir = scratch('sc-service-');
     const run = (bin: string) => (bin === '/fake/plutil' ? { status: 1, stdout: 'bad plist', stderr: '' } : { status: 0, stdout: '', stderr: '' });
-    const r = installService(SPEC, { platform: 'darwin', dir, load: true, loader: '/fake/launchctl', plutil: '/fake/plutil', run });
+    const r = installService({ ...SPEC, logFile: join(dir, 'auto', 'daemon.log') }, { platform: 'darwin', dir, load: true, loader: '/fake/launchctl', plutil: '/fake/plutil', run });
     expect(r.loaded).toBe(false);
     expect(r.problems).toEqual(['plutil -lint: bad plist']);
+  });
+
+  it('creates the log file\'s dir (0700) before the service file is written and loaded (P8 round 1 row 9)', () => {
+    const dir = scratch('sc-service-');
+    const logDir = join(dir, 'fresh-store', 'auto');
+    const order: string[] = [];
+    const run = (bin: string, args: readonly string[]) => {
+      order.push(`${bin} ${args[0] ?? ''}: log dir ${existsSync(logDir) ? `0${(statSync(logDir).mode & 0o777).toString(8)}` : 'missing'}`);
+      return { status: 0, stdout: '', stderr: '' };
+    };
+    const r = installService({ ...SPEC, logFile: join(logDir, 'daemon.log') }, { platform: 'darwin', dir: join(dir, 'agents'), load: true, loader: '/fake/launchctl', plutil: '/fake/plutil', run });
+    expect(r).toMatchObject({ written: true, loaded: true, problems: [] });
+    expect(order).toEqual(['/fake/plutil -lint: log dir 0700', '/fake/launchctl bootstrap: log dir 0700']);
+  });
+
+  it('previews without writing, creating or loading anything (P8 round 1 row 13)', () => {
+    const dir = scratch('sc-service-');
+    const p = previewService({ ...SPEC, logFile: join(dir, 'store', 'auto', 'daemon.log') }, { platform: 'darwin', dir: join(dir, 'agents') });
+    expect(p).toMatchObject({ file: join(dir, 'agents', 'dev.sabotage-council.auto.plist'), problems: [], logDir: join(dir, 'store', 'auto') });
+    expect(p.text).toContain('<string>--dry-run</string>');
+    expect(p.commands).toEqual([['bootstrap', `gui/${process.getuid?.() ?? 0}`, join(dir, 'agents', 'dev.sabotage-council.auto.plist')]]);
+    expect(readdirSync(dir)).toEqual([]);
   });
 });
