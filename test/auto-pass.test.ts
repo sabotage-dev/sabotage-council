@@ -63,6 +63,18 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(posts(w)).toBe(1);
   });
 
+  it('reviews an author without write access with the headless adjudicator: no refusal, the untrusted seat policy applied', async () => {
+    const w = await world({
+      edit: (routes) => {
+        routes['GET repos/sabotage-dev/sabotage-council/collaborators/repo-owner/permission'] = { json: { permission: 'read' } };
+      },
+    });
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'approved' });
+    const prepared = getEvents(w.h.store.db, row(w)['round_id'] as number).find((e) => e.kind === 'round-prepared')?.detail as { pr: { trusted: boolean; untrusted: unknown } };
+    expect(prepared.pr).toMatchObject({ trusted: false, untrusted: { policy: 'fallback', interactive_adjudication: 'headless' } });
+  });
+
   it('skips drafts, your own PRs and repos_skip without reading them', async () => {
     const w = await world({
       auto: 'repos_skip = ["sabotage-dev/private-*"]\n',
@@ -396,6 +408,9 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(r.pruned.retired).toBe(1);
     expect(r.pruned.round_dirs).toBe(0);
     expect(row(w)).toMatchObject({ state: 'retired' });
+    // Ten days old: kept (round dirs live 90 days).
+    w.h.store.db.prepare('UPDATE rounds SET started_at = ? WHERE id = ?').run(new Date(Date.now() - 10 * 24 * 60 * 60_000).toISOString(), roundId);
+    expect((await w.pass()).pruned.round_dirs).toBe(0);
     w.h.store.db.prepare('UPDATE rounds SET started_at = ? WHERE id = ?').run(new Date(Date.now() - 91 * 24 * 60 * 60_000).toISOString(), roundId);
     const r2 = await w.pass();
     expect(r2.pruned.round_dirs).toBe(1);

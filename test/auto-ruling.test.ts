@@ -5,6 +5,8 @@ import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import { claimRow } from '../src/auto/ledger.js';
 import { getEvents, getRound, roundSummary } from '../src/engine/index.js';
 import { releaseRound, ruleFinding } from '../src/engine/ruling.js';
+import { postRound } from '../src/engine/post.js';
+import { ghApi } from '../src/forge/github.js';
 import { fakeRegistry } from './fake-registry.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 import { FAKE_GH } from './helpers/github.js';
@@ -105,6 +107,9 @@ describe('rulings under the daemon (plan 3.8): a held row is released only by a 
       if (decision === 'skip') {
         expect(row(w)).toMatchObject({ state: 'skipped' });
         expect(sent(w)).toHaveLength(1);
+        // Nor by hand: a round released with skip refuses every later post.
+        const by = postRound(w.h.store, { config: w.config, layout: w.h.layout, api: ghApi({ bin: FAKE_GH, env: w.gh.env }), roundId: id, mode: 'dry-run' });
+        expect(by).toMatchObject({ outcome: 'refused', problems: [`round ${id} was released with skip by a ruling: nothing more posts`] });
         continue;
       }
       const b = sent(w)[1]?.body as { event: string; body: string };
