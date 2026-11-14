@@ -492,6 +492,11 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
     const paths = (r.detail['toolUses'] as Array<{ paths: string[] }>).flatMap((u) => u.paths);
     expect(paths.some((p) => p.endsWith('/app/routes/$id.tsx'))).toBe(true);
     expect(paths).toContain('routes/$id');
+    // An Edit under _mainloop/ whose name holds a "$" is still under _mainloop/.
+    const draft = (t: string): string => t.replace(/"replace_all": false, "file_path": "([^"]*)\/_mainloop\/ADJUDICATION\.json"/g, '"replace_all": false, "file_path": "$1/_mainloop/$$draft.json"');
+    const e = recorded({ stream: draft, transcript: draft });
+    expect(e.checks.filter((c) => !c.ok)).toEqual([]);
+    expect((e.detail['toolUses'] as Array<{ name: string; paths: string[] }>).find((u) => u.name === 'Edit')!.paths[0]).toMatch(/\/_mainloop\/\$draft\.json$/);
   });
 
   it.each(['**/*.{js,md}', '**/*.ts', 'src/**/x*.md', '*.[jt]s', '_council/legs/*/answer.md'])('ratifies the recorded run with the ordinary pattern %s', (pattern) => {
@@ -885,18 +890,23 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     const s = await settledRound();
     const outside = join(scratch('sc-adj-outside-'), 'OUTSIDE-CANARY.txt');
     writeFileSync(outside, 'secret canary\n');
+    // Three calls, each with something the others lack: a plugin tool offered (the gate stops it), a Glob and a
+    // denied outside read (held), a Grep (adjudicated).
     const { env } = adjHome([
-      { toolUses: [{ name: 'Read', input: { file_path: outside } }], output: placeholderDoc(s.summary) },
+      { initTools: ['Edit', 'Glob', 'Grep', 'Read', 'mcp__canary__touch'], hangAfterInit: true, output: placeholderDoc(s.summary) },
+      { toolUses: [{ name: 'Glob', input: { pattern: '**/*.py' } }, { name: 'Read', input: { file_path: outside } }], output: placeholderDoc(s.summary) },
       { toolUses: [{ name: 'Grep', input: { pattern: 'x', glob: '*.py' } }], output: placeholderDoc(s.summary) },
     ]);
+    const gated = await headless(s, env);
+    expect(gated.outcome).toBe('failed');
     const first = await headless(s, env);
     expect(first.outcome).toBe('needs-ruling');
-    // The user releases the hold (P8's ruling command will), and a second call adjudicates cleanly.
+    // The user releases the hold (P8's ruling command will), and a third call adjudicates cleanly.
     s.h.store.db.prepare('UPDATE rounds SET needs_ruling = 0 WHERE id = ?').run(s.roundId);
     const second = await headless(s, env);
     expect(second.outcome, second.reason).toBe('adjudicated');
     const round = getRound(s.h.store.db, s.roundId)!;
-    expect(JSON.parse(round.adjudicator_tools_json!)).toEqual({ offered: ['Edit', 'Glob', 'Grep', 'Read'], used: ['Edit', 'Grep', 'Read'] });
+    expect(JSON.parse(round.adjudicator_tools_json!)).toEqual({ offered: ['Edit', 'Glob', 'Grep', 'Read', 'mcp__canary__touch'], used: ['Edit', 'Glob', 'Grep', 'Read'] });
     const denials = JSON.parse(round.adjudicator_denials_json!) as Json[];
     expect(denials).toHaveLength(1);
     expect(denials[0]).toMatchObject({ tool_name: 'Read' });
