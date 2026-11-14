@@ -348,7 +348,8 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
     settled_at: settled,
     wall_ms: end === null ? null : Date.parse(end) - Date.parse(round.started_at),
     cost: {
-      usd: legs.reduce((s, l) => s + (l.cost_usd ?? 0), 0),
+      // The round's total: every leg and the headless adjudicator's launches (P7 round 1 row 7).
+      usd: legs.reduce((s, l) => s + (l.cost_usd ?? 0), 0) + (round.adjudicator_cost_usd ?? 0),
       credits: legs.reduce((s, l) => s + (l.credits ?? 0), 0),
       legs_with_cost: costed.length,
     },

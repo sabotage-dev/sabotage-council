@@ -15,7 +15,7 @@ export {
   type EffectiveResult,
   type ValidationOutcome,
 } from './validate.js';
-export { adjudicateHeadless, HeadlessError, type HeadlessOptions, type HeadlessOutcome, type HeadlessResult, type HeadlessSettings, type LaunchRecord } from './headless.js';
+export { adjudicateHeadless, HeadlessError, takeAdjudicatorLock, type HeadlessOptions, type HeadlessOutcome, type HeadlessResult, type HeadlessSettings, type LaunchRecord } from './headless.js';
 export { globReduce, type GlobReduction } from './glob.js';
 export { HOOK_SOURCE, shellQuote, writeHook } from './hook.js';
 export { assignStableIds, type IdAssignment } from './ids.js';

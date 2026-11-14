@@ -270,7 +270,9 @@ export function renderSummary(s: RoundSummary): string[] {
       `headless adjudicator: model ${String(h.model_observed)}, effort ${String(h.effort_observed)}, $${(h.cost_usd ?? 0).toFixed(4)}, ${Math.round((h.duration_ms ?? 0) / 1000)} s, transcript ${String(h.transcript)}`,
     );
   }
-  out.push(`cost $${s.cost.usd.toFixed(4)}${s.cost.credits > 0 ? `, ${s.cost.credits} credits` : ''}; wall ${s.wall_ms === null ? 'running' : `${Math.round(s.wall_ms / 1000)} s`}`);
+  const adjCost = s.adjudicator?.cost_usd ?? 0;
+  const parts = adjCost > 0 ? ` (legs $${(s.cost.usd - adjCost).toFixed(4)}, headless adjudicator $${adjCost.toFixed(4)})` : '';
+  out.push(`cost $${s.cost.usd.toFixed(4)}${parts}${s.cost.credits > 0 ? `, ${s.cost.credits} credits` : ''}; wall ${s.wall_ms === null ? 'running' : `${Math.round(s.wall_ms / 1000)} s`}`);
   out.push(`round dir ${s.round_dir}`);
   return out;
 }

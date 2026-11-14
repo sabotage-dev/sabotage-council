@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -16,11 +16,13 @@ import {
   HOOK_SOURCE,
   OUTPUT_PLACEHOLDER,
   ratifyAdjudicatorRun,
+  takeAdjudicatorLock,
   type HeadlessResult,
   type HeadlessSettings,
 } from '../src/adjudicate/index.js';
 import { claudeDecl } from '../src/adapters/claude/known.js';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
+import { renderSummary } from '../src/cli/round.js';
 import type { StorePaths } from '../src/cli/round.js';
 import { getEvents, getRound, resolveDiffTarget, roundSummary, rootPathOf, type RoundSummary } from '../src/engine/index.js';
 import { groupAlive, signalGroup } from '../src/transport/headless.js';
@@ -763,6 +765,31 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     await expect(headless(s, env)).rejects.toThrow(/is adjudicated; only a round awaiting adjudication/);
   });
 
+  it('takes over a stale lock exclusively: a caller that judged it stale after another took it over refuses (round 1 row 10)', () => {
+    const dir = scratch('sc-adj-lock-');
+    const file = join(dir, 'running.json');
+    const DEAD = 2 ** 22 + 12345;
+    writeFileSync(file, JSON.stringify({ pid: DEAD }));
+    // Caller A judges the lock stale; before A takes it over, caller B takes it over (B runs to completion here).
+    let releaseB: (() => void) | null = null;
+    expect(() => takeAdjudicatorLock(dir, { afterStaleRead: () => (releaseB = takeAdjudicatorLock(dir)) })).toThrow(/already running/);
+    expect(releaseB).not.toBeNull();
+    expect((JSON.parse(readFileSync(file, 'utf8')) as { pid: number }).pid).toBe(process.pid);
+    expect(existsSync(`${file}.takeover`)).toBe(false);
+    releaseB!();
+    expect(existsSync(file)).toBe(false);
+    // A lock released between the judgment and the takeover: the caller takes a fresh one.
+    writeFileSync(file, JSON.stringify({ pid: DEAD }));
+    const release = takeAdjudicatorLock(dir, { afterStaleRead: () => rmSync(file) });
+    expect((JSON.parse(readFileSync(file, 'utf8')) as { pid: number }).pid).toBe(process.pid);
+    release();
+    // A takeover already in progress: refused, naming the file, and the stale lock is left as it was.
+    writeFileSync(file, JSON.stringify({ pid: DEAD }));
+    writeFileSync(`${file}.takeover`, JSON.stringify({ pid: DEAD + 1 }));
+    expect(() => takeAdjudicatorLock(dir)).toThrow(/taking over a stale adjudicator lock/);
+    expect((JSON.parse(readFileSync(file, 'utf8')) as { pid: number }).pid).toBe(DEAD);
+  });
+
   it('builds the copy from a rebuilt root when the round\'s root no longer hashes to the sealed tree', async () => {
     const s = await settledRound();
     writeFileSync(join(rootPathOf(s.h.layout, s.roundId, 1), 'BRIEF.md'), 'tampered\n');
@@ -774,15 +801,74 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     expect(readFileSync(join(r.runDir, 'work', 'BRIEF.md'), 'utf8')).not.toBe('tampered\n');
   });
 
-  it('launches nothing when the working copy does not hash to the sealed tree', async () => {
+  it('launches nothing when the working copy does not hash to the sealed tree, and removes the partial copy', async () => {
     const s = await settledRound();
     const { home, env } = adjHome([{ output: placeholderDoc(s.summary) }]);
-    const r = await headless(s, env, { afterCopy: (root) => writeFileSync(join(root, 'BRIEF.md'), 'changed in the copy\n') });
+    const r = await headless(s, env, {
+      afterCopy: (root) => {
+        writeFileSync(join(root, 'BRIEF.md'), 'changed in the copy\n');
+        // A read-only dir in the copy (a copied tree keeps its modes): the removal opens it first (round 1 row 9).
+        mkdirSync(join(root, 'ro'));
+        writeFileSync(join(root, 'ro', 'x.txt'), 'x\n');
+        chmodSync(join(root, 'ro'), 0o500);
+      },
+    });
     expect(r.outcome).toBe('failed');
     expect(r.reason).toContain('not the sealed');
     expect(r.launches).toHaveLength(0);
     expect(existsSync(join(home, 'argv-1.json'))).toBe(false);
     expect(kinds(s)).toContain('adjudicator-workspace-fail');
+    expect(existsSync(join(r.runDir, 'work'))).toBe(false);
+  });
+
+  it('records a launch whose store was refused because the round was adjudicated meanwhile: failed, the event written', async () => {
+    const s = await settledRound();
+    // The model writes its document 1.5 s after init; the user adjudicates the round in between (round 1 row 8).
+    const { home, env } = adjHome([{ hangAfterInit: true, actAfterMs: 1500, output: placeholderDoc(s.summary) }]);
+    const running = headless(s, env);
+    const started = Date.now();
+    while (!existsSync(join(home, 'argv-1.json')) && Date.now() - started < 15_000) await new Promise((res) => setTimeout(res, 20));
+    expect(existsSync(join(home, 'argv-1.json'))).toBe(true);
+    const mine = adjudicate(s.h.store, s.h.layout, s.roundId, JSON.stringify(adjudicationFromSummary(s.summary, { outcome: 'owed', verdict: 'NEEDS-WORK', approve: false })));
+    expect(mine.stored).toBe(true);
+    const r = await running;
+    expect(r.outcome).toBe('failed');
+    expect(r.reason).toContain('the store refused the adjudication, so nothing was stored');
+    expect(r.reason).toContain('only a round awaiting adjudication');
+    expect(r.launches).toHaveLength(1);
+    expect(r.launches[0]!.ratification.status).toBe('PASS');
+    const runs = getEvents(s.h.store.db, s.roundId).filter((e) => e.kind === 'adjudicator-run');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.detail).toMatchObject({ launch: 1, status: 'PASS', store_error: expect.stringContaining('is adjudicated') });
+    // The user's adjudication stands: one adjudicated event, the user's.
+    expect(getEvents(s.h.store.db, s.roundId).filter((e) => e.kind === 'adjudicated')).toHaveLength(1);
+    expect(getRound(s.h.store.db, s.roundId)).toMatchObject({ status: 'adjudicated', needs_ruling: 0 });
+  });
+
+  it('merges the record over calls: tools and denials kept, cost in the round total (round 1 row 7)', async () => {
+    const s = await settledRound();
+    const outside = join(scratch('sc-adj-outside-'), 'OUTSIDE-CANARY.txt');
+    writeFileSync(outside, 'secret canary\n');
+    const { env } = adjHome([
+      { toolUses: [{ name: 'Read', input: { file_path: outside } }], output: placeholderDoc(s.summary) },
+      { toolUses: [{ name: 'Grep', input: { pattern: 'x', glob: '*.py' } }], output: placeholderDoc(s.summary) },
+    ]);
+    const first = await headless(s, env);
+    expect(first.outcome).toBe('needs-ruling');
+    // The user releases the hold (P8's ruling command will), and a second call adjudicates cleanly.
+    s.h.store.db.prepare('UPDATE rounds SET needs_ruling = 0 WHERE id = ?').run(s.roundId);
+    const second = await headless(s, env);
+    expect(second.outcome, second.reason).toBe('adjudicated');
+    const round = getRound(s.h.store.db, s.roundId)!;
+    expect(JSON.parse(round.adjudicator_tools_json!)).toEqual({ offered: ['Edit', 'Glob', 'Grep', 'Read'], used: ['Edit', 'Grep', 'Read'] });
+    const denials = JSON.parse(round.adjudicator_denials_json!) as Json[];
+    expect(denials).toHaveLength(1);
+    expect(denials[0]).toMatchObject({ tool_name: 'Read' });
+    expect(round.adjudicator_cost_usd).toBeCloseTo(0.0246);
+    const summary = roundSummary(s.h.store, s.h.layout, s.roundId);
+    const legs = summary.legs.reduce((t, l) => t + (l.cost_usd ?? 0), 0);
+    expect(summary.cost.usd).toBeCloseTo(legs + 0.0246);
+    expect(renderSummary(summary).find((l) => l.startsWith('cost $'))).toContain(`headless adjudicator $0.0246`);
   });
 
   it('copies only the counted legs\' answers: a leg that failed is listed with no answer', async () => {

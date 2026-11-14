@@ -15,7 +15,7 @@ import { assignStableIds } from './ids.js';
 import { adjudicatorArgs, adjudicatorInitProblem, adjudicatorSettings, StreamWatch } from './launch.js';
 import { adjudicatePrompt, repromptText, type PromptInput } from './prompt.js';
 import { ratifyAdjudicatorRun, type AdjudicatorRatification } from './ratify.js';
-import { adjudicate, type AdjudicateResult } from './store.js';
+import { adjudicate, AdjudicateError, type AdjudicateResult } from './store.js';
 import { buildWorkspace, copyTreeHash, inputsTreeHash, removeWorkspace, type Workspace } from './workspace.js';
 
 /*
@@ -112,26 +112,73 @@ function alive(pid: number): boolean {
   }
 }
 
+function readOrNull(file: string): string | null {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function pidIn(text: string): number {
+  try {
+    const pid = Number((JSON.parse(text) as { pid?: unknown }).pid);
+    return Number.isInteger(pid) && pid > 0 ? pid : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Creates a file exclusively; false when it already exists. */
+function createExclusive(file: string, text: string): boolean {
+  try {
+    writeFileSync(file, text, { flag: 'wx' });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
+}
+
 /**
  * One headless call per round at a time: `adjudicator/running.json` holds the owner's pid, created exclusively. A
- * lock whose process is gone is taken over.
+ * lock whose process is gone is taken over exclusively (P7 round 1 row 10): the taker first creates
+ * `running.json.takeover` exclusively, so takers run one at a time; it then re-reads the lock and replaces it (unlink,
+ * then create exclusively) only while it still holds the stale content it judged. A taker that finds the lock changed
+ * judges it again, so two callers that both saw the same dead owner never both run. `afterStaleRead` is for tests: it
+ * runs between judging the lock stale and taking it over.
  */
-function takeLock(adjDir: string): () => void {
+export function takeAdjudicatorLock(adjDir: string, hooks: { afterStaleRead?: (() => void) | undefined } = {}): () => void {
   const file = join(adjDir, 'running.json');
+  const takeover = `${file}.takeover`;
   const record = `${JSON.stringify({ pid: process.pid, started_at: now() })}\n`;
-  try {
-    writeFileSync(file, record, { flag: 'wx' });
-  } catch {
-    let pid = 0;
-    try {
-      pid = Number((JSON.parse(readFileSync(file, 'utf8')) as { pid?: unknown }).pid);
-    } catch {
-      pid = 0;
+  const release = (): void => {
+    if (readOrNull(file) === record) rmSync(file, { force: true });
+  };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (createExclusive(file, record)) return release;
+    const seen = readOrNull(file);
+    if (seen === null) continue;
+    const pid = pidIn(seen);
+    if (pid > 0 && alive(pid)) throw new HeadlessError(`a headless adjudication of this round is already running (pid ${pid})`);
+    hooks.afterStaleRead?.();
+    if (!createExclusive(takeover, record)) {
+      const holder = pidIn(readOrNull(takeover) ?? '');
+      throw new HeadlessError(
+        `another caller (pid ${holder}${holder > 0 && !alive(holder) ? ', no longer running' : ''}) is taking over a stale adjudicator lock of this round; if no headless run of this round is alive, remove ${takeover}`,
+      );
     }
-    if (Number.isInteger(pid) && pid > 0 && alive(pid)) throw new HeadlessError(`a headless adjudication of this round is already running (pid ${pid})`);
-    writeFileSync(file, record);
+    try {
+      // Still the stale lock judged above: replace it. Anything else (a new owner, or none): judge again.
+      if (readOrNull(file) !== seen) continue;
+      rmSync(file, { force: true });
+      if (createExclusive(file, record)) return release;
+    } finally {
+      rmSync(takeover, { force: true });
+    }
   }
-  return () => rmSync(file, { force: true });
+  throw new HeadlessError('could not take the adjudicator lock of this round: it kept changing');
 }
 
 /** The next run dir, `adjudicator/h<n>`, created exclusively. */
@@ -149,13 +196,38 @@ function nonNeg(n: number | null | undefined): number {
   return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
-/** Records one launch on the round (plan 6.4): observed model and effort, tools, denials, transcript, and the totals. */
-function recordOnRound(store: Store, roundId: number, launches: readonly LaunchRecord[]): void {
-  const last = launches[launches.length - 1];
-  if (!last) return;
-  const r = last.ratification;
-  const tools = { offered: [...new Set(launches.flatMap((l) => l.ratification.toolsOffered))].sort(), used: [...new Set(launches.flatMap((l) => l.ratification.toolsUsed))].sort() };
-  const denials = launches.flatMap((l) => l.ratification.permissionDenials);
+function stringList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
+/**
+ * Records one launch on the round (plan 6.4): the observed model and effort and the transcript of the latest launch;
+ * the tools and permission denials merged with what earlier launches, of this call or an earlier one, recorded (P7
+ * round 1 row 7: a later clean launch never erases an earlier one's denials); and the cost, turns and time summed.
+ */
+function recordOnRound(store: Store, roundId: number, l: Omit<LaunchRecord, 'validation'>): void {
+  const r = l.ratification;
+  const row = store.db.prepare('SELECT adjudicator_tools_json, adjudicator_denials_json FROM rounds WHERE id = ?').get(roundId) as
+    | { adjudicator_tools_json: string | null; adjudicator_denials_json: string | null }
+    | undefined;
+  let prior: { offered?: unknown; used?: unknown } = {};
+  let priorDenials: unknown[] = [];
+  try {
+    prior = row?.adjudicator_tools_json ? (JSON.parse(row.adjudicator_tools_json) as typeof prior) : {};
+  } catch {
+    prior = {};
+  }
+  try {
+    const parsed = row?.adjudicator_denials_json ? (JSON.parse(row.adjudicator_denials_json) as unknown) : [];
+    priorDenials = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    priorDenials = [];
+  }
+  const tools = {
+    offered: [...new Set([...stringList(prior.offered), ...r.toolsOffered])].sort(),
+    used: [...new Set([...stringList(prior.used), ...r.toolsUsed])].sort(),
+  };
+  const denials = [...priorDenials, ...r.permissionDenials];
   store.db
     .prepare(
       `UPDATE rounds SET adjudicator_model_observed = ?, adjudicator_effort_observed = ?, adjudicator_tools_json = ?, adjudicator_denials_json = ?,
@@ -163,7 +235,7 @@ function recordOnRound(store: Store, roundId: number, launches: readonly LaunchR
          adjudicator_ms = coalesce(adjudicator_ms, 0) + ?, adjudicator_record_path = ?
        WHERE id = ?`,
     )
-    .run(r.modelObserved, r.effortObserved, JSON.stringify(tools), JSON.stringify(denials), nonNeg(r.costUsd), Math.round(nonNeg(r.turns)), Math.round(nonNeg(last.exit.durationMs)), r.recordPath, roundId);
+    .run(r.modelObserved, r.effortObserved, JSON.stringify(tools), JSON.stringify(denials), nonNeg(r.costUsd), Math.round(nonNeg(r.turns)), Math.round(nonNeg(l.exit.durationMs)), r.recordPath, roundId);
 }
 
 /** Holds the round for the user (plan 3.8): `needs_ruling` set, the round still awaiting adjudication. */
@@ -306,7 +378,7 @@ export async function adjudicateHeadless(store: Store, layout: DataLayout, round
   if (countedLegs(store.db, roundId).length === 0) throw new HeadlessError(`round ${roundId} has no ratified leg to adjudicate`);
   const adjDir = join(roundDirOf(layout, roundId), 'adjudicator');
   mkdirSync(adjDir, { recursive: true, mode: 0o700 });
-  const release = takeLock(adjDir);
+  const release = takeAdjudicatorLock(adjDir);
   try {
     const runDir = nextRunDir(adjDir);
     const run = basename(runDir);
@@ -327,6 +399,8 @@ export async function adjudicateHeadless(store: Store, layout: DataLayout, round
       ws = buildWorkspace(store, layout, roundId, runDir, options.afterCopy);
     } catch (error) {
       const why = error instanceof Error ? error.message : String(error);
+      // A partial copy of the reviewed tree never stays behind (P7 round 1 row 9).
+      removeWorkspace({ root: join(runDir, 'work') });
       insertEvent(store.db, 'adjudicator-workspace-fail', roundId, { run, error: why });
       return { ...base, outcome: 'failed', reason: `the working copy could not be built: ${why}` };
     }
@@ -352,7 +426,7 @@ export async function adjudicateHeadless(store: Store, layout: DataLayout, round
       for (let n = 1; n <= 2; n++) {
         const l: LaunchRecord = { ...(await launchOnce(c, n, prompt)), validation: null };
         launches.push(l);
-        recordOnRound(store, roundId, launches);
+        recordOnRound(store, roundId, l);
         const r = l.ratification;
         if (!r.ok) {
           insertEvent(store.db, 'adjudicator-run', roundId, { run, ...launchEvent(l) });
@@ -367,7 +441,16 @@ export async function adjudicateHeadless(store: Store, layout: DataLayout, round
         writeFileSync(join(l.dir, 'ADJUDICATION.raw.json'), raw);
         const assigned = assignStableIds(raw, ws.facts.targetKey);
         writeFileSync(join(l.dir, 'ADJUDICATION.json'), assigned.text);
-        const stored = adjudicate(store, layout, roundId, assigned.text, { headless: true });
+        let stored: AdjudicateResult;
+        try {
+          stored = adjudicate(store, layout, roundId, assigned.text, { headless: true });
+        } catch (error) {
+          // The store refused before validating (P7 round 1 row 8): the round was adjudicated or superseded while the
+          // launch ran. Nothing is stored over it; the launch is still recorded.
+          if (!(error instanceof AdjudicateError)) throw error;
+          insertEvent(store.db, 'adjudicator-run', roundId, { run, ...launchEvent(l), ids_assigned: assigned.changed, store_error: error.message });
+          return { ...base, launches, outcome: 'failed', reason: `the store refused the adjudication, so nothing was stored: ${error.message}` };
+        }
         l.validation = stored.outcome.ok ? { ok: true, errors: [] } : { ok: false, errors: stored.outcome.errors };
         insertEvent(store.db, 'adjudicator-run', roundId, { run, ...launchEvent(l), ids_assigned: assigned.changed });
         if (stored.stored) return { ...base, launches, stored, outcome: 'adjudicated', reason: n === 1 ? 'adjudicated' : 'adjudicated after one re-prompt' };
