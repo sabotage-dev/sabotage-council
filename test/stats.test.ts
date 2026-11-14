@@ -190,10 +190,10 @@ describe('stats: raised, adopted, refuted and precision', () => {
     w.close();
   });
 
-  it('reads findings only from adjudicated rounds', () => {
+  it('reads findings only from adjudicated rounds (a leg finding no adjudication has mapped yet is not unmapped)', () => {
     const w = statsStore();
-    w.round({ status: 'awaiting-adjudication', legs: three() });
-    expect(seatCard(report(w), 'a')).toMatchObject({ rounds_ratified: 1, adjudicated_ratified: 0, findings: { raised: 0 } });
+    w.round({ status: 'awaiting-adjudication', legs: three({}, { a: { unmapped: 2 } }) });
+    expect(seatCard(report(w), 'a')).toMatchObject({ rounds_ratified: 1, adjudicated_ratified: 0, findings: { raised: 0, unmapped: 0 } });
     w.close();
   });
 });

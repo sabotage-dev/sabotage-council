@@ -242,11 +242,8 @@ export async function runSeatTest(o: Occupant, who: { seat: string | null; role:
   }
 }
 
-/**
- * Records the result as a `seat-test` event with no round: the store keeps it, and no round metric reads it. Returns
- * the exit code: 0 qualified (ratified, every planted defect found), 2 ratified but some defect missed, 1 not ratified.
- */
-export function recordSeatTest(store: Store, result: SeatTestResult): 0 | 1 | 2 {
+/** Records the result as a `seat-test` event with no round: the store keeps it, and no round metric reads it. */
+export function recordSeatTest(store: Store, result: SeatTestResult): void {
   insertEvent(store.db, 'seat-test', null, {
     seat: result.seat,
     role: result.role,
@@ -264,9 +261,9 @@ export function recordSeatTest(store: Store, result: SeatTestResult): 0 | 1 | 2 
     cli_version: result.cli_version,
     leg_dir: result.leg_dir,
   });
-  return exitCodeOf(result);
 }
 
+/** 0 qualified (ratified, every planted defect found), 2 ratified but some defect missed, 1 not ratified. */
 export function exitCodeOf(result: SeatTestResult): 0 | 1 | 2 {
   if (!result.ratified) return 1;
   return result.defects.missed.length === 0 ? 0 : 2;

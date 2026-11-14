@@ -7,7 +7,7 @@ import { BACKENDS, loadConfig, type AdapterRegistry, type BackendId, type Config
 import { applySeatEdit, SeatApplyError } from '../seats/apply.js';
 import type { SeatEdit } from '../seats/edit.js';
 import { loadFixture } from '../seats/fixture.js';
-import { recordSeatTest, runSeatTest, type SeatTestResult } from '../seats/run.js';
+import { exitCodeOf, recordSeatTest, runSeatTest, type SeatTestResult } from '../seats/run.js';
 import { loadStats } from '../stats/data.js';
 import { buildReport, thresholdsOf, type SeatCard, type Recommendation } from '../stats/report.js';
 import { durationText, money, pctText } from '../stats/text.js';
@@ -297,15 +297,24 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
     signal: args.signal,
     fixture,
   });
-  const store = openStore(paths.dbPath);
-  let code: number;
+  // The paid result is printed whatever happens to the record of it.
+  const code = exitCodeOf(result);
+  let recorded: string | null = null;
   try {
-    code = recordSeatTest(store, result);
-  } finally {
-    store.close();
+    const store = openStore(paths.dbPath);
+    try {
+      recordSeatTest(store, result);
+    } finally {
+      store.close();
+    }
+  } catch (error) {
+    recorded = `could not record the seat test in ${paths.dbPath}: ${error instanceof Error ? error.message : String(error)}`;
   }
-  if (args.json) io.write(JSON.stringify({ ...result, exit_code: code }, null, 2));
-  else for (const line of resultLines(result, fixture.defects.map((d) => ({ id: d.id, severity: d.severity, title: d.title })))) io.write(line);
+  if (args.json) io.write(JSON.stringify({ ...result, exit_code: code, record_error: recorded }, null, 2));
+  else {
+    for (const line of resultLines(result, fixture.defects.map((d) => ({ id: d.id, severity: d.severity, title: d.title })))) io.write(line);
+    if (recorded !== null) io.write(`warn  ${recorded}`);
+  }
   io.setExitCode(code);
 }
 

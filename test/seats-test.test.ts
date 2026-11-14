@@ -263,6 +263,18 @@ describe('seats test: one leg end to end with the fake claude', () => {
     expect(running(fake.bin)).toEqual([]);
   });
 
+  it('prints the paid result even when the store cannot take the record', async () => {
+    const fake = fakeClaude({ answer: ALL_DEFECTS });
+    const p = places();
+    mkdirSync(join(p.dir, 'data'));
+    writeFileSync(p.db, 'not a database');
+    const r = await run(['seats', 'test', 'claude:claude-haiku-5-5:low'], fake, p);
+    expect(r.code).toBe(0);
+    expect(r.text).toContain('defects       found 3 of 3');
+    expect(r.lines.at(-1)).toMatch(/^warn {2}could not record the seat test in .*council\.db: /);
+    expect(running(fake.bin)).toEqual([]);
+  });
+
   it('refuses before launching anything: an unknown model, an unknown backend, an unknown seat, a seat with no fallback', async () => {
     const fake = fakeClaude({ answer: ALL_DEFECTS });
     const p = places();

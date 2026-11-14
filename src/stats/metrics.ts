@@ -274,8 +274,9 @@ export function cardOf(data: StatsData, subject: Subject): Card {
     if (!pass) continue;
     verdicts[pass.verdictRaw] += 1;
     if (pass.durationMs !== null) durations.push(pass.durationMs);
-    unmapped += pass.unmapped;
     if (!r.adjudicated) continue;
+    // Before adjudication no leg finding is mapped yet: only an adjudicated round's unmapped ones mean anything.
+    unmapped += pass.unmapped;
 
     // ---- adjudicated rounds it ratified in: findings, drop-one, dissent ----
     adjRatified += 1;
