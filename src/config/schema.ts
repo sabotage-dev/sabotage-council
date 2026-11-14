@@ -134,6 +134,21 @@ export const notifySchema = z.strictObject({
   command: z.string().min(1).optional(),
 });
 
+/** A fraction from 0 to 1 (a TOML integer 0 or 1 is accepted too). */
+const fraction = z.number().min(0, { error: 'must be from 0 to 1' }).max(1, { error: 'must be from 0 to 1' });
+
+/**
+ * The scorecard's swap-candidate rule (plan 8.3, P9): a seat is flagged when, over at least
+ * `swap_min_ratified_rounds` adjudicated rounds in which it ratified, its unique owed count is 0 and either its
+ * precision is below `swap_precision_below` or its ratified rate is below `swap_ratified_rate_below`. The flag only
+ * informs: nothing ever swaps a seat by itself.
+ */
+export const statsSchema = z.strictObject({
+  swap_min_ratified_rounds: positiveInt.default(20),
+  swap_precision_below: fraction.default(0.5),
+  swap_ratified_rate_below: fraction.default(0.8),
+});
+
 export const configSchema = z.strictObject({
   council: councilSchema.prefault({}),
   seats: z.array(seatSchema).length(SEAT_COUNT, {
@@ -151,8 +166,11 @@ export const configSchema = z.strictObject({
   pr: prSchema.prefault({}),
   followups: followupsSchema.prefault({}),
   notify: notifySchema.prefault({}),
+  /** `stats` and `seats list` (P9). */
+  stats: statsSchema.prefault({}),
 });
 
 export type CouncilConfig = z.output<typeof configSchema>;
 export type SeatConfig = z.output<typeof seatSchema>;
 export type FallbackConfig = z.output<typeof fallbackSchema>;
+export type StatsConfig = z.output<typeof statsSchema>;

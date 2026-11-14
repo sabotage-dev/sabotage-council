@@ -57,3 +57,8 @@ hook = "~/bin/file-followups"      # D11: receives followups JSON on stdin
 
 [notify]
 command = "~/bin/notify"           # receives an event JSON on stdin; built-in desktop notifier if unset
+
+[stats]                            # the swap-candidate flag (8.3); it only informs, nothing swaps by itself
+swap_min_ratified_rounds = 20      # N: adjudicated rounds the seat ratified in, before it can be flagged
+swap_precision_below = 0.5         # P: flagged when its unique owed is 0 and its precision is below this
+swap_ratified_rate_below = 0.8     # R: ... or its ratified rate is below this
