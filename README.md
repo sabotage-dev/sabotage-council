@@ -216,12 +216,17 @@ daemon's log dir (`auto/` beside the store, mode 0700) before it writes and load
   round, a failed adjudication by re-running only the adjudicator. A round is linked to its row as it is created, so
   a crash never leaves a second round for the head. Before a review posts, the row records a hash of the round's
   records and the review it means to post; after a crash, the next pass adopts the review that landed, or posts that
-  same review only while the records still hash the same, or fails visibly. A row whose repository left
-  `repos_allow` is still reconciled that way, and nothing new posts there.
+  same review only while the records still hash the same, or fails visibly; it holds the round's post claim from that
+  reconciliation to the re-post, so a post of yours by hand cannot slip in between. A post refused because another
+  post of the round holds its claim keeps the row waiting for the next pass, which adopts that post if it landed. A
+  row whose repository left `repos_allow` is still reconciled that way, and nothing new posts there.
 - **Holds and rulings.** `repos_hold` posts but never approves; your own change request on the head, a ruling the
   adjudicator asks for, or an adjudicator run that went out of bounds holds the row for `ruling`. A release waits
-  while a post of the round may be on GitHub (the next pass reconciles it first), and a dry run's round is never
-  released. The CI gate and the post's guards are `post`'s (above).
+  while a post of the round may be on GitHub (the next pass reconciles it first; for a round you posted by hand,
+  `post <id> --reconcile`), and a dry run's round is never released. The CI gate and the post's guards are `post`'s
+  (above). On a private repository of a free GitHub plan, which has no branch protection or rulesets (GitHub answers
+  403 "Upgrade to GitHub Pro ..."), no check can be required, so every reported check is judged and the review says
+  so; any other refusal leaves CI unknown and holds the approval.
 - **Opt-in tests.** `[auto.tests."owner/repo"]` (`setup`, `command`, `timeout_minutes`) runs only for PRs whose
   author has write access and whose head is in the same repository, never a fork, on a copy of the head outside the
   review root, with only PATH, LANG, LC_ALL and TZ from your environment. The result, with the tails of its output
@@ -229,8 +234,10 @@ daemon's log dir (`auto/` beside the store, mode 0700) before it writes and load
 - **Notifications** on a needed ruling, a final failure, an approval held, an approval withdrawn, and a pass lock
   another pass keeps holding: to `notify.command` (an executable that gets the event as JSON on stdin) or the
   desktop, once per PR head and kind per 24 hours, a dry run's apart from the real ones.
-- **One pass at a time.** A pass holds `auto/pass.lock` with a heartbeat; a lock whose heartbeat is 10 minutes old is
-  taken over, whatever its pid or host. `auto pause` stops a running pass at its next round.
+- **One pass at a time.** A pass holds a lease in the store with a heartbeat, refreshed around every git and `gh`
+  process even while synchronous work holds the event loop; a lease whose heartbeat is 10 minutes old is taken over,
+  whatever its pid or host, and a takeover never removes a fresh owner's lease. A round whose preparing pass still runs
+  on this machine is never failed for it. `auto pause` stops a running pass at its next round.
 - **Limits.** `max_rounds_per_day` (30) council rounds in any 24 hours, resumed rows included; on macOS each round
   runs under `caffeinate -i`. Round dirs older than 90 days and failed rounds' roots older than 2 days are pruned;
   rows of closed PRs retire.

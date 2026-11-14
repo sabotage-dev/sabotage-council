@@ -359,7 +359,11 @@ an approval; a FAIL, SETUPFAIL, TIMEOUT or CANTRUN holds it ("tests failed"), an
 held"). CI is read for the reviewed head in one GraphQL query: under
 `required-checks` the checks GitHub marks required for the PR, plus any check the base branch's protection or
 rulesets require that has not reported (pending, never green); a read that fails is "CI unknown" and never
-approves. A required check keeps the GitHub App it is bound to (classic protection's `checks[].app_id`, a ruleset's
+approves. A private repository on GitHub's free plan has no branch protection or rulesets: GitHub refuses those reads
+with HTTP 403 and "Upgrade to GitHub Pro or make this repository public to enable this feature". On exactly that
+refusal the source is read as requiring nothing, and since such a repository can require no check, every reported
+check is judged (a red or pending one blocks; none reported is green); the CI note, and so the body, says which
+reading applied. Any other 403, a 404, or any other failure stays "CI unknown" (P8 round 2 row 5). A required check keeps the GitHub App it is bound to (classic protection's `checks[].app_id`, a ruleset's
 `integration_id`; `-1`, none or a bare `contexts` name binds none), each reported check run keeps the app that ran it,
 and a requirement is satisfied only by a check of its name from its app: a same-name check from another app, or a
 commit status (which names no app), leaves it pending (P6 round 1 row 11).
@@ -485,7 +489,8 @@ As built (P8):
 - A release is also refused while a post of the round may be on GitHub, whatever the claim's age (P8 round 1 row 1):
   the ledger row is `posting`, holds `records_sha` of a post never recorded, or the round has a post intent nothing
   reconciled (no review recorded posted or adopted since, and no reconciliation that found nothing landed). The
-  daemon's next pass (or `post <id> --post` for a round outside the ledger) reconciles it first; a resume that finds
+  daemon's next pass (or `post <id> --reconcile` for a round outside the ledger, P8 round 2 row 3: it adopts a review
+  that landed, or records that none did, and posts nothing new) reconciles it first; a resume that finds
   nothing landed and fails the row for good clears its post fields, so a ruling can release it then. A dry round is
   never released, and says why: it renders and never posts, and a real pass reviews its head afresh.
 - A post in flight records the release it was claimed under and checks it again in the transaction that records its
@@ -1520,7 +1525,10 @@ posts its review (3.7). A round started with `--dry-run` never posts, and a clos
 `--dry-run`. `post --post` sends only the review a dry run of the round showed the user (`--expect <review sha256>`
 names it, one hash of its event and its body; P6 round 1 row 8, round 2 row 3); the PR closing, or an identity
 round's base leaving the default branch, between the CI read and the POST posts nothing (round 2 row 2), and an
-interrupted post is reconciled before a moved head or a close ends the call (round 2 row 1). `round start pr` reads
+interrupted post is reconciled before a moved head or a close ends the call (round 2 row 1). `post <round>
+--reconcile` (P8 round 2 row 3) runs that reconciliation alone: a review of the round that landed is adopted as its
+post with its guards, and when none landed that is recorded, so a held round whose post never landed (a closed PR's
+included) can be released; it posts nothing new. `round start pr` reads
 the PR through the user's `gh` login, which must be the `github.login` account (`gh api user`, checked before a
 round is prepared and before a post; P6 round 1 row 10). The engine never reads, stores or logs the token: the
 mirror's fetch runs `gh auth git-credential` as git's only credential helper in the same environment as the API
@@ -1595,13 +1603,26 @@ As built (P8), `src/auto/`:
   commands, and writes, creates and loads nothing (P8 round 1 row 13).
 - **One pass.** Refused without `[github]`, `[auto]` or `[adjudicator] model`. Paused: nothing at all; a pause made
   while a pass runs stops it at its next round, since the paused state is read before every claim, of a resumed row or
-  a new head (P8 round 1 row 8). One pass per store at a time (`auto/pass.lock` beside the store, P8 round 1 row 6):
-  it records pid, host and a token, and its mtime is the heartbeat, refreshed on a timer and before every claim. It is
-  held while fresh and, on this host, while its pid runs; a dead pid frees it at once, and one older than the stale
-  limit (10 minutes, the ledger's) is free whatever its pid or host. A stale lock is renamed aside atomically, so of two
-  takers only one wins, and a taker whose rename caught a fresh lock puts it back and is busy; a pass whose heartbeat
-  finds the lock no longer its own claims nothing more. A busy pass is saved as the last pass, and three busy passes in
-  a row notify. The account check first (`github.login`; a GitHub App token is
+  a new head (P8 round 1 row 8). One pass per store at a time (P8 round 1 row 6, round 2 row 2): the pass lock is an
+  owner-checked lease in the store, the `pass_lock` row of `auto_state` holding pid, host and a token, with its
+  heartbeat in `updated_at`, refreshed on a timer, before every claim and across synchronous work (below). It is held
+  while fresh and, on this host, while its pid runs; a dead pid frees it at once, and one older than the stale limit
+  (10 minutes, the ledger's) is free whatever its pid or host. Taking it reads and writes the row in one `BEGIN
+  IMMEDIATE` transaction, so of two takers of one stale lease the second reads the first's fresh lease and is busy, and
+  a takeover never removes a fresh owner's lease; the beat and the release name the owner, so a pass whose heartbeat
+  finds the lease no longer its own claims nothing more. A busy pass is saved as the last pass, and three busy passes
+  in a row notify.
+- **Beats across synchronous work** (P8 round 2 row 2). The engine stays synchronous (git and `gh` through
+  `spawnSync`, as P1-P7 built it), so no timer fires while `prepare`, `fetchPr`, the root build or `postRound` runs. A
+  pass registers a beat that the engine runs before and after every git, `gh` and `tar` process it starts (throttled
+  to 5 seconds): it refreshes the lease and the claim of the row being worked, and records either found taken over; a
+  forced beat on each side of the prepare stops a row whose claim was lost during it before its legs start. What stays
+  unbeaten is one process (a `gh` call is capped at 120 s) or one computation. The round's `auto-round` event names
+  its preparer (the claim's owner): a pass that finds a linked round unfinished (no `runner.json`, no
+  `round-prepared`) while that preparer's pid runs on this host leaves the round and the row alone, and the pass after
+  the prepare ends runs its legs; a dead preparer, another host's whose claim went stale, or a live pid trusted longer
+  than six hours (taken as a reused pid) fails the round as `daemon-died`, as before.
+- **The pass, in order.** The account check first (`github.login`; a GitHub App token is
   named through GraphQL's `viewer` when `GET user` is refused, else the pass refuses plainly). Then: the searches;
   the continuation reads; older heads of each PR read are superseded; rows of this mode left `running` or `posting`
   with no live claim are resumed (a dead daemon, or a ruling's release); then each new head, one at a time:
@@ -1631,7 +1652,10 @@ As built (P8), `src/auto/`:
   5); a row that has one keeps it on every later claim, only a reset recomputes it, and preparation takes it. A round
   is linked to its row in the transaction that inserts it (and counted for the daily cap there), fenced by the claim
   token: a claim taken over rolls the round back, so no crash leaves a round no row knows (row 4). A linked round whose
-  legs never started (its pass died after the prepare) runs its legs on resume, never a second round.
+  legs never started (its pass died after the prepare) runs its legs on resume, never a second round. An identity
+  round, its `identity-prepared` record and its `needs-ruling` event commit in that same transaction (P8 round 2 row
+  4); `identity.json` is written after the commit and rebuilt from the stored record before the post when a crash
+  left it unwritten.
 - **The post.** A `postRound` dry run renders the event and body; the body goes to `AUTO-POST.md` in the round dir;
   `records_sha` is the sha256 over `ADJUDICATION.json` (`identity.json` for an identity round), `AUTO-POST.md` and every
   leg's `answer.md`, `ratification.json` and `reply.json`; the row moves to `posting` with it, the event and the
@@ -1661,7 +1685,12 @@ As built (P8), `src/auto/`:
   and a draft keeps it. A posting row whose repository left `repos_allow` (or joined `repos_skip`) is still
   reconciled, read-and-guards only: a post already recorded resumes its guards, a landed review is adopted with its
   guards, and with nothing landed the row is skipped; nothing new posts there (row 11). A resumed row that would
-  prepare a round checks `max_rounds_per_day` first and waits at the cap (row 4).
+  prepare a round checks `max_rounds_per_day` first and waits at the cap (row 4). The resume holds one post claim from
+  its reconciliation through its records check, its re-post and the row's cleanup (P8 round 2 row 1), so no other post
+  of the round (`post --post` by hand, another pass) can start between them. A post refused because another post holds
+  the round's claim, or took over the claim this one held, leaves the row `posting` with its fields intact and a note,
+  at the resume or at a fresh post alike: that post may land, and the next pass reconciles it (adopting it when it
+  did).
 - **Holds.** `repos_hold`, the user's own change request on the head, and the CI gate, all through P6's event
   mapping. A round held for a ruling (the adjudicator, a contaminated or twice-invalid headless run, the user's own
   change request) makes the row `needs-ruling`; passes leave it until a `ruling` releases it or a new head supersedes
