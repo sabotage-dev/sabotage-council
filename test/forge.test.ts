@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { judgeCi, readCiContexts, readRequiredChecks, type CiState } from '../src/forge/ci.js';
+import { FREE_PLAN_REFUSAL, judgeCi, readCi, readCiContexts, readRequiredChecks, type CiState } from '../src/forge/ci.js';
 import { ghApi, type GitHubApi } from '../src/forge/github.js';
 import { changeRequestAsks, countRounds, reviewItems, userChangeRequest, type Credit, type MarkerConfig } from '../src/forge/count.js';
 import { decideEvent, type EventFacts } from '../src/forge/events.js';
@@ -9,7 +9,7 @@ import { BODY_MAX_BYTES, renderBody, validateBody, type CouncilBody } from '../s
 import { FULLWIDTH_AT, FULLWIDTH_HASH, neutralize, textProblems } from '../src/forge/text.js';
 import type { Adjudication } from '../src/adjudicate/schema.js';
 import { cleanScratchAfterAll } from './helpers/fixtures.js';
-import { FAKE_GH, fakeGh } from './helpers/github.js';
+import { FAKE_GH, fakeGh, type Route } from './helpers/github.js';
 
 cleanScratchAfterAll();
 
@@ -282,6 +282,47 @@ describe('the CI gate', () => {
       { name: 'build', required: true, result: 'green', appId: 15368 },
       { name: 'ci/legacy', required: false, result: 'green', appId: null },
     ]);
+  });
+});
+
+describe('the CI gate on a private repository on GitHub\'s free plan (P8 round 2 row 5)', () => {
+  const FREE = `gh: ${FREE_PLAN_REFUSAL}. (HTTP 403)`;
+  const run = (name: string, conclusion: string | null) => ({ __typename: 'CheckRun', name, status: conclusion === null ? 'IN_PROGRESS' : 'COMPLETED', conclusion, isRequired: false });
+  /** CI for head A through the stub gh: the branch read, the rulesets read, and the head's (unrequired) checks. */
+  const ci = (o: { branch?: Route; rules?: Route; nodes?: unknown[]; gate?: 'required-checks' | 'all' }): CiState => {
+    const gh = fakeGh({
+      'GET repos/acme/widget/branches/main': o.branch ?? { json: { name: 'main', protected: false } },
+      'GET repos/acme/widget/rules/branches/main': o.rules ?? { json: [] },
+      graphql: { json: { data: { repository: { pullRequest: { commits: { nodes: [{ commit: { oid: A, statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: o.nodes ?? [run('build', 'SUCCESS')] } } } }] } } } } } },
+    });
+    return readCi(ghApi({ bin: FAKE_GH, env: gh.env }), REF, A, 'main', o.gate ?? 'required-checks');
+  };
+
+  it('reads that refusal as no required checks and judges every reported check, saying so; a red or pending one still blocks', () => {
+    expect(ci({ rules: { fail: FREE } })).toMatchObject({
+      state: 'green',
+      note: "1 check(s) judged; rulesets not available to this private repository on GitHub's free plan (HTTP 403), so it can require no check and every reported check was judged",
+    });
+    expect(ci({ branch: { fail: FREE }, rules: { fail: FREE }, nodes: [] })).toMatchObject({
+      state: 'green',
+      note: expect.stringMatching(/^no checks on this head; branch protection and rulesets not available to this private repository on GitHub's free plan/),
+    });
+    expect(ci({ rules: { fail: FREE }, nodes: [run('build', 'SUCCESS'), run('lint', 'FAILURE')] })).toMatchObject({ state: 'red', failing: ['lint'] });
+    expect(ci({ rules: { fail: FREE }, nodes: [run('build', null)] })).toMatchObject({ state: 'pending', pending: ['build'] });
+    // A repository that can require checks and requires none still judges only required ones (unchanged).
+    expect(ci({ nodes: [run('lint', 'FAILURE')] })).toMatchObject({ state: 'green', note: 'no required checks on this head' });
+  });
+
+  it('any other refusal or error still reads unknown: another 403, the free message with another status, a 404', () => {
+    for (const fail of [
+      'gh: Resource not accessible by integration (HTTP 403)',
+      `gh: ${FREE_PLAN_REFUSAL}. (HTTP 404)`,
+      `gh: ${FREE_PLAN_REFUSAL}.`,
+      'gh: Not Found (HTTP 404)',
+    ]) {
+      expect(ci({ rules: { fail } })).toMatchObject({ state: 'unknown', note: expect.stringContaining(fail) });
+      expect(ci({ branch: { fail } }).state).toBe('unknown');
+    }
   });
 });
 

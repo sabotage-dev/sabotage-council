@@ -378,6 +378,30 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(posts(t)).toBe(1);
   });
 
+  it('a private repository on GitHub\'s free plan (rulesets refused with that 403) requires no check: an approval posts, and says why; another 403 still holds; a red reported check still blocks (P8 round 2 row 5)', async () => {
+    const refusing = (fail: string, red = false) => (routes: Routes): void => {
+      routes[`GET ${API}/rules/branches/main`] = { fail };
+      if (red) {
+        const nodes = ((((json(routes, 'graphql')['data'] as Record<string, unknown>)['repository'] as Record<string, unknown>)['pullRequest'] as Record<string, unknown>)['commits'] as { nodes: Array<{ commit: { statusCheckRollup: { contexts: { nodes: Array<Record<string, unknown>> } } } }> }).nodes;
+        nodes[0]!.commit.statusCheckRollup.contexts.nodes[0]!['conclusion'] = 'FAILURE';
+      }
+    };
+    const body = (v: World): { event: string; body: string } => v.posts().filter((p) => p.method === 'POST').at(-1)?.body as { event: string; body: string };
+    const free = 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)';
+    const w = await world({ edit: refusing(free) });
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'approved', event: 'APPROVE' });
+    expect(body(w).body).toMatch(/CI: green \(\d+ check\(s\) judged; rulesets not available to this private repository on GitHub's free plan \(HTTP 403\), so it can require no check and every reported check was judged\)\./);
+    const v = await world({ edit: refusing('gh: Resource not accessible by integration (HTTP 403)') });
+    await v.pass();
+    expect(row(v)).toMatchObject({ state: 'posted', event: 'COMMENT' });
+    expect(body(v).body).toMatch(/Approval held: CI unknown: CI could not be read: GET repos\/sabotage-dev\/sabotage-council\/rules\/branches\/main failed: gh: Resource not accessible by integration \(HTTP 403\)/);
+    const u = await world({ edit: refusing(free, true) });
+    await u.pass();
+    expect(row(u)).toMatchObject({ state: 'posted', event: 'REQUEST_CHANGES' });
+    expect(body(u).body).toContain('CI: red (ubuntu-latest / Node 22).');
+  });
+
   it('one review per head across stores: a review with this round marker that lands before the POST is never doubled (P8 round 1 row 2)', async () => {
     // Another store on the same account posts its own review of this round first: the row is skipped, nothing posts.
     const other = await world();
