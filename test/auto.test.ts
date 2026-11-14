@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { claimLive, claimRow, CLAIM_STALE_MS, getRow, heartbeat, release, update, updateUnclaimed, type LedgerKey } from '../src/auto/ledger.js';
 import { commandDeliver, desktopDeliver, notify, DEDUPE_MS, type Notice } from '../src/auto/notify.js';
+import { autoDir, PASS_LOCK_STALE_MS, takePassLock, type PassLock } from '../src/auto/pass.js';
 import { inScope, narrowOwners, searchQueries, searchQueue, type QueueConfig } from '../src/auto/queue.js';
 import { installService, renderPlist, renderUnit, serviceArgs, serviceProblems, systemdWord, uninstallService, type ServiceSpec } from '../src/auto/service.js';
 import { runTests, testGate, testsFor, testsMarkdown } from '../src/auto/tests.js';
@@ -172,6 +173,68 @@ describe('auto queue: the search and the lists (plan 9.4, Q10, Q11)', () => {
 function notice(over: Partial<Notice> = {}): Notice {
   return { kind: 'failure', key: 'failure:x#1@h', title: 't', message: 'm', repo: 'o/r', number: 1, head: 'h', round_id: null, url: null, dry_run: false, ...over };
 }
+
+describe('the pass lock: a heartbeat, staleness by age, takeover by atomic rename (P8 round 1 row 6)', () => {
+  const layoutIn = () => ({ dbPath: join(scratch('sc-lock-'), 'data', 'council.db') });
+  const lockFile = (l: { dbPath: string }) => join(autoDir(l), 'pass.lock');
+  const seed = (l: { dbPath: string }, holder: Record<string, unknown>, ageMs: number): void => {
+    mkdirSync(autoDir(l), { recursive: true });
+    writeFileSync(lockFile(l), JSON.stringify({ ...holder, token: 'theirs', started_at: '2026-11-13T00:00:00Z' }));
+    const t = new Date(Date.now() - ageMs);
+    utimesSync(lockFile(l), t, t);
+  };
+  const stale = PASS_LOCK_STALE_MS + 60_000;
+
+  it('a reused pid on this host holds the lock while its heartbeat is fresh, and frees it once stale', () => {
+    const l = layoutIn();
+    seed(l, { pid: process.pid, host: hostname() }, 0);
+    expect(takePassLock(l)).toMatchObject({ busy: expect.stringMatching(/^another pass holds .*pass\.lock \(pid \d+ on /) });
+    seed(l, { pid: process.pid, host: hostname() }, stale);
+    const taken = takePassLock(l);
+    expect('beat' in taken).toBe(true);
+    expect(JSON.parse(readFileSync(lockFile(l), 'utf8'))).toMatchObject({ pid: process.pid, host: hostname() });
+    expect(JSON.parse(readFileSync(lockFile(l), 'utf8')).token).not.toBe('theirs');
+  });
+
+  it('a host name that changed holds it only while fresh; a dead pid on this host frees it at once', () => {
+    const l = layoutIn();
+    seed(l, { pid: 1, host: 'an-old-host-name.local' }, 0);
+    expect('busy' in takePassLock(l)).toBe(true);
+    seed(l, { pid: 1, host: 'an-old-host-name.local' }, stale);
+    expect('beat' in takePassLock(l)).toBe(true);
+    const l2 = layoutIn();
+    seed(l2, { pid: deadPid(), host: hostname() }, 0);
+    expect('beat' in takePassLock(l2)).toBe(true);
+  });
+
+  it('two takers of one stale lock: exactly one wins, and the other puts the fresh lock back', () => {
+    const l = layoutIn();
+    seed(l, { pid: process.pid, host: hostname() }, stale);
+    let inner: ReturnType<typeof takePassLock> | null = null;
+    const outer = takePassLock(l, { beforeTakeover: () => (inner = takePassLock(l)) });
+    expect(outer).toEqual({ busy: expect.stringMatching(/took .* over first$/) });
+    expect(inner !== null && 'beat' in inner).toBe(true);
+    const won = inner as unknown as PassLock;
+    expect(won.beat()).toBe(true);
+    expect(readdirSync(autoDir(l))).toEqual(['pass.lock']);
+    won.release();
+    expect(existsSync(lockFile(l))).toBe(false);
+  });
+
+  it('the heartbeat refreshes the lock, and reports a lock that is no longer this pass\'s', () => {
+    const l = layoutIn();
+    const lock = takePassLock(l);
+    if (!('beat' in lock)) throw new Error(lock.busy);
+    const old = new Date(Date.now() - stale);
+    utimesSync(lockFile(l), old, old);
+    expect(lock.beat()).toBe(true);
+    expect(Date.now() - statSync(lockFile(l)).mtimeMs).toBeLessThan(PASS_LOCK_STALE_MS);
+    writeFileSync(lockFile(l), JSON.stringify({ pid: 1, host: 'elsewhere', token: 'x' }));
+    expect(lock.beat()).toBe(false);
+    lock.release();
+    expect(existsSync(lockFile(l))).toBe(true);
+  });
+});
 
 describe('auto notifications: the hook or the desktop, deduped per key per 24 h (plan 9.4)', () => {
   it('delivers a key once in 24 hours, again after; a failed delivery does not count', () => {

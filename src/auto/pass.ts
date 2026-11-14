@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { SeatAdapters } from '../adapters/index.js';
@@ -19,6 +19,7 @@ import { loginMismatch, prLabel, sameLogin, type PrRef } from '../forge/pr.js';
 import type { Store } from '../store/open.js';
 import {
   claimable,
+  CLAIM_STALE_MS,
   claimLive,
   claimRow,
   FINAL_STATES,
@@ -163,42 +164,120 @@ export function autoDir(layout: Pick<DataLayout, 'dbPath'>): string {
   return join(dirname(layout.dbPath), 'auto');
 }
 
-/** One pass at a time per store: `auto/pass.lock` holds the owner's pid, created exclusively. */
-export function takePassLock(layout: Pick<DataLayout, 'dbPath'>): { release: () => void } | { busy: string } {
+/** A pass lock whose heartbeat (its mtime) is older than this is free, whatever its pid or host (P8 round 1 row 6). */
+export const PASS_LOCK_STALE_MS = CLAIM_STALE_MS;
+/** Busy passes in a row before the user is told another pass keeps the lock. */
+export const BUSY_NOTIFY_AFTER = 3;
+
+export interface PassLock {
+  /** Refreshes the heartbeat; false when the lock is no longer this pass's (it was taken over). */
+  beat: () => boolean;
+  release: () => void;
+}
+
+function unlinkQuiet(file: string): void {
+  try {
+    unlinkSync(file);
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * One pass at a time per store (P8 round 1 row 6): `auto/pass.lock` holds the owner's pid, host and a token, created
+ * exclusively; its mtime is the heartbeat, refreshed while the pass runs. It is held while the heartbeat is fresh and,
+ * on this host, the pid runs: a dead pid frees it at once, and a lock older than PASS_LOCK_STALE_MS is free whatever
+ * its pid or host (a reused pid, a host name that changed). A stale lock is taken over by an atomic rename aside: of
+ * two takers only one rename succeeds, and a taker whose rename caught a fresh lock (another taker's) puts it back and
+ * is busy.
+ */
+export function takePassLock(layout: Pick<DataLayout, 'dbPath'>, o: { nowMs?: number | undefined; beforeTakeover?: (() => void) | undefined } = {}): PassLock | { busy: string } {
   const dir = autoDir(layout);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, 'pass.lock');
-  const record = JSON.stringify({ pid: process.pid, host: hostname(), started_at: new Date().toISOString() });
-  for (let i = 0; i < 2; i++) {
+  const token = randomUUID();
+  const record = JSON.stringify({ pid: process.pid, host: hostname(), token, started_at: new Date(o.nowMs ?? Date.now()).toISOString() });
+  const mine = (): boolean => {
     try {
-      writeFileSync(file, record, { flag: 'wx' });
+      return readFileSync(file, 'utf8') === record;
+    } catch {
+      return false;
+    }
+  };
+  for (let i = 0; i < 3; i++) {
+    try {
+      writeFileSync(file, record, { flag: 'wx', mode: 0o600 });
       return {
+        beat: () => {
+          if (!mine()) return false;
+          const t = new Date();
+          utimesSync(file, t, t);
+          return true;
+        },
         release: () => {
-          try {
-            if (readFileSync(file, 'utf8') === record) unlinkSync(file);
-          } catch {
-            // already gone
-          }
+          if (mine()) unlinkQuiet(file);
         },
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      let held: { pid?: number; host?: string } = {};
-      try {
-        held = JSON.parse(readFileSync(file, 'utf8')) as typeof held;
-      } catch {
-        held = {};
-      }
-      if (held.host === hostname() && typeof held.pid === 'number' && pidAlive(held.pid)) return { busy: `another pass is running (pid ${held.pid})` };
-      if (held.host !== undefined && held.host !== hostname()) return { busy: `another host's pass holds ${file}` };
-      try {
-        unlinkSync(file);
-      } catch {
-        // taken by someone else meanwhile: the next try decides
-      }
     }
+    let seen: { text: string; mtimeMs: number };
+    try {
+      seen = { text: readFileSync(file, 'utf8'), mtimeMs: statSync(file).mtimeMs };
+    } catch {
+      continue; // gone meanwhile: try the exclusive create again
+    }
+    let held: { pid?: unknown; host?: unknown } = {};
+    try {
+      held = JSON.parse(seen.text) as typeof held;
+    } catch {
+      held = {};
+    }
+    const age = (o.nowMs ?? Date.now()) - seen.mtimeMs;
+    const sameHost = held.host === hostname();
+    const live = age < PASS_LOCK_STALE_MS && (sameHost ? typeof held.pid === 'number' && pidAlive(held.pid) : typeof held.host === 'string');
+    if (live) return { busy: `another pass holds ${file} (pid ${String(held.pid)} on ${String(held.host)}, heartbeat ${Math.round(age / 1000)} s ago)` };
+    o.beforeTakeover?.();
+    const aside = `${file}.stale-${token}`;
+    try {
+      renameSync(file, aside);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; // another taker moved it first
+      throw error;
+    }
+    let moved = '';
+    try {
+      moved = readFileSync(aside, 'utf8');
+    } catch {
+      moved = '';
+    }
+    if (moved !== seen.text) {
+      // The rename caught a fresh lock another taker made meanwhile: it goes back, never replaced.
+      try {
+        linkSync(aside, file);
+      } catch {
+        // a third taker made one already: that lock stands, and the one put aside finds itself fenced at its heartbeat
+      }
+      unlinkQuiet(aside);
+      return { busy: `another pass took ${file} over first` };
+    }
+    unlinkQuiet(aside);
   }
   return { busy: `could not take ${file}` };
+}
+
+/** Consecutive busy passes (auto_state `busy`): counted up on busy, cleared when a pass takes the lock. */
+function busyStreak(store: Store, busy: boolean, at: string): { count: number; since: string | null } {
+  const row = store.db.prepare("SELECT value FROM auto_state WHERE key = 'busy'").get() as { value: string } | undefined;
+  let prev: { count: number; since: string | null } = { count: 0, since: null };
+  try {
+    if (row) prev = JSON.parse(row.value) as typeof prev;
+  } catch {
+    prev = { count: 0, since: null };
+  }
+  const next = busy ? { count: prev.count + 1, since: prev.since ?? at } : { count: 0, since: null };
+  store.db.prepare("INSERT INTO auto_state (key, value, updated_at) VALUES ('busy', ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(JSON.stringify(next), at);
+  return next;
 }
 
 /** `auto pause` / `auto resume`: the paused flag lives in the store (auto_state). */
@@ -294,6 +373,25 @@ interface Ctx {
   report: PassReport;
   nowMs: () => number;
   log: (line: string) => void;
+  /** The pass lock, refreshed before every claim (and on a timer). */
+  lock: PassLock | null;
+  /** Why the pass stopped claiming rows, once it did (the lock taken over). */
+  stopped: string | null;
+}
+
+/**
+ * Whether the pass may claim another row: not aborted, and its lock is still its own (the heartbeat refreshed here,
+ * at every claim, since synchronous steps hold the timer back). Once false, the pass claims nothing more.
+ */
+function mayClaim(ctx: Ctx): boolean {
+  if (ctx.o.signal?.aborted === true) return false;
+  if (ctx.stopped !== null) return false;
+  if (ctx.lock !== null && !ctx.lock.beat()) {
+    ctx.stopped = 'the pass lock was taken over (its heartbeat had gone stale): this pass claims nothing more';
+    ctx.report.errors.push(ctx.stopped);
+    return false;
+  }
+  return true;
 }
 
 function defaultAdjudicate(o: PassOptions): AdjudicateStep {
@@ -383,11 +481,6 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
   if (!o.config.auto) throw new PassError('auto needs an [auto] table with repos_allow (plan 5.2): with none, no repository is in scope');
   if (o.config.adjudicator.model === undefined && o.adjudicate === undefined) throw new PassError('auto needs [adjudicator] model (plan 5.2, P7): the engine never picks a paid model for you');
   if (pauseState(store).paused) return finish('paused');
-  const lock = takePassLock(o.layout);
-  if ('busy' in lock) {
-    report.errors.push(lock.busy);
-    return { ...report, outcome: 'busy', finished_at: new Date(nowMs()).toISOString() };
-  }
   const ctx: Ctx = {
     store,
     o,
@@ -397,7 +490,25 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     report,
     nowMs,
     log,
+    lock: null,
+    stopped: null,
   };
+  const lock = takePassLock(o.layout, { nowMs: nowMs() });
+  if ('busy' in lock) {
+    // P8 round 1 row 6: a busy pass is recorded as the last pass, and a lock that stays busy is notified.
+    report.errors.push(lock.busy);
+    const streak = busyStreak(store, true, report.started_at);
+    if (streak.count >= BUSY_NOTIFY_AFTER) {
+      notifyRow(ctx, 'failure', { repo: 'pass-lock', num: 0, head: 'busy', round_id: null }, `${streak.count} passes in a row found another pass holding the lock (since ${String(streak.since)}): ${lock.busy}`);
+    }
+    return finish('busy');
+  }
+  busyStreak(store, false, report.started_at);
+  ctx.lock = lock;
+  const beat = setInterval(() => {
+    if (ctx.stopped === null && !lock.beat()) ctx.stopped = 'the pass lock was taken over (its heartbeat had gone stale): this pass claims nothing more';
+  }, HEARTBEAT_MS);
+  beat.unref();
   try {
     // The account check (P6 row 10, P8): every read and post is made as github.login.
     try {
@@ -414,6 +525,7 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     supersedeOldHeads(ctx, candidates);
     await resumeRows(ctx);
     await reviewHeads(ctx, candidates);
+    if (ctx.stopped !== null) return finish('failed');
     prune(ctx, candidates);
     report.rounds_last_24h = roundsSince(store, nowMs());
     return finish('done');
@@ -421,6 +533,7 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     report.errors.push(errText(error));
     return finish('failed');
   } finally {
+    clearInterval(beat);
     lock.release();
   }
 }
@@ -542,7 +655,7 @@ async function resumeRows(ctx: Ctx): Promise<void> {
   const { db } = ctx.store;
   const rows = db.prepare("SELECT * FROM ledger WHERE state IN ('running', 'posting') ORDER BY updated_at").all() as unknown as LedgerRow[];
   for (const row of rows) {
-    if (ctx.o.signal?.aborted === true) return;
+    if (!mayClaim(ctx)) return;
     if (Boolean(row.dry_run) !== ctx.o.dryRun) continue;
     if (claimLive(row, ctx.nowMs())) continue;
     const ref = refOfKey(row.repo, row.num);
@@ -583,7 +696,7 @@ async function resumeRows(ctx: Ctx): Promise<void> {
 async function reviewHeads(ctx: Ctx, candidates: readonly Candidate[]): Promise<void> {
   const { store, o, report } = ctx;
   for (const c of candidates) {
-    if (o.signal?.aborted === true) return;
+    if (!mayClaim(ctx)) return;
     const pr = `${c.fullName}#${c.ref.number}`;
     const cand = (action: CandidateReport['action'], why: string): void => {
       report.candidates.push({ pr, head: c.head, source: c.source, action, why });

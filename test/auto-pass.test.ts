@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLAIM_STALE_MS } from '../src/auto/ledger.js';
-import { recordsSha } from '../src/auto/pass.js';
+import { autoDir, BUSY_NOTIFY_AFTER, lastReport, recordsSha } from '../src/auto/pass.js';
+import { API, type Routes } from './helpers/github.js';
 import { mkdirSync } from 'node:fs';
 import { scratch } from './helpers/fixtures.js';
 import { getEvents, getLegs, getRound, roundDirOf } from '../src/engine/index.js';
@@ -22,6 +23,13 @@ cleanScratchAfterAll();
 
 const row = (w: World): Record<string, unknown> => ledgerRows(w.h).find((r) => r['head'] === w.d)!;
 const posts = (w: World, method = 'POST'): number => w.posts().filter((p) => p.method === method).length;
+
+/** A second requested PR (#3, same repository, no reviews) after #2 in the search: only its pull and reviews read. */
+function secondPr(routes: Routes): void {
+  routes[SEARCH] = searchOf(prItem(2), prItem(3));
+  routes[`GET ${API}/pulls/3`] = { json: { ...json(routes, `GET ${PULL}`), number: 3 } };
+  routes[`GET ${API}/pulls/3/reviews`] = { json: [] };
+}
 
 function deadPid(): number {
   return Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
@@ -566,6 +574,41 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(row(w)).toMatchObject({ state: 'superseded' });
     expect(ledgerRows(w.h).find((x) => x['head'] === e)).toMatchObject({ state: 'approved', dry_run: 0 });
     expect(posts(w)).toBe(2);
+  });
+
+  it('a busy pass is the last pass on record, and a lock busy for several passes in a row is notified (P8 round 1 row 6)', async () => {
+    const w = await world();
+    const file = join(autoDir(w.h.layout), 'pass.lock');
+    mkdirSync(autoDir(w.h.layout), { recursive: true });
+    writeFileSync(file, JSON.stringify({ pid: process.pid, host: hostname(), token: 'another-pass', started_at: new Date().toISOString() }));
+    for (let i = 1; i <= BUSY_NOTIFY_AFTER; i++) {
+      const r = await w.pass();
+      expect(r.outcome).toBe('busy');
+      expect(lastReport(w.h.store)).toMatchObject({ outcome: 'busy', errors: [expect.stringMatching(/^another pass holds /)] });
+      expect(w.notices.length).toBe(i < BUSY_NOTIFY_AFTER ? 0 : 1);
+    }
+    expect(w.notices[0]).toMatchObject({ kind: 'failure', key: 'failure:pass-lock#0@busy', message: expect.stringMatching(/3 passes in a row found another pass holding the lock/) });
+    expect(w.gh.requests()).toEqual([]);
+    unlinkSync(file);
+    expect((await w.pass()).outcome).toBe('done');
+    expect(row(w)).toMatchObject({ state: 'approved' });
+  });
+
+  it('a pass whose lock was taken over claims nothing more (P8 round 1 row 6)', async () => {
+    const w = await world({ edit: secondPr });
+    await w.pass({
+      hooks: {
+        afterPost: () => {
+          // Another pass judged this one's lock stale and took it over.
+          writeFileSync(join(autoDir(w.h.layout), 'pass.lock'), JSON.stringify({ pid: 1, host: 'elsewhere', token: 'taker' }));
+        },
+      },
+    }).then((r) => {
+      expect(r.outcome).toBe('failed');
+      expect(r.errors).toContain('the pass lock was taken over (its heartbeat had gone stale): this pass claims nothing more');
+    });
+    expect(row(w)).toMatchObject({ state: 'approved' });
+    expect(ledgerRows(w.h).filter((x) => x['num'] === 3)).toEqual([]);
   });
 
   it('a paused daemon does nothing at all', async () => {
