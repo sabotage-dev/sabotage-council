@@ -112,6 +112,11 @@ describe('seats: the block-preserving editor', () => {
     const crlf = CONFIG.replace(/\n/g, '\r\n');
     const out = preservingEditor.edit(crlf, swap('b', 'claude', 'claude-opus-5-5', 'low'));
     expect(out).toBe(crlf.replace('model = "claude-sonnet-5-5"\r\neffort = "high"\r\n\r\n[[seats]]\r\n  id = "c"', 'model = "claude-opus-5-5"\r\neffort = "low"\r\n\r\n[[seats]]\r\n  id = "c"'));
+    // Inserted lines and an added block take the file's CRLF too.
+    const noEffort = crlf.replace('model = "claude-sonnet-5-5"\r\neffort = "high"\r\n', 'model = "claude-sonnet-5-5"\r\n');
+    expect(preservingEditor.edit(noEffort, swap('b', 'claude', 'claude-sonnet-5-5', 'low'))).toBe(crlf.replace('model = "claude-sonnet-5-5"\r\neffort = "high"\r\n', 'model = "claude-sonnet-5-5"\r\neffort = "low"\r\n'));
+    const added = preservingEditor.edit(crlf, { kind: 'add', seat: 'd', occupant: { backend: 'antigravity', model: 'gemini-3.8-pro' } });
+    expect(added).not.toMatch(/[^\r]\n/);
     const tail = 'x = 1\n[[seats]]\nid = "a"\nbackend = "codex"\nmodel = "gpt-6.1-sol"';
     expect(preservingEditor.edit(tail, swap('a', 'codex', 'gpt-6.1-sol', 'low'))).toBe(`${tail}\neffort = "low"`);
   });

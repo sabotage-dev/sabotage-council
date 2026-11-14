@@ -374,6 +374,16 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
     w.close();
   });
 
+  it('counts N in adjudicated rounds the seat ratified in, not in rounds it was seated in', () => {
+    const w = statsStore();
+    for (let i = 0; i < 19; i++) w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'] }] });
+    for (let i = 0; i < 6; i++) w.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: OCC.b }, { seat: 'c', occ: OCC.c, status: 'FAIL', failure: 'timeout' }] });
+    const r = report(w);
+    expect(seatCard(r, 'c')).toMatchObject({ rounds_seated: 25, adjudicated_ratified: 19, findings: { precision: 0 } });
+    expect(r.recommendations.find((x) => x.seat === 'c')).toMatchObject({ swap_candidate: false, eligible: false });
+    w.close();
+  });
+
   it('flags a seat whose ratified rate is below R, and not one whose precision is n/a and rate is fine', () => {
     const w = statsStore();
     for (let i = 0; i < 20; i++) w.round({ legs: three() });
