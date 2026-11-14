@@ -103,15 +103,21 @@ function check(checks: RatificationCheck[], name: string, ok: boolean, detail: s
   checks.push({ name, ok, detail });
 }
 
-/** The answer: the `result` line's text on success, else the last assistant text block. */
+/**
+ * The answer: the whole reply, every main-thread assistant text block in order. The `result` line holds only the
+ * final turn's text, so a NONCE line the leg wrote first (as the brief asks), before its first tool call, was not in
+ * it, and a correct leg failed as `empty` (the first live PR round on the sandbox, P6). With no text block, the
+ * `result` line's text on success.
+ */
 export function claudeAnswer(stream: ClaudeStream): string | null {
+  const texts = stream.texts.filter((t) => t.trim() !== '');
+  if (texts.length > 0) return texts.join('\n\n');
   const r = stream.result;
   if (r && r['is_error'] !== true) {
     const text = str(r['result']);
     if (text !== null && text.trim() !== '') return text;
   }
-  const last = stream.texts[stream.texts.length - 1];
-  return last !== undefined && last.trim() !== '' ? last : null;
+  return null;
 }
 
 const READ_SET: readonly string[] = CLAUDE_READ_TOOLS;

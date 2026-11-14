@@ -20,6 +20,9 @@ import { CLAUDE_ENV_ALLOW } from '../src/adapters/claude/launch.js';
 import type { Occupant, RoundCtx } from '../src/adapters/types.js';
 import { runCommand } from '../src/transport/headless.js';
 import { cleanScratchAfterAll, fixtureDir, materialize, readJsonl, scratch, writeJsonl } from './helpers/fixtures.js';
+import { claudeAnswer } from '../src/adapters/claude/ratify.js';
+import { readClaudeStream } from '../src/adapters/claude/index.js';
+import { nonceOnFirstLine } from '../src/adapters/types.js';
 
 cleanScratchAfterAll();
 
@@ -183,6 +186,15 @@ describe('claude ratification details', () => {
     const r = ratifyClaudeLeg(
       inputFor('success', (dir) => {
         edit(join(dir, 'stream.jsonl'), (row) => row['type'] === 'result', (row) => (row['result'] = text));
+        // The answer is the whole reply (every text block), so the stream's one text block carries the same text.
+        edit(
+          join(dir, 'stream.jsonl'),
+          (row) => row['type'] === 'assistant',
+          (row) => {
+            const content = (row['message'] as { content?: Array<Record<string, unknown>> }).content ?? [];
+            for (const block of content) if (block['type'] === 'text') block['text'] = text;
+          },
+        );
         // Keep the transcript covering the final request (its id), so only the nonce differs.
       }).input,
     );
@@ -456,5 +468,35 @@ describe('claude end to end, through a fake CLI', () => {
     expect(JSON.parse(readFileSync(handle.files['settings'] ?? '', 'utf8'))).toEqual({
       permissions: { allow: ['Read(//**)'], blockReadsOutsideWorkingDirectories: true },
     });
+  });
+});
+
+describe('the answer is the whole reply (P6 sandbox round)', () => {
+  const nonce = '0123456789ab';
+  const text = (t: string, parent: string | null = null): unknown => ({
+    type: 'assistant',
+    parent_tool_use_id: parent,
+    message: { id: `msg_${t.length}`, role: 'assistant', content: [{ type: 'text', text: t }] },
+  });
+  const tool = (): unknown => ({
+    type: 'assistant',
+    parent_tool_use_id: null,
+    message: { id: 'msg_tool', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'a.txt' } }] },
+  });
+
+  it('keeps a NONCE line written before the first tool call, which the result line alone drops', () => {
+    const path = join(scratch('sc-claude-answer-'), 'stream.jsonl');
+    const review = 'F1 is a real defect.\n\nVERDICT: NEEDS-WORK';
+    writeJsonl(path, [text(`NONCE: ${nonce}`), tool(), text(review), { type: 'result', subtype: 'success', is_error: false, result: review }]);
+    const answer = claudeAnswer(readClaudeStream(path));
+    expect(answer?.split('\n')[0]).toBe(`NONCE: ${nonce}`);
+    expect(nonceOnFirstLine(answer, nonce).ok).toBe(true);
+    expect(answer?.trimEnd().endsWith('VERDICT: NEEDS-WORK')).toBe(true);
+  });
+
+  it('takes no text from a sub-agent row, and falls back to the result line when there is no text block', () => {
+    const path = join(scratch('sc-claude-answer-'), 'stream.jsonl');
+    writeJsonl(path, [text(`NONCE: ${nonce}`, 'toolu_sub'), { type: 'result', subtype: 'success', is_error: false, result: `NONCE: ${nonce}\nonly the result` }]);
+    expect(claudeAnswer(readClaudeStream(path))).toBe(`NONCE: ${nonce}\nonly the result`);
   });
 });
