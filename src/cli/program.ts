@@ -227,14 +227,18 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     program
       .command('post')
       .argument('<id>', 'the round id of an adjudicated pr round (or an identity round)', roundId)
-      .description("render the round's GitHub review (--dry-run) or post it (--post): one review on the reviewed head (plan 3.7)")
+      .description("render the round's GitHub review (--dry-run), post it (--post), or reconcile an interrupted post (--reconcile): one review on the reviewed head (plan 3.7)")
       .option('--dry-run', 'print the exact body and event that would be posted; post nothing')
       .option('--post', 'post the review a dry run showed; refused if it changed since, the head moved, the round was started with --dry-run, or the body fails validation')
       .option('--expect <sha256>', 'with --post: the review sha256 (the event and the body) of the dry run the user approved; only that review posts', expectHash)
+      .option(
+        '--reconcile',
+        'reconcile a post of the round that recorded its intent and was interrupted: adopt its review if it landed (and run the guards it owes), or record that none did, so a held round can be released; posts nothing new',
+      )
       .option('--json', 'print the result as JSON'),
-  ).action(async (id: number, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; post?: boolean; expect?: string; json?: boolean }) => {
-    if ((opts.dryRun === true) === (opts.post === true)) {
-      io.write('error: give exactly one of --dry-run or --post');
+  ).action(async (id: number, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; post?: boolean; reconcile?: boolean; expect?: string; json?: boolean }) => {
+    if ([opts.dryRun, opts.post, opts.reconcile].filter((x) => x === true).length !== 1) {
+      io.write('error: give exactly one of --dry-run, --post or --reconcile');
       io.setExitCode(1);
       return;
     }
@@ -243,7 +247,7 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       io.setExitCode(1);
       return;
     }
-    await postCommand(prIo, pathsOf(opts), id, opts.post === true ? 'post' : 'dry-run', opts.json === true, opts.expect);
+    await postCommand(prIo, pathsOf(opts), id, opts.post === true ? 'post' : opts.reconcile === true ? 'reconcile' : 'dry-run', opts.json === true, opts.expect);
   });
 
   const reviewId = (value: string): number => {

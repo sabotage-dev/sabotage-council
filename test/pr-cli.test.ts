@@ -149,7 +149,7 @@ describe('pr mode end to end through a stub gh (recorded PR #2)', () => {
     expect(refused.code).toBe(1);
     expect(refused.lines.join('\n')).toContain('was started with --dry-run: it can render its post but never post');
     const both = await c.run('post', String(id));
-    expect(both.lines).toEqual(['error: give exactly one of --dry-run or --post']);
+    expect(both.lines).toEqual(['error: give exactly one of --dry-run, --post or --reconcile']);
     expect(posts(c.gh)).toEqual([]);
     const store = openStore(c.paths.dbPath);
     try {

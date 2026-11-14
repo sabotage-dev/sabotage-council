@@ -69,6 +69,7 @@ sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, prin
 sabotage-council adjudicate <id> --headless              # or: the engine runs a restricted Claude Code to adjudicate
 sabotage-council post <id> --dry-run                     # pr: the exact review that would post, and its review sha256
 sabotage-council post <id> --post --expect <sha256>      # pr: post that review, one review on the reviewed head
+sabotage-council post <id> --reconcile                   # pr: settle an interrupted post: adopt what landed, or record none did
 ```
 
 - `round start plan <file>` reviews a written plan. `--context <path|repo@ref>` adds other paths or repositories
@@ -127,6 +128,10 @@ sabotage-council post <id> --post --expect <sha256>      # pr: post that review,
   change request (never a human's). A guard that fails stays pending and `post` exits 1; run the same `--post` again
   to resume it. After a crash, the next `--post` first adopts the review that landed (even when the head moved or
   the PR closed since) and runs its guards. A round started with `--dry-run` never posts.
+- `post <id> --reconcile` settles a post that recorded its intent and was interrupted, and posts nothing new: a
+  review of the round that landed is adopted as its post (its guards run), and when none landed that is recorded.
+  Until then `ruling` will not release the round, since its review may be on GitHub; this is the way out for a held
+  round whose post never landed, a closed PR's included.
 - `credit <owner/repo#num> <review-id> [--note <text>]` counts an unmarked review you vouch for as a council round
   at its own head and time (plan 3.6 step 4). A review that starts with a council or identity marker is refused:
   the marker rules decide those.

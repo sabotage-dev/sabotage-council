@@ -165,7 +165,7 @@ export function releaseRound(store: Store, roundId: number, decision: ReleaseDec
     }
     if (unreconciledIntent(db, roundId)) {
       throw new RulingError(
-        `a post of round ${roundId} recorded its intent and was never reconciled: its review may be on GitHub. ${row !== undefined ? reconcileFirst : `sabotage-council post ${roundId} --post reconciles it (it adopts a review that landed); rule again after that`}`,
+        `a post of round ${roundId} recorded its intent and was never reconciled: its review may be on GitHub. ${row !== undefined ? reconcileFirst : `sabotage-council post ${roundId} --reconcile reconciles it (it adopts a review that landed, or records that none did); rule again after that`}`,
       );
     }
     if (decision !== 'skip') {

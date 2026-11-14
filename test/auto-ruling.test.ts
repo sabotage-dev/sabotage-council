@@ -227,7 +227,7 @@ describe('a release waits for a post that may be on GitHub (P8 round 1 row 1)', 
     expect(() => releaseRound(w.h.store, id, 'skip', LOGIN, null)).toThrow(/holds the records of a post that was never recorded/);
     // The same post seen from outside the ledger (a post by hand): its intent alone refuses.
     w.h.store.db.prepare('DELETE FROM ledger').run();
-    expect(() => releaseRound(w.h.store, id, 'skip', LOGIN, null)).toThrow(/a post of round \d+ recorded its intent and was never reconciled: .*post \d+ --post reconciles it/);
+    expect(() => releaseRound(w.h.store, id, 'skip', LOGIN, null)).toThrow(/a post of round \d+ recorded its intent and was never reconciled: .*post \d+ --reconcile reconciles it/);
     // Reconciled: nothing of it landed on GitHub, so the release may replace it.
     const rec = postRound(w.h.store, { config: w.config, layout: w.h.layout, api: ghApi({ bin: FAKE_GH, env: w.gh.env }), roundId: id, mode: 'post', reconcileOnly: true });
     expect(rec).toMatchObject({ outcome: 'refused', notLanded: true });
@@ -298,6 +298,95 @@ describe('a release waits for a post that may be on GitHub (P8 round 1 row 1)', 
     expect(again).toMatchObject({ outcome: 'rendered', event: 'APPROVE' });
     expect(postRound(w.h.store, { ...opts, mode: 'post', expect: again.reviewSha256! }).outcome).toBe('posted');
     expect((sent(w)[0]?.body as { event: string; body: string }).body).toContain('Released by a ruling (approve) of reviewer-x');
+  });
+});
+
+describe('post --reconcile: a hand post that recorded its intent is reconciled from the command line (P8 round 2 row 3)', { timeout: 120_000 }, () => {
+  /** The command line on the world's store and stub gh. */
+  const cli = (w: World) => {
+    const dir = scratch('sc-reconcile-cli-');
+    const configPath = join(dir, 'config.toml');
+    writeFileSync(configPath, `${ROSTER_TOML}\n[github]\nlogin = "${LOGIN}"\ncouncil_logins = ["repo-owner"]\n\n[adjudicator]\nmodel = "claude-opus-5-5"\n\n[auto]\nrepos_allow = ["sabotage-dev/*"]\n`);
+    return async (...args: string[]): Promise<{ code: number; lines: string[] }> => {
+      const lines: string[] = [];
+      let code = 0;
+      const io: ProgramIo = {
+        write: (l) => lines.push(l),
+        env: { HOME: dir, PATH: process.env['PATH'], ...w.gh.env },
+        setExitCode: (c) => (code = c),
+        adapters: fakeAdapters,
+        cwd: dir,
+        ghBin: FAKE_GH,
+        mirrorSource: () => ({ url: w.src.repo }),
+      };
+      await buildProgram(io).exitOverride().parseAsync(['node', 'sabotage-council', ...args, '--config', configPath, '--db', w.h.layout.dbPath, '--roots', w.h.layout.rootsDir]);
+      return { code, lines };
+    };
+  };
+  /** A held ruling round outside the ledger (a round the user posts by hand), rendered by a dry run. */
+  const heldRound = async (): Promise<{ w: World; id: number; run: ReturnType<typeof cli>; sha: string }> => {
+    const w = await world();
+    w.adj.kind = 'ruling';
+    await w.pass({
+      hooks: {
+        afterPostClaim: () => {
+          throw new Error('died before the POST');
+        },
+      },
+    });
+    w.h.store.db.prepare('DELETE FROM ledger').run();
+    const id = (w.h.store.db.prepare('SELECT id FROM rounds').get() as { id: number }).id;
+    const run = cli(w);
+    const dry = await run('post', String(id), '--dry-run', '--json');
+    expect(dry.code, dry.lines.join('\n')).toBe(0);
+    const r = JSON.parse(dry.lines.join('\n')) as { event: string; ruling: boolean; reviewSha256: string };
+    expect(r).toMatchObject({ event: 'COMMENT', ruling: true });
+    return { w, id, run, sha: r.reviewSha256 };
+  };
+
+  it('nothing landed and the PR closed: post --post stays refused, a release waits on the intent, and --reconcile records it so the release goes', async () => {
+    const { w, id, run, sha } = await heldRound();
+    w.routes[`POST ${PULL}/reviews`] = { fail: 'gh: connection reset' };
+    w.sync();
+    const failed = await run('post', String(id), '--post', '--expect', sha);
+    expect(failed.code).toBe(1);
+    expect(getEvents(w.h.store.db, id).filter((e) => e.kind === 'posting')).toHaveLength(1);
+    Object.assign(json(w.routes, `GET ${PULL}`), { state: 'closed', merged: false });
+    w.sync();
+    const fid = (w.h.store.db.prepare("SELECT id FROM findings WHERE round_id = ? AND outcome = 'ruling'").get(id) as { id: string }).id;
+    expect((await run('ruling', String(id), fid, 'overturn')).code).toBe(0);
+    const held = await run('ruling', String(id), 'skip');
+    expect(held.code).toBe(1);
+    expect(held.lines.join('\n')).toMatch(new RegExp(`a post of round ${id} recorded its intent and was never reconciled: its review may be on GitHub\\. sabotage-council post ${id} --reconcile reconciles it`));
+    const again = await run('post', String(id), '--post', '--expect', sha);
+    expect(again.code).toBe(1);
+    expect(again.lines.join('\n')).toMatch(/is closed: nothing posts/);
+    const rec = await run('post', String(id), '--reconcile');
+    expect(rec.code, rec.lines.join('\n')).toBe(0);
+    expect(rec.lines[0]).toBe(`round ${id} reconciled: no review of it is on GitHub, and that is recorded, so nothing waits on its post (a held round can now be released with ruling)`);
+    expect(getEvents(w.h.store.db, id).filter((e) => e.kind === 'post-reconcile').map((e) => e.detail)).toEqual([{ landed: false, intent: true }]);
+    const released = await run('ruling', String(id), 'skip');
+    expect(released.code, released.lines.join('\n')).toBe(0);
+    expect(released.lines[0]).toBe(`round ${id} released: skip`);
+    expect(sent(w)).toHaveLength(1);
+  });
+
+  it('the review landed though the POST failed: --reconcile adopts it as the round\'s post and sends nothing; flags are exclusive', async () => {
+    const { w, id, run, sha } = await heldRound();
+    // GitHub took the review, and the connection dropped before its answer.
+    w.routes[`POST ${PULL}/reviews`] = { fail: 'gh: connection reset' };
+    w.sync();
+    expect((await run('post', String(id), '--post', '--expect', sha)).code).toBe(1);
+    const b = sent(w)[0]!.body as { commit_id: string; body: string };
+    w.addReview(ghReview(990005, LOGIN, 'COMMENTED', b.commit_id, '2026-11-13T12:00:00Z', b.body));
+    const rec = await run('post', String(id), '--reconcile');
+    expect(rec.code, rec.lines.join('\n')).toBe(0);
+    expect(rec.lines[0]).toBe(`round ${id} reconciled: its review 990005 is on GitHub and recorded as its post`);
+    expect(getRound(w.h.store.db, id)).toMatchObject({ review_id: 990005, event_posted: 'COMMENT' });
+    expect(getEvents(w.h.store.db, id).map((e) => e.kind)).toContain('post-adopted');
+    expect(sent(w)).toHaveLength(1);
+    expect((await run('post', String(id), '--reconcile', '--post')).lines).toEqual(['error: give exactly one of --dry-run, --post or --reconcile']);
+    expect((await run('post', String(id), '--reconcile', '--expect', sha)).lines).toEqual(['error: --expect goes with --post']);
   });
 });
 
