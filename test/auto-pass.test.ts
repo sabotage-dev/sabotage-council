@@ -487,6 +487,25 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(roundsCount(w.h)).toBe(2);
   });
 
+  it('round_no is fixed by the claim from the reviews read before it: a counted review landing before the prepare does not move it (P8 round 1 row 5)', async () => {
+    const w = await world();
+    let atClaim: unknown = null;
+    await w.pass({
+      hooks: {
+        afterRowClaim: () => {
+          atClaim = (w.h.store.db.prepare('SELECT round_no FROM ledger WHERE head = ?').get(w.d) as { round_no: number | null }).round_no;
+          // Another council's round 9 marker lands now: a count at the prepare would give this head 10.
+          w.addReview(ghReview(6002, 'repo-owner', 'COMMENTED', w.src.shas['C7']!, '2026-11-13T11:00:00Z', `sabotage-council round 9 on sabotage-dev/sabotage-council#2 at ${w.src.shas['C7']!.slice(0, 7)}`));
+        },
+      },
+    });
+    expect(atClaim).toBe(4);
+    expect(row(w)).toMatchObject({ state: 'approved', round_no: 4 });
+    const roundId = row(w)['round_id'] as number;
+    expect(getRound(w.h.store.db, roundId)).toMatchObject({ round_no: 4, marker: `sabotage-council round 4 on sabotage-dev/sabotage-council#2 at ${w.d.slice(0, 7)}` });
+    expect(getEvents(w.h.store.db, roundId).find((e) => e.kind === 'round-number-fixed')?.detail).toEqual({ fixed: 4, computed: 10 });
+  });
+
   it('a transient adjudicator failure retries the adjudication on the same round, never the seats', async () => {
     const w = await world();
     w.adj.kind = 'fail';

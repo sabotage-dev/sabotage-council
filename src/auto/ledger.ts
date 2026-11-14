@@ -166,6 +166,11 @@ export interface ClaimOptions {
    * (a dry-run round can never post, so the real pass prepares its own).
    */
   reset?: boolean | undefined;
+  /**
+   * The round number for this head, computed from the review snapshot the caller read before the claim (plan 9.4,
+   * P8 round 1 row 5). Stored in the claim's transaction when the row has none yet; a row that has one keeps it.
+   */
+  roundNo?: number | undefined;
   nowMs?: number | undefined;
 }
 
@@ -185,9 +190,9 @@ export function claimRow(db: DatabaseSync, key: LedgerKey, o: ClaimOptions): Cla
     const takenOver = row !== undefined && row.claim_owner !== null;
     if (row === undefined) {
       db.prepare(
-        `INSERT INTO ledger (repo, num, head, state, attempts, claim_pid, claim_started, heartbeat_at, claim_owner, dry_run, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(key.repo, key.num, key.head, o.state ?? 'running', o.attempt ? 1 : 0, process.pid, at, at, owner, o.dryRun ? 1 : 0, at, at);
+        `INSERT INTO ledger (repo, num, head, state, attempts, claim_pid, claim_started, heartbeat_at, claim_owner, dry_run, round_no, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(key.repo, key.num, key.head, o.state ?? 'running', o.attempt ? 1 : 0, process.pid, at, at, owner, o.dryRun ? 1 : 0, o.roundNo ?? null, at, at);
     } else {
       const state = o.state ?? (row.state === 'posting' && o.reset !== true ? 'posting' : 'running');
       if (o.reset === true) {
@@ -197,9 +202,9 @@ export function claimRow(db: DatabaseSync, key: LedgerKey, o: ClaimOptions): Cla
         ).run(key.repo, key.num, key.head);
       }
       db.prepare(
-        `UPDATE ledger SET state = ?, attempts = attempts + ?, claim_pid = ?, claim_started = ?, heartbeat_at = ?, claim_owner = ?, dry_run = ?, updated_at = ?
+        `UPDATE ledger SET state = ?, attempts = attempts + ?, claim_pid = ?, claim_started = ?, heartbeat_at = ?, claim_owner = ?, dry_run = ?, round_no = coalesce(round_no, ?), updated_at = ?
           WHERE repo = ? AND num = ? AND head = ?`,
-      ).run(state, o.attempt ? 1 : 0, process.pid, at, at, owner, o.dryRun ? 1 : 0, at, key.repo, key.num, key.head);
+      ).run(state, o.attempt ? 1 : 0, process.pid, at, at, owner, o.dryRun ? 1 : 0, o.roundNo ?? null, at, key.repo, key.num, key.head);
     }
     const now2 = getRow(db, key) as LedgerRow;
     if (takenOver) ledgerEvent(db, now2, { change: 'claim-taken-over', previous: row?.claim_owner, previous_heartbeat: row?.heartbeat_at, state: now2.state });

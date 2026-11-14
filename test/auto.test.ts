@@ -95,6 +95,19 @@ describe('auto ledger: claim fencing, heartbeat, attempts (plan 9.4)', () => {
     expect(() => updateUnclaimed(s.db, KEY, { state: 'bogus' as never })).toThrow(/unknown ledger state/);
   });
 
+  it('stores the round number in the claim that creates the row, and keeps it on every later claim until a reset (P8 round 1 row 5)', () => {
+    const s = store();
+    const a = claimRow(s.db, KEY, { attempt: true, dryRun: false, roundNo: 4 });
+    if (!a.ok) throw new Error('no claim');
+    expect(a.row.round_no).toBe(4);
+    release(s.db, a.claim);
+    const b = claimRow(s.db, KEY, { attempt: true, dryRun: false, roundNo: 10 });
+    expect(b.ok && b.row.round_no).toBe(4);
+    if (b.ok) release(s.db, b.claim);
+    const c = claimRow(s.db, KEY, { attempt: true, dryRun: false, roundNo: 6, reset: true });
+    expect(c.ok && c.row.round_no).toBe(6);
+  });
+
   it('resets a head on request (a real pass over a dry run): attempts, round and records cleared', () => {
     const s = store();
     const a = claimRow(s.db, KEY, { attempt: true, dryRun: true });

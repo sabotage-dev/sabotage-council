@@ -8,7 +8,8 @@ import { adjudicateHeadless, HeadlessError, type HeadlessResult } from '../adjud
 import type { CouncilConfig } from '../config/schema.js';
 import { failRound, removeRoundRoots, roundDirOf, runWorker, type DataLayout } from '../engine/index.js';
 import { ALREADY_ON_HEAD, IS_DRAFT, pendingGuards, postRound, type PostResult } from '../engine/post.js';
-import { autoOf, HeadMovedError, preparePrRound } from '../engine/pr.js';
+import { autoOf, creditsOf, HeadMovedError, markerConfig, preparePrRound } from '../engine/pr.js';
+import { countRounds } from '../forge/count.js';
 import { getEvents, getRound, insertEvent, type RoundRow } from '../engine/records.js';
 import { preparedDetail } from '../engine/facts.js';
 import { latestRelease, roundHeld } from '../engine/ruling.js';
@@ -94,6 +95,8 @@ export interface PassOptions {
         beforePostRead?: ((roundId: number) => void) | undefined;
         afterLegs?: ((roundId: number) => void) | undefined;
         afterPrepare?: ((roundId: number) => void) | undefined;
+        /** After a ledger claim, before the row is worked. */
+        afterRowClaim?: ((key: LedgerKey) => void) | undefined;
         /** Inside the transaction that inserts the round and links it to the row. */
         roundInserted?: ((roundId: number) => void) | undefined;
       }
@@ -659,7 +662,9 @@ async function reviewHeads(ctx: Ctx, candidates: readonly Candidate[]): Promise<
       cand('deferred', `max_rounds_per_day (${ctx.auto.max_rounds_per_day}) reached: ${used} rounds in the last 24 h`);
       continue;
     }
-    const claimed = claimRow(store.db, key, { attempt: true, dryRun: o.dryRun, nowMs: ctx.nowMs(), reset });
+    // Plan 9.4 (P8 round 1 row 5): the number is computed from the reviews read before the claim, and stored by it.
+    const roundNo = countRounds({ ref: c.ref, head: c.head, reviews, credits: creditsOf(store.db, c.ref), cfg: markerConfig(o.config) }).roundNo;
+    const claimed = claimRow(store.db, key, { attempt: true, dryRun: o.dryRun, nowMs: ctx.nowMs(), reset, roundNo });
     if (!claimed.ok) {
       cand('busy', claimed.why);
       continue;
@@ -687,6 +692,7 @@ async function work(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean): Pr
   }, HEARTBEAT_MS);
   timer.unref();
   try {
+    ctx.o.hooks?.afterRowClaim?.(claim.key);
     await step(ctx, claim, ref, newAttempt, controller.signal, () => fenced);
   } catch (error) {
     const row = getRow(db, claim.key);
