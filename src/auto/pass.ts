@@ -416,7 +416,8 @@ function defaultAdjudicate(o: PassOptions): AdjudicateStep {
 
 function notifyRow(ctx: Ctx, kind: NoticeKind, row: Pick<LedgerRow, 'repo' | 'num' | 'head' | 'round_id'>, message: string): void {
   const pr = prOf(row);
-  const key = `${kind}:${row.repo}#${row.num}@${row.head}`;
+  // P8 round 1 row 7: a dry pass's notice has its own key, so it never suppresses the real one.
+  const key = `${kind}:${ctx.o.dryRun ? 'dry:' : ''}${row.repo}#${row.num}@${row.head}`;
   const titles: Record<NoticeKind, string> = {
     'needs-ruling': 'sabotage-council: ruling needed',
     failure: 'sabotage-council: auto failed',

@@ -541,6 +541,21 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(w.gh.requests().filter((q) => q.key !== 'GET user')).toEqual([]);
   });
 
+  it('a dry pass notice never suppresses the real one: dry and real keys are apart, each deduped on its own (P8 round 1 row 7)', async () => {
+    const w = await world();
+    w.routes['GET user'] = { json: { login: 'someone-else' } };
+    w.sync();
+    await w.pass({ dryRun: true });
+    await w.pass({ dryRun: true });
+    expect(w.notices.map((n) => [n.key, n.dry_run])).toEqual([['failure:dry:account#0@none', true]]);
+    await w.pass();
+    await w.pass();
+    expect(w.notices.map((n) => [n.key, n.dry_run])).toEqual([
+      ['failure:dry:account#0@none', true],
+      ['failure:account#0@none', false],
+    ]);
+  });
+
   it('--dry-run renders and posts nothing (no POST, no dismissal); a real pass later starts the head over', async () => {
     const w = await world();
     const dry = await w.pass({ dryRun: true });

@@ -6,7 +6,8 @@ import type { DatabaseSync } from '../store/sqlite.js';
  * Notifications (plan 9.4): on needs-ruling, failure, approval held and approval dismissed. Delivery goes to
  * `notify.command` (an executable, run without a shell, that receives the event as JSON on stdin), or, when none is
  * set, a built-in desktop notifier (macOS `osascript`, Linux `notify-send`). Each notification has a key; a key that
- * was delivered in the last 24 hours is not delivered again. A delivery that failed is recorded and does not count,
+ * was delivered in the last 24 hours is not delivered again. A dry run's notices carry their own keys
+ * (`<kind>:dry:<repo>#<num>@<head>`), so a shadow pass never suppresses the real notice (P8 round 1 row 7). A delivery that failed is recorded and does not count,
  * so the next occasion tries again. Notifications never carry a token or a nonce: they are built from ledger fields.
  */
 
