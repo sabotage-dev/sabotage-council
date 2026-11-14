@@ -165,6 +165,11 @@ export interface TranscriptFacts {
   sidechains: number;
   /** Attachment types of instruction files that loaded (user-owned context). */
   instructionFiles: string[];
+  /**
+   * Extra working directories the session could read, from each `environment` attachment's
+   * `additionalWorkingDirectories` (a value that is not a list is recorded as one entry).
+   */
+  extraRoots: string[];
 }
 
 export function transcriptFacts(t: Transcript): TranscriptFacts {
@@ -180,6 +185,7 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
     toolResults: [],
     sidechains: 0,
     instructionFiles: [],
+    extraRoots: [],
   };
   const sessions = new Set<string>();
   for (const e of t.entries) {
@@ -216,6 +222,12 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
         const items = Array.isArray(att['files']) ? att['files'] : Array.isArray(att['detail']) ? att['detail'] : [];
         for (const item of items) if (isObject(item) && str(item['path'])) facts.instructionFiles.push(str(item['path']) as string);
         if (items.length === 0) facts.instructionFiles.push(str(att['type']) ?? 'instructions');
+      }
+      if (str(att['type']) === 'environment') {
+        const snapshot = isObject(att['snapshot']) ? att['snapshot'] : {};
+        const dirs = snapshot['additionalWorkingDirectories'];
+        if (Array.isArray(dirs)) for (const d of dirs) facts.extraRoots.push(typeof d === 'string' ? d : JSON.stringify(d));
+        else if (dirs !== undefined) facts.extraRoots.push(`not a list: ${JSON.stringify(dirs)}`);
       }
     }
   }

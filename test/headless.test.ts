@@ -138,6 +138,12 @@ describe('headless adjudicator: the launch (plan 6.4)', () => {
     ['another permission mode', { tools: ['Read'], permissionMode: 'auto' }, 'permissionMode auto, not dontAsk'],
     ['no tools list', { permissionMode: 'dontAsk' }, 'has no tools list'],
     ['a non-string entry', { tools: ['Read', { name: 'Bash' }], permissionMode: 'dontAsk' }, 'non-string entry'],
+    // Round 1 row 3: an MCP server or an extra root stops the run, even with no tool offered.
+    ['empty MCP and extra-root lists', { tools: ['Read'], permissionMode: 'dontAsk', mcp_servers: [], additional_directories: [] }, null],
+    ['an MCP server that lists no tool', { tools: ['Read'], permissionMode: 'dontAsk', mcp_servers: [{ name: 'canary', status: 'connected' }] }, 'mcp_servers is not empty'],
+    ['an MCP server list that is not a list', { tools: ['Read'], permissionMode: 'dontAsk', mcp_servers: 'canary' }, 'mcp_servers is not a list'],
+    ['an extra root', { tools: ['Read'], permissionMode: 'dontAsk', additional_directories: ['/'] }, 'additional_directories is not empty'],
+    ['an extra-root list that is not a list', { tools: ['Read'], permissionMode: 'dontAsk', additional_directories: {} }, 'additional_directories is not a list'],
   ])('the init gate judges %s', (_what, init, problem) => {
     const got = adjudicatorInitProblem(init);
     if (problem === null) expect(got).toBeNull();
@@ -416,6 +422,23 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
     expect(r.checks.find((c) => c.name === 'tool-paths')!.detail).toContain(detail);
   });
 
+  // Round 1 rows 3 and 4: what reached the session beyond the copy and the prompt.
+  const att = (attachment: Json): ((t: string) => string) => (t: string) => `${t}${JSON.stringify({ type: 'attachment', sessionId: kase.session, attachment })}\n`;
+  it.each([
+    ['an MCP server in system/init', { stream: sub(/"mcp_servers": \[\]/, '"mcp_servers": [{"name": "canary", "status": "connected"}]') }, 'mcp-servers', 'mcp_servers is not empty'],
+    ['an extra root in system/init', { stream: sub(/"additional_directories": \[\]/, '"additional_directories": ["/"]') }, 'extra-roots', 'additional_directories is not empty'],
+    ['an extra root in the transcript\'s environment', { transcript: sub(/"additionalWorkingDirectories": \[\]/, '"additionalWorkingDirectories": ["/Users/someone"]') }, 'extra-roots', 'additional working directories: /Users/someone'],
+    ['a second environment attachment with an extra root', { transcript: att({ type: 'environment', snapshot: { additionalWorkingDirectories: ['/opt'] } }) }, 'extra-roots', '/opt'],
+    ['an environment whose extra roots are not a list', { transcript: sub(/"additionalWorkingDirectories": \[\]/, '"additionalWorkingDirectories": "/opt"') }, 'extra-roots', 'not a list'],
+    ['a loaded instruction file', { transcript: att({ type: 'instructions', files: [{ path: 'CLAUDE.md' }] }) }, 'instruction-files', 'CLAUDE.md'],
+    ['a loaded nested-memory file', { transcript: att({ type: 'nested_memory', detail: [{ path: 'sub/CLAUDE.md' }] }) }, 'instruction-files', 'sub/CLAUDE.md'],
+  ])('is CONTAMINATED with %s', (_what, edit, check, detail) => {
+    const r = recorded(edit);
+    expect(r.status).toBe('CONTAMINATED');
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual([check]);
+    expect(r.checks.find((c) => c.name === check)!.detail).toContain(detail);
+  });
+
   it('ratifies the recorded run with a brace group in one segment (it reduces to the copy)', () => {
     const r = recorded(both(GLOB, '"pattern": "**/*.{js,md}"'));
     expect(r.checks.filter((c) => !c.ok)).toEqual([]);
@@ -528,6 +551,8 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
   it.each([
     ['a plugin tool', { initTools: ['Edit', 'Glob', 'Grep', 'Read', 'mcp__canary__touch'] }, 'mcp__canary__touch'],
     ['a wrong permission mode', { permissionMode: 'auto' }, 'not dontAsk'],
+    ['an MCP server that offers no tool', { initMcpServers: [{ name: 'canary', status: 'connected' }] }, 'mcp_servers is not empty'],
+    ['an extra readable root', { initAdditionalDirectories: ['/'] }, 'additional_directories is not empty'],
   ])('stops the run at init on %s: setup, no adjudication, no tool executed', async (_what, init, problem) => {
     const s = await settledRound();
     // A model that would call the plugin tool 1.5 s after init, then write a valid adjudication.
@@ -634,6 +659,8 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     ['a tool beyond the four', { toolUses: [{ name: 'Bash', input: { command: 'true' } }] }, ['tools-used', 'permission-denials', 'hook-denials']],
     ['a subagent sidechain', { sidechain: true }, ['sidechains']],
     ['another cwd in system/init', { initCwd: '/' }, ['cwd']],
+    ['an extra root in the transcript', { extraRoots: ['/'] }, ['extra-roots']],
+    ['a loaded instruction file', { instructionFiles: ['CLAUDE.md'] }, ['instruction-files']],
   ])('is contaminated by %s', async (_what, scenario, failedChecks) => {
     const s = await settledRound();
     const { env } = adjHome([{ ...scenario, output: placeholderDoc(s.summary) }]);
@@ -641,6 +668,9 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     expect(r.outcome).toBe('needs-ruling');
     expect(r.launches[0]!.ratification.status).toBe('CONTAMINATED');
     expect(r.launches[0]!.ratification.checks.filter((c) => !c.ok).map((c) => c.name).sort()).toEqual([...failedChecks].sort());
+    // Nothing a contaminated run wrote is read.
+    expect(existsSync(join(r.launches[0]!.dir, 'ADJUDICATION.raw.json'))).toBe(false);
+    expect(counts(s)).toBe(0);
   });
 
   it.each([

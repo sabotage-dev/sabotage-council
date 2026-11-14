@@ -8,7 +8,7 @@ import { modelMatches } from '../adapters/claude/known.js';
 import { findTranscript, readClaudeStream, readTranscript, toolPaths, transcriptFacts, type ToolUse } from '../adapters/claude/records.js';
 import { isObject, num, str } from '../adapters/codex/records.js';
 import { globReduce } from './glob.js';
-import { ADJUDICATOR_TOOLS, MAINLOOP_DIR, OUTPUT_PLACEHOLDER } from './launch.js';
+import { ADJUDICATOR_TOOLS, initListProblem, MAINLOOP_DIR, OUTPUT_PLACEHOLDER } from './launch.js';
 
 /*
  * Ratification of one headless adjudicator launch (plan 6.4, 4.5, fail closed), from the CLI's own records: the
@@ -69,6 +69,9 @@ const CLASS_OF_CHECK: Readonly<Record<string, FailureClass>> = {
   hook: 'setup',
   offered: 'contaminated',
   'permission-mode': 'contaminated',
+  'mcp-servers': 'contaminated',
+  'extra-roots': 'contaminated',
+  'instruction-files': 'contaminated',
   cwd: 'contaminated',
   'tools-used': 'contaminated',
   'tool-paths': 'contaminated',
@@ -86,14 +89,17 @@ const CLASS_OF_CHECK: Readonly<Record<string, FailureClass>> = {
 
 const PRECEDENCE: readonly FailureClass[] = ['contaminated', 'model', 'setup', 'transport', 'timeout', 'empty'];
 
+/** What the init gate stops a run for: with the gate's stop, these are its reason, not contamination. */
+const GATE_CHECKS: readonly string[] = ['offered', 'permission-mode', 'mcp-servers', 'extra-roots'];
+
 /**
- * The run's failure class. A run the init gate stopped is `setup` (plan 6.4): the offer and the mode it was stopped for
- * are the reason, not contamination. It is contaminated only when something ran anyway (a tool use, a path, a change
- * to the copy), which means the gate lost a race.
+ * The run's failure class. A run the init gate stopped is `setup` (plan 6.4): the offer, the mode, an MCP server or
+ * an extra root it was stopped for are the reason, not contamination. It is contaminated only when something ran
+ * anyway (a tool use, a path, a change to the copy), which means the gate lost a race.
  */
 function failureClassOf(failed: readonly string[], signature: FailureClass | null, timedOut: boolean, gated: boolean): FailureClass | null {
   if (failed.length === 0) return null;
-  const counted = gated ? failed.filter((n) => n !== 'offered' && n !== 'permission-mode') : failed;
+  const counted = gated ? failed.filter((n) => !GATE_CHECKS.includes(n)) : failed;
   const classes = new Set<FailureClass>(counted.map((n) => CLASS_OF_CHECK[n] ?? 'setup'));
   if (classes.has('contaminated')) return 'contaminated';
   if (gated) return 'setup';
@@ -196,6 +202,9 @@ export function ratifyAdjudicatorRun(input: AdjudicatorRatifyInput): Adjudicator
   );
   const mode = init ? str(init['permissionMode']) : null;
   check('permission-mode', mode === 'dontAsk', `permissionMode ${String(mode)}`);
+  // No init is already a failed stream and offer; these two judge an init that is there.
+  const mcp = init ? initListProblem(init, 'mcp_servers') : null;
+  check('mcp-servers', mcp === null, mcp ?? 'no MCP server in system/init');
 
   const transcriptPath = findTranscript(input.projectsDir, input.sessionId);
   const transcript = transcriptPath ? readTranscript(transcriptPath) : null;
@@ -216,6 +225,15 @@ export function ratifyAdjudicatorRun(input: AdjudicatorRatifyInput): Adjudicator
         : `transcript ${transcript.path}; ${transcript.malformed} malformed${transcript.tornTail ? '; the last line is torn' : ''}${covered ? '' : `; it ends before the final answer (request ${String(finalRequest)})`}`,
     );
   }
+
+  // Extra readable roots (round 1 row 3): none in system/init, and none in any environment attachment of the transcript.
+  const extraInit = init ? initListProblem(init, 'additional_directories') : null;
+  const extraRoots = facts?.extraRoots ?? [];
+  check(
+    'extra-roots',
+    extraInit === null && extraRoots.length === 0,
+    extraInit !== null ? extraInit : extraRoots.length > 0 ? `the transcript names additional working directories: ${extraRoots.join(', ').slice(0, 300)}` : 'no additional working directory in init or the transcript',
+  );
 
   const initCwd = init ? str(init['cwd']) : null;
   const badCwd = [...new Set([initCwd, ...(facts?.cwds ?? [])].filter((c) => c === null || !aliases.includes(c.replace(/\/+$/, ''))))];
@@ -262,6 +280,11 @@ export function ratifyAdjudicatorRun(input: AdjudicatorRatifyInput): Adjudicator
   check('tool-paths', outside.length === 0, outside.length === 0 ? 'every tool path inside the working copy' : [...new Set(outside)].join('; '));
   check('edit-paths', badEdits.length === 0, badEdits.length === 0 ? `every Edit under ${MAINLOOP_DIR}/` : [...new Set(badEdits)].join('; '));
   check('sidechains', (facts?.sidechains ?? 0) === 0, `${facts?.sidechains ?? 0} sidechain entr(ies)`);
+  // A loaded instruction or nested-memory file is a steering channel outside the round's inputs (round 1 row 4).
+  if (!gated) {
+    const loaded = facts?.instructionFiles ?? [];
+    check('instruction-files', loaded.length === 0, loaded.length === 0 ? 'no instruction file loaded' : `instruction files loaded: ${loaded.join(', ').slice(0, 300)}`);
+  }
 
   const denials = result && Array.isArray(result['permission_denials']) ? (result['permission_denials'] as unknown[]) : [];
   check('permission-denials', denials.length === 0, `${denials.length} permission denial(s)${denials.length > 0 ? `: ${JSON.stringify(denials).slice(0, 300)}` : ''}`);

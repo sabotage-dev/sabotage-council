@@ -99,9 +99,23 @@ export function adjudicatorSettings(hook: HookCommand | null): Record<string, un
 }
 
 /**
+ * A list `system/init` must leave absent or empty: an MCP server (`mcp_servers`, which runs even when it lists no
+ * tool) or an extra readable root (`additional_directories`, which a later `**` glob never names). The launcher passes
+ * neither, so any entry is an anomaly; a value that is not a list is one too (fail closed).
+ */
+export function initListProblem(init: Record<string, unknown>, key: 'mcp_servers' | 'additional_directories'): string | null {
+  const v = init[key];
+  if (v === undefined) return null;
+  if (!Array.isArray(v)) return `system/init ${key} is not a list`;
+  if (v.length > 0) return `system/init ${key} is not empty: ${JSON.stringify(v).slice(0, 200)}`;
+  return null;
+}
+
+/**
  * The init gate (plan 6.4): read `system/init` before the first turn, and stop the run, recording `setup` and no
- * adjudication, when `tools` is not a subset of {Read, Glob, Grep, Edit} or `permissionMode` is not `dontAsk`. A
- * missing or malformed tools list is a problem, never an empty offer.
+ * adjudication, when `tools` is not a subset of {Read, Glob, Grep, Edit}, `permissionMode` is not `dontAsk`, or
+ * `mcp_servers` or `additional_directories` is not absent or empty (round 1 row 3). A missing or malformed tools
+ * list is a problem, never an empty offer.
  */
 export function adjudicatorInitProblem(init: Record<string, unknown>): string | null {
   const offer = offeredTools(init);
@@ -113,7 +127,7 @@ export function adjudicatorInitProblem(init: Record<string, unknown>): string | 
     return `system/init offered ${extra.join(', ')} beyond ${ADJUDICATOR_TOOLS.join(', ')}${plugin ? ': a plugin or MCP tool reached the adjudicator' : ''}`;
   }
   if (init['permissionMode'] !== 'dontAsk') return `system/init permissionMode ${String(init['permissionMode'])}, not dontAsk`;
-  return null;
+  return initListProblem(init, 'mcp_servers') ?? initListProblem(init, 'additional_directories');
 }
 
 /**

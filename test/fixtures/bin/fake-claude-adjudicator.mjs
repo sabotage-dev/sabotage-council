@@ -23,7 +23,11 @@
 // - sidechain: one transcript entry marked isSidechain;
 // - skipHook: do not run the hook (a CLI that did not honour it);
 // - initSession: the session id system/init reports; malformedLine: a broken line in the stream; noTranscript: no
-//   transcript file at all.
+//   transcript file at all;
+// - initMcpServers, initAdditionalDirectories: what system/init lists under mcp_servers and additional_directories
+//   (default []);
+// - extraRoots: the transcript's environment attachment additionalWorkingDirectories (default []);
+// - instructionFiles: paths of an `instructions` attachment in the transcript (an instruction file that loaded).
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -87,10 +91,14 @@ out({
   tools: offered,
   permissionMode: s.permissionMode ?? 'dontAsk',
   claude_code_version: s.initVersion ?? config.version ?? '2.1.325',
-  mcp_servers: [],
+  mcp_servers: s.initMcpServers ?? [],
+  additional_directories: s.initAdditionalDirectories ?? [],
 });
 
 if (s.malformedLine) process.stdout.write('{"type": "assistant", broken\n');
+
+record({ type: 'attachment', attachment: { type: 'environment', snapshot: { workingDirectory: cwd, additionalWorkingDirectories: s.extraRoots ?? [] } } });
+if (s.instructionFiles) record({ type: 'attachment', attachment: { type: 'instructions', files: s.instructionFiles.map((path) => ({ path })) } });
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 let msg = 0;
