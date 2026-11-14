@@ -63,10 +63,11 @@ describe('plugin', () => {
     // whole CLI. A round start always prompts the user, so text a leg wrote cannot start one silently.
     const skillTools = (skill['allowed-tools'] ?? '').split(/,\s*/);
     expect(skillTools.length).toBeGreaterThan(3);
-    for (const t of skillTools) expect(t, t).toMatch(/^Bash\(sabotage-council (--version|doctor|doctor \*|round wait \*|round show \*|adjudicate \*)\)$/);
+    // P9: the read-only stats and seats list are pre-approved in exact forms only (`stats --html <file>` writes a file).
+    for (const t of skillTools) expect(t, t).toMatch(/^Bash\(sabotage-council (--version|doctor|doctor \*|round wait \*|round show \*|adjudicate \*|stats|stats --json|seats list|seats list --json)\)$/);
     const commandTools = (frontmatter(read('plugin/commands/council.md'))['allowed-tools'] ?? '').split(/,\s*/);
     expect(commandTools.length).toBeGreaterThan(3);
-    for (const t of commandTools) expect(t, t).toMatch(/^Bash\(sabotage-council (--version|doctor|round wait \*|round show \*|adjudicate \*)\)$/);
+    for (const t of commandTools) expect(t, t).toMatch(/^Bash\(sabotage-council (--version|doctor|round wait \*|round show \*|adjudicate \*|stats|stats --json|seats list|seats list --json)\)$/);
     // P6: a pr round start, the post (dry run or not) and a credit are never pre-approved either.
     const starts = [
       'sabotage-council round start plan docs/PLAN.md --json',
@@ -77,6 +78,14 @@ describe('plugin', () => {
       'sabotage-council post 3 --post',
       'sabotage-council post 3 --dry-run',
       'sabotage-council credit acme/widget#7 123',
+      // P9: a paid seat test, a config edit and a report file are never pre-approved either.
+      'sabotage-council seats test claude:claude-haiku-5-5:low',
+      'sabotage-council seats swap c --backend codex --model gpt-6.1-sol',
+      'sabotage-council seats swap c --backend codex --model gpt-6.1-sol --dry-run',
+      'sabotage-council seats add d --backend codex --model gpt-6.1-sol',
+      'sabotage-council seats remove d',
+      'sabotage-council stats --html /tmp/report.html',
+      'sabotage-council stats --json --html /tmp/report.html',
     ];
     // The matcher itself: the entries the plugin used to carry, and broad ones, do match.
     expect(permits('Bash(sabotage-council round start plan *)', starts[0]!)).toBe(true);
@@ -86,7 +95,7 @@ describe('plugin', () => {
     expect(permits('Bash(sabotage-council round wait *)', starts[2]!)).toBe(false);
     for (const [where, tools] of [['skill', skillTools], ['command', commandTools]] as const) {
       for (const t of tools) {
-        expect(t, `${where}: ${t}`).not.toMatch(/round start|post|credit/);
+        expect(t, `${where}: ${t}`).not.toMatch(/round start|post|credit|seats (test|swap|add|remove)|--html/);
         for (const cmd of starts) expect(permits(t, cmd), `${where}: ${t} pre-approves ${cmd}`).toBe(false);
       }
     }
@@ -101,6 +110,11 @@ describe('plugin', () => {
     expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('never post the new render on the old go');
     expect(read('plugin/commands/council.md')).toContain('`sabotage-council post <id> --post --expect <the review sha256 the dry run printed>`');
     expect(read('plugin/ADJUDICATE.md')).toContain('`--post --expect <the review sha256 that dry run printed>`');
+    // P9: "which seat should I swap?" points at stats and the swap-candidate flag, which never swaps by itself.
+    expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('which seat should I swap?');
+    expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('**swap candidate**');
+    expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('nothing swaps a seat by itself');
+    expect(read('plugin/commands/council.md')).toContain('`sabotage-council seats swap ... --dry-run`');
     const command = frontmatter(read('plugin/commands/council.md'));
     expect(command['description']).toBeTruthy();
     expect(command['argument-hint']).toContain('plan <file>');
@@ -125,8 +139,8 @@ describe('plugin', () => {
     };
     walk(program, []);
     const text = files(PLUGIN).filter((f) => f.endsWith('.md')).map((f) => readFileSync(f, 'utf8')).join('\n');
-    const used = [...text.matchAll(/sabotage-council ((?:round (?:start (?:plan|diff|pr)|wait|show))|adjudicate|doctor|post|credit)\b/g)].map((m) => m[1]!);
-    expect(used).toEqual(expect.arrayContaining(['round start pr', 'post']));
+    const used = [...text.matchAll(/sabotage-council ((?:round (?:start (?:plan|diff|pr)|wait|show))|adjudicate|doctor|post|credit|stats|seats (?:list|add|remove|swap|test))\b/g)].map((m) => m[1]!);
+    expect(used).toEqual(expect.arrayContaining(['round start pr', 'post', 'stats', 'seats list', 'seats test', 'seats swap']));
     expect(used.length).toBeGreaterThan(5);
     for (const u of used) expect(known, u).toContain(u);
     expect(text).toContain('--timeout');
