@@ -658,15 +658,23 @@ async function work(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean): Pr
   } catch (error) {
     const row = getRow(db, claim.key);
     if (row !== undefined && (row.state === 'posting' || row.records_sha !== null)) {
-      // A post may have been sent: the row stays posting, and the next pass reconciles it (plan 9.4 resume).
-      update(db, claim, { reason: `interrupted while posting: ${errText(error)}` });
-      ctx.report.errors.push(`${prOf(claim.key)}: interrupted while posting (the next pass reconciles it): ${errText(error)}`);
+      // A post may have been sent: the row stays posting, as it was, and the next pass reconciles it (plan 9.4 resume).
+      postingNote(ctx, row, `interrupted while posting (the next pass reconciles it): ${errText(error)}`);
     } else if (row !== undefined) fail(ctx, claim, row, `unexpected: ${errText(error)}`);
   } finally {
     clearInterval(timer);
     outer?.removeEventListener('abort', onOuter);
     release(db, claim);
   }
+}
+
+/**
+ * A note on a posting row that leaves the row as it is (its reason says what the post is, which the resume reads): a
+ * report line and an event on its round.
+ */
+function postingNote(ctx: Ctx, row: Pick<LedgerRow, 'repo' | 'num' | 'head' | 'round_id'>, why: string): void {
+  ctx.report.errors.push(`${prOf(row)}@${row.head.slice(0, 7)}: ${why}`);
+  insertEvent(ctx.store.db, 'auto-posting-note', row.round_id, { row: `${prOf(row)}@${row.head.slice(0, 7)}`, why });
 }
 
 /** Moves a claimed row; false (and a report line) when the claim was taken over. */
@@ -974,14 +982,14 @@ function settle(ctx: Ctx, claim: Claim, round: RoundRow, r: PostResult, ruling: 
   }
   if (r.outcome !== 'posted' && r.outcome !== 'already-posted') {
     // Refused with a post possibly begun (an intent recorded): the row stays posting, and the next pass resumes it.
-    move(ctx, claim, { reason: `the post was refused: ${r.problems.join('; ')}` });
-    ctx.report.errors.push(`${prOf(claim.key)}: the post was refused: ${r.problems.join('; ')}`);
+    postingNote(ctx, row, `the post was refused (the next pass resumes it): ${r.problems.join('; ')}`);
     return;
   }
   const now = getRound(db, round.id) ?? round;
   const reviewId = r.reviewId ?? now.review_id;
   if (pendingGuards(db, round.id) > 0) {
-    move(ctx, claim, { review_id: reviewId, reason: 'posted; a guard is still pending (the next pass resumes it)' });
+    move(ctx, claim, { review_id: reviewId });
+    postingNote(ctx, row, 'posted; a guard is still pending (the next pass resumes it)');
     return;
   }
   const event = (now.event_posted ?? r.event ?? row.event) as LedgerRow['event'];
@@ -1032,8 +1040,7 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void>
     return;
   }
   if (!rec.notLanded) {
-    move(ctx, claim, { reason: `the resume could not reconcile: ${rec.problems.join('; ')}` });
-    ctx.report.errors.push(`${prOf(claim.key)}: the resume could not reconcile: ${rec.problems.join('; ')}`);
+    postingNote(ctx, row, `the resume could not reconcile (the next pass tries again): ${rec.problems.join('; ')}`);
     return;
   }
   const sha = recordsSha(roundDirOf(o.layout, round.id), round.kind);
