@@ -89,7 +89,7 @@ describe('stats: which rounds count', () => {
     // Superseded after its adjudication (the head moved before the post): its findings count.
     w.round({ status: 'superseded', verdict: 'NEEDS-WORK', legs: [{ seat: 'c', occ: OCC.c, verdict: 'NEEDS-WORK' }, { seat: 'b', occ: OCC.b }], findings: [{ outcome: 'owed', by: ['c'] }] });
     const r = report(w);
-    expect(r.window.rounds).toEqual({ total: 8, identity: 1, council: 7, running: 1, settled: 6, adjudicated: 3, failed: 1, awaitingAdjudication: 1, dryRun: 1 });
+    expect(r.window.rounds).toEqual({ total: 8, identity: 1, council: 7, running: 1, settled: 6, adjudicated: 3, failed: 1, awaiting_adjudication: 1, dry_run: 1 });
     expect(seatCard(r, 'c')).toMatchObject({ rounds_seated: 3, adjudicated_ratified: 2, findings: { raised: 1, adopted: 1 } });
     // a: seated in the dry run, the failed round, the solo round and the awaiting round; its RUNNING leg is left out.
     expect(seatCard(r, 'a')).toMatchObject({ rounds_seated: 4, rounds_ratified: 3, ratified_rate: 0.75, adjudicated_ratified: 2 });

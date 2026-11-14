@@ -180,7 +180,7 @@ ${report.notes.map((n) => h`<p class="muted">Note: ${n}</p>`)}
 <main>
 <section>
 <h2>Rounds</h2>
-<p>${c.council} council rounds: ${c.settled} settled, ${c.adjudicated} adjudicated, ${c.failed} failed, ${c.awaitingAdjudication} awaiting adjudication, ${c.running} still running (left out), ${c.dryRun} dry run. ${c.identity} identity rounds (no seats, left out).${w.adjudicator_usd > 0 ? ` Adjudicator: ${money(w.adjudicator_usd)}.` : ''}</p>
+<p>${c.council} council rounds: ${c.settled} settled, ${c.adjudicated} adjudicated, ${c.failed} failed, ${c.awaiting_adjudication} awaiting adjudication, ${c.running} still running (left out), ${c.dry_run} dry run. ${c.identity} identity rounds (no seats, left out).${w.adjudicator_usd > 0 ? ` Adjudicator: ${money(w.adjudicator_usd)}.` : ''}</p>
 ${report.filters.seat !== null || report.filters.occupant !== null ? h`<p class="muted">Filtered to ${[report.filters.seat === null ? null : `seat ${report.filters.seat}`, report.filters.occupant === null ? null : `occupant ${report.filters.occupant}`].filter((x) => x !== null).join(', ')}. Every metric still reads every seat's legs.</p>` : ''}
 ${report.message !== null ? h`<p class="panel">${report.message}</p>` : ''}
 </section>

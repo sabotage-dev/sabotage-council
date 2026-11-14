@@ -97,7 +97,7 @@ export function renderText(report: StatsReport): string[] {
   const span = w.first_round_at === null ? '' : ` (rounds from ${w.first_round_at.slice(0, 10)} to ${(w.last_round_at ?? w.first_round_at).slice(0, 10)})`;
   out.push(`sabotage-council stats: ${w.since === null ? 'all history' : `since ${w.since}`}${span}`);
   out.push(
-    `rounds: ${r.council} council (${r.settled} settled, ${r.adjudicated} adjudicated, ${r.failed} failed, ${r.awaitingAdjudication} awaiting adjudication, ${r.running} still running, ${r.dryRun} dry run), ${r.identity} identity`,
+    `rounds: ${r.council} council (${r.settled} settled, ${r.adjudicated} adjudicated, ${r.failed} failed, ${r.awaiting_adjudication} awaiting adjudication, ${r.running} still running, ${r.dry_run} dry run), ${r.identity} identity`,
   );
   if (report.filters.seat !== null || report.filters.occupant !== null) {
     out.push(`filters: ${[report.filters.seat === null ? null : `seat ${clean(report.filters.seat)}`, report.filters.occupant === null ? null : `occupant ${clean(report.filters.occupant)}`].filter((x) => x !== null).join(', ')} (rows shown; every metric still reads every seat's legs)`);

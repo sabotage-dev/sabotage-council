@@ -115,8 +115,8 @@ export interface RoundCounts {
   /** Settled rounds with a stored verdict: the finding metrics read these. */
   adjudicated: number;
   failed: number;
-  awaitingAdjudication: number;
-  dryRun: number;
+  awaiting_adjudication: number;
+  dry_run: number;
 }
 
 export interface StatsData {
@@ -163,7 +163,7 @@ export function loadStats(db: DatabaseSync, since: string | null): StatsData {
     )
     .all(since, since) as Row[];
 
-  const counts: RoundCounts = { total: rows.length, identity: 0, council: 0, running: 0, settled: 0, adjudicated: 0, failed: 0, awaitingAdjudication: 0, dryRun: 0 };
+  const counts: RoundCounts = { total: rows.length, identity: 0, council: 0, running: 0, settled: 0, adjudicated: 0, failed: 0, awaiting_adjudication: 0, dry_run: 0 };
   const rounds = new Map<number, StatsRound>();
   let adjudicatorUsd = 0;
   for (const r of rows) {
@@ -196,8 +196,8 @@ export function loadStats(db: DatabaseSync, since: string | null): StatsData {
     counts.settled += 1;
     if (round.adjudicated) counts.adjudicated += 1;
     if (round.status === 'failed') counts.failed += 1;
-    if (round.status === 'awaiting-adjudication') counts.awaitingAdjudication += 1;
-    if (round.dryRun) counts.dryRun += 1;
+    if (round.status === 'awaiting-adjudication') counts.awaiting_adjudication += 1;
+    if (round.dryRun) counts.dry_run += 1;
     adjudicatorUsd += round.adjudicatorUsd ?? 0;
     rounds.set(round.id, round);
   }

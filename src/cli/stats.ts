@@ -110,7 +110,7 @@ function emptyReport(args: StatsArgs, thresholds: Thresholds): StatsReport {
       since: args.since,
       rounds: [],
       occupants: new Map(),
-      counts: { total: 0, identity: 0, council: 0, running: 0, settled: 0, adjudicated: 0, failed: 0, awaitingAdjudication: 0, dryRun: 0 },
+      counts: { total: 0, identity: 0, council: 0, running: 0, settled: 0, adjudicated: 0, failed: 0, awaiting_adjudication: 0, dry_run: 0 },
       adjudicatorUsd: 0,
       firstStartedAt: null,
       lastStartedAt: null,
