@@ -1,16 +1,16 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { claimLive, claimRow, CLAIM_STALE_MS, getRow, heartbeat, release, update, updateUnclaimed, type LedgerKey } from '../src/auto/ledger.js';
 import { commandDeliver, desktopDeliver, notify, DEDUPE_MS, type Notice } from '../src/auto/notify.js';
-import { autoDir, PASS_LOCK_STALE_MS, takePassLock, type PassLock } from '../src/auto/pass.js';
+import { PASS_LOCK_KEY, PASS_LOCK_STALE_MS, takePassLock } from '../src/auto/pass.js';
 import { inScope, narrowOwners, searchQueries, searchQueue, type QueueConfig } from '../src/auto/queue.js';
 import { installService, previewService, renderPlist, renderUnit, serviceArgs, serviceProblems, systemdWord, uninstallService, type ServiceSpec } from '../src/auto/service.js';
 import { LOG_TAIL_CHARS, LOG_TAIL_LINES, runTests, testGate, testsFor, testsMarkdown } from '../src/auto/tests.js';
 import { ghApi } from '../src/forge/github.js';
-import { openStore } from '../src/store/index.js';
+import { openStore, type Store } from '../src/store/index.js';
 import { openShadow } from '../src/root/git.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 import { FAKE_GH, fakeGh } from './helpers/github.js';
@@ -174,65 +174,78 @@ function notice(over: Partial<Notice> = {}): Notice {
   return { kind: 'failure', key: 'failure:x#1@h', title: 't', message: 'm', repo: 'o/r', number: 1, head: 'h', round_id: null, url: null, dry_run: false, ...over };
 }
 
-describe('the pass lock: a heartbeat, staleness by age, takeover by atomic rename (P8 round 1 row 6)', () => {
-  const layoutIn = () => ({ dbPath: join(scratch('sc-lock-'), 'data', 'council.db') });
-  const lockFile = (l: { dbPath: string }) => join(autoDir(l), 'pass.lock');
-  const seed = (l: { dbPath: string }, holder: Record<string, unknown>, ageMs: number): void => {
-    mkdirSync(autoDir(l), { recursive: true });
-    writeFileSync(lockFile(l), JSON.stringify({ ...holder, token: 'theirs', started_at: '2026-11-13T00:00:00Z' }));
-    const t = new Date(Date.now() - ageMs);
-    utimesSync(lockFile(l), t, t);
+describe('the pass lock: an owner-checked lease in the store, a heartbeat, staleness by age (P8 round 1 row 6, round 2 row 2)', () => {
+  /** Two connections to one store, as two processes have; the second never waits on a busy store. */
+  const twoStores = () => {
+    const path = join(scratch('sc-lock-'), 'data', 'council.db');
+    const a = openStore(path);
+    const b = openStore(path);
+    b.db.exec('PRAGMA busy_timeout = 0');
+    return { a, b };
+  };
+  const lease = (s: Store): string | undefined => (s.db.prepare('SELECT value FROM auto_state WHERE key = ?').get(PASS_LOCK_KEY) as { value: string } | undefined)?.value;
+  const seed = (s: Store, holder: Record<string, unknown>, ageMs: number): void => {
+    s.db
+      .prepare('INSERT INTO auto_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+      .run(PASS_LOCK_KEY, JSON.stringify({ ...holder, token: 'theirs', started_at: '2026-11-13T00:00:00Z' }), new Date(Date.now() - ageMs).toISOString());
   };
   const stale = PASS_LOCK_STALE_MS + 60_000;
 
   it('a reused pid on this host holds the lock while its heartbeat is fresh, and frees it once stale', () => {
-    const l = layoutIn();
-    seed(l, { pid: process.pid, host: hostname() }, 0);
-    expect(takePassLock(l)).toMatchObject({ busy: expect.stringMatching(/^another pass holds .*pass\.lock \(pid \d+ on /) });
-    seed(l, { pid: process.pid, host: hostname() }, stale);
-    const taken = takePassLock(l);
+    const { a } = twoStores();
+    seed(a, { pid: process.pid, host: hostname() }, 0);
+    expect(takePassLock(a.db)).toMatchObject({ busy: expect.stringMatching(/^another pass holds the pass lock \(pid \d+ on /) });
+    seed(a, { pid: process.pid, host: hostname() }, stale);
+    const taken = takePassLock(a.db);
     expect('beat' in taken).toBe(true);
-    expect(JSON.parse(readFileSync(lockFile(l), 'utf8'))).toMatchObject({ pid: process.pid, host: hostname() });
-    expect(JSON.parse(readFileSync(lockFile(l), 'utf8')).token).not.toBe('theirs');
+    expect(JSON.parse(lease(a)!)).toMatchObject({ pid: process.pid, host: hostname() });
+    expect(JSON.parse(lease(a)!).token).not.toBe('theirs');
+    expect(a.db.prepare("SELECT count(*) AS n FROM events WHERE kind = 'auto-pass-lock-taken-over'").get()).toMatchObject({ n: 1 });
   });
 
   it('a host name that changed holds it only while fresh; a dead pid on this host frees it at once', () => {
-    const l = layoutIn();
-    seed(l, { pid: 1, host: 'an-old-host-name.local' }, 0);
-    expect('busy' in takePassLock(l)).toBe(true);
-    seed(l, { pid: 1, host: 'an-old-host-name.local' }, stale);
-    expect('beat' in takePassLock(l)).toBe(true);
-    const l2 = layoutIn();
-    seed(l2, { pid: deadPid(), host: hostname() }, 0);
-    expect('beat' in takePassLock(l2)).toBe(true);
+    const { a } = twoStores();
+    seed(a, { pid: 1, host: 'an-old-host-name.local' }, 0);
+    expect('busy' in takePassLock(a.db)).toBe(true);
+    seed(a, { pid: 1, host: 'an-old-host-name.local' }, stale);
+    expect('beat' in takePassLock(a.db)).toBe(true);
+    const { a: a2 } = twoStores();
+    seed(a2, { pid: deadPid(), host: hostname() }, 0);
+    expect('beat' in takePassLock(a2.db)).toBe(true);
   });
 
-  it('two takers of one stale lock: exactly one wins, and the other puts the fresh lock back', () => {
-    const l = layoutIn();
-    seed(l, { pid: process.pid, host: hostname() }, stale);
+  it('two takers of one stale lock leave exactly one owner, and a takeover never removes a fresh owner\'s lock', () => {
+    const { a, b } = twoStores();
+    seed(a, { pid: process.pid, host: hostname() }, stale);
+    // The second taker arrives while the first is taking the stale lock: it is busy, and the first owns the lock.
     let inner: ReturnType<typeof takePassLock> | null = null;
-    const outer = takePassLock(l, { beforeTakeover: () => (inner = takePassLock(l)) });
-    expect(outer).toEqual({ busy: expect.stringMatching(/took .* over first$/) });
-    expect(inner !== null && 'beat' in inner).toBe(true);
-    const won = inner as unknown as PassLock;
-    expect(won.beat()).toBe(true);
-    expect(readdirSync(autoDir(l))).toEqual(['pass.lock']);
-    won.release();
-    expect(existsSync(lockFile(l))).toBe(false);
+    const outer = takePassLock(a.db, { beforeTake: () => (inner = takePassLock(b.db)) });
+    expect(inner).toMatchObject({ busy: expect.stringMatching(/^another pass is taking the pass lock right now/) });
+    if (!('beat' in outer)) throw new Error(outer.busy);
+    const owner = lease(a);
+    expect(JSON.parse(owner!).token).not.toBe('theirs');
+    // A taker after it finds the fresh lock: busy, and the owner's lock stands, untouched.
+    expect(takePassLock(b.db)).toMatchObject({ busy: expect.stringMatching(/^another pass holds the pass lock/) });
+    expect(lease(a)).toBe(owner);
+    expect(outer.beat(Date.now())).toBe(true);
+    expect(a.db.prepare("SELECT count(*) AS n FROM events WHERE kind = 'auto-pass-lock-taken-over'").get()).toMatchObject({ n: 1 });
+    outer.release();
+    expect(lease(a)).toBeUndefined();
   });
 
-  it('the heartbeat refreshes the lock, and reports a lock that is no longer this pass\'s', () => {
-    const l = layoutIn();
-    const lock = takePassLock(l);
+  it('the heartbeat refreshes the lock, and reports a lock that is no longer this pass\'s; release then leaves it alone', () => {
+    const { a } = twoStores();
+    const lock = takePassLock(a.db);
     if (!('beat' in lock)) throw new Error(lock.busy);
-    const old = new Date(Date.now() - stale);
-    utimesSync(lockFile(l), old, old);
-    expect(lock.beat()).toBe(true);
-    expect(Date.now() - statSync(lockFile(l)).mtimeMs).toBeLessThan(PASS_LOCK_STALE_MS);
-    writeFileSync(lockFile(l), JSON.stringify({ pid: 1, host: 'elsewhere', token: 'x' }));
-    expect(lock.beat()).toBe(false);
+    a.db.prepare('UPDATE auto_state SET updated_at = ? WHERE key = ?').run(new Date(Date.now() - stale).toISOString(), PASS_LOCK_KEY);
+    const now = Date.now();
+    expect(lock.beat(now)).toBe(true);
+    expect((a.db.prepare('SELECT updated_at FROM auto_state WHERE key = ?').get(PASS_LOCK_KEY) as { updated_at: string }).updated_at).toBe(new Date(now).toISOString());
+    seed(a, { pid: 1, host: 'elsewhere' }, 0);
+    const theirs = lease(a);
+    expect(lock.beat(Date.now())).toBe(false);
     lock.release();
-    expect(existsSync(lockFile(l))).toBe(true);
+    expect(lease(a)).toBe(theirs);
   });
 });
 

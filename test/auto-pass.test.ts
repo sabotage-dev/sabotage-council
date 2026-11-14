@@ -1,10 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLAIM_STALE_MS } from '../src/auto/ledger.js';
-import { autoDir, BUSY_NOTIFY_AFTER, lastReport, recordsSha } from '../src/auto/pass.js';
+import { BUSY_NOTIFY_AFTER, lastReport, PASS_LOCK_KEY, recordsSha } from '../src/auto/pass.js';
 import { API, FAKE_GH, type Routes } from './helpers/github.js';
 import { CLAIM_STALE_MS as POST_CLAIM_STALE_MS, claimPost, postRound, type PostOptions, type PostResult } from '../src/engine/post.js';
 import { ghApi } from '../src/forge/github.js';
@@ -819,9 +819,9 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
 
   it('a busy pass is the last pass on record, and a lock busy for several passes in a row is notified (P8 round 1 row 6)', async () => {
     const w = await world();
-    const file = join(autoDir(w.h.layout), 'pass.lock');
-    mkdirSync(autoDir(w.h.layout), { recursive: true });
-    writeFileSync(file, JSON.stringify({ pid: process.pid, host: hostname(), token: 'another-pass', started_at: new Date().toISOString() }));
+    w.h.store.db
+      .prepare('INSERT INTO auto_state (key, value, updated_at) VALUES (?, ?, ?)')
+      .run(PASS_LOCK_KEY, JSON.stringify({ pid: process.pid, host: hostname(), token: 'another-pass', started_at: new Date().toISOString() }), new Date().toISOString());
     for (let i = 1; i <= BUSY_NOTIFY_AFTER; i++) {
       const r = await w.pass();
       expect(r.outcome).toBe('busy');
@@ -830,7 +830,7 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     }
     expect(w.notices[0]).toMatchObject({ kind: 'failure', key: 'failure:pass-lock#0@busy', message: expect.stringMatching(/3 passes in a row found another pass holding the lock/) });
     expect(w.gh.requests()).toEqual([]);
-    unlinkSync(file);
+    w.h.store.db.prepare('DELETE FROM auto_state WHERE key = ?').run(PASS_LOCK_KEY);
     expect((await w.pass()).outcome).toBe('done');
     expect(row(w)).toMatchObject({ state: 'approved' });
     // Taking the lock clears the streak.
@@ -843,7 +843,7 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
       hooks: {
         afterPost: () => {
           // Another pass judged this one's lock stale and took it over.
-          writeFileSync(join(autoDir(w.h.layout), 'pass.lock'), JSON.stringify({ pid: 1, host: 'elsewhere', token: 'taker' }));
+          w.h.store.db.prepare('UPDATE auto_state SET value = ? WHERE key = ?').run(JSON.stringify({ pid: 1, host: 'elsewhere', token: 'taker' }), PASS_LOCK_KEY);
         },
       },
     }).then((r) => {

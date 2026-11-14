@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { SeatAdapters } from '../adapters/index.js';
@@ -17,6 +17,7 @@ import type { GitHubApi } from '../forge/github.js';
 import { ensureMirror, mirrorPath, type MirrorSource } from '../forge/mirror.js';
 import { loginMismatch, prLabel, sameLogin, type PrRef } from '../forge/pr.js';
 import type { Store } from '../store/open.js';
+import type { DatabaseSync } from '../store/sqlite.js';
 import {
   claimable,
   CLAIM_STALE_MS,
@@ -26,6 +27,7 @@ import {
   getRow,
   heartbeat,
   HEARTBEAT_MS,
+  immediate,
   linkRound,
   markChecked,
   MAX_ATTEMPTS,
@@ -164,111 +166,88 @@ function errText(error: unknown): string {
 
 const prOf = (k: Pick<LedgerKey, 'repo' | 'num'>): string => `${k.repo.replace(/^github\.com\//, '')}#${k.num}`;
 
-/** The run store's data dir (beside council.db): the daemon's lock and log live in `auto/` there. */
+/** The run store's data dir (beside council.db): the daemon's log lives in `auto/` there (its lock is in the store). */
 export function autoDir(layout: Pick<DataLayout, 'dbPath'>): string {
   return join(dirname(layout.dbPath), 'auto');
 }
 
-/** A pass lock whose heartbeat (its mtime) is older than this is free, whatever its pid or host (P8 round 1 row 6). */
+/** A pass lock whose heartbeat is older than this is free, whatever its pid or host (P8 round 1 row 6). */
 export const PASS_LOCK_STALE_MS = CLAIM_STALE_MS;
 /** Busy passes in a row before the user is told another pass keeps the lock. */
 export const BUSY_NOTIFY_AFTER = 3;
+/** The pass lock's row in auto_state (P8 round 2 row 2). */
+export const PASS_LOCK_KEY = 'pass_lock';
 
 export interface PassLock {
-  /** Refreshes the heartbeat; false when the lock is no longer this pass's (it was taken over). */
-  beat: () => boolean;
+  /**
+   * Refreshes the heartbeat at `nowMs`; false when the lock is no longer this pass's (it was taken over). A store that
+   * stays busy past its timeout is not a loss: true, and the next beat tries again.
+   */
+  beat: (nowMs: number) => boolean;
   release: () => void;
 }
 
-function unlinkQuiet(file: string): void {
-  try {
-    unlinkSync(file);
-  } catch {
-    // already gone
-  }
+/** SQLite's "database is locked" (SQLITE_BUSY) or "table is locked" (SQLITE_LOCKED), past the store's busy timeout. */
+export function storeBusy(error: unknown): boolean {
+  const code = (error as { errcode?: unknown } | null)?.errcode;
+  return code === 5 || code === 6 || /database is locked|database table is locked/.test(errText(error));
 }
 
 /**
- * One pass at a time per store (P8 round 1 row 6): `auto/pass.lock` holds the owner's pid, host and a token, created
- * exclusively; its mtime is the heartbeat, refreshed while the pass runs. It is held while the heartbeat is fresh and,
- * on this host, the pid runs: a dead pid frees it at once, and a lock older than PASS_LOCK_STALE_MS is free whatever
- * its pid or host (a reused pid, a host name that changed). A stale lock is taken over by an atomic rename aside: of
- * two takers only one rename succeeds, and a taker whose rename caught a fresh lock (another taker's) puts it back and
- * is busy.
+ * One pass at a time per store (P8 round 1 row 6, round 2 row 2): an owner-checked lease, the `pass_lock` row of
+ * auto_state, holding the owner's pid, host and a token, with its heartbeat in `updated_at`. It is held while the
+ * heartbeat is fresh and, on this host, the pid runs: a dead pid frees it at once, and a lease older than
+ * PASS_LOCK_STALE_MS is free whatever its pid or host (a reused pid, a host name that changed). Taking it reads and
+ * writes the row in one BEGIN IMMEDIATE transaction, so of two takers of one stale lease the second reads the
+ * first's fresh lease and is busy, and a takeover never removes a fresh owner's lease; a beat and a release name the
+ * owner, so a pass whose lease was taken over refreshes and removes nothing.
  */
-export function takePassLock(layout: Pick<DataLayout, 'dbPath'>, o: { nowMs?: number | undefined; beforeTakeover?: (() => void) | undefined } = {}): PassLock | { busy: string } {
-  const dir = autoDir(layout);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = join(dir, 'pass.lock');
-  const token = randomUUID();
-  const record = JSON.stringify({ pid: process.pid, host: hostname(), token, started_at: new Date(o.nowMs ?? Date.now()).toISOString() });
-  const mine = (): boolean => {
-    try {
-      return readFileSync(file, 'utf8') === record;
-    } catch {
-      return false;
-    }
-  };
-  for (let i = 0; i < 3; i++) {
-    try {
-      writeFileSync(file, record, { flag: 'wx', mode: 0o600 });
-      return {
-        beat: () => {
-          if (!mine()) return false;
-          const t = new Date();
-          utimesSync(file, t, t);
-          return true;
-        },
-        release: () => {
-          if (mine()) unlinkQuiet(file);
-        },
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    let seen: { text: string; mtimeMs: number };
-    try {
-      seen = { text: readFileSync(file, 'utf8'), mtimeMs: statSync(file).mtimeMs };
-    } catch {
-      continue; // gone meanwhile: try the exclusive create again
-    }
-    let held: { pid?: unknown; host?: unknown } = {};
-    try {
-      held = JSON.parse(seen.text) as typeof held;
-    } catch {
-      held = {};
-    }
-    const age = (o.nowMs ?? Date.now()) - seen.mtimeMs;
-    const sameHost = held.host === hostname();
-    const live = age < PASS_LOCK_STALE_MS && (sameHost ? typeof held.pid === 'number' && pidAlive(held.pid) : typeof held.host === 'string');
-    if (live) return { busy: `another pass holds ${file} (pid ${String(held.pid)} on ${String(held.host)}, heartbeat ${Math.round(age / 1000)} s ago)` };
-    o.beforeTakeover?.();
-    const aside = `${file}.stale-${token}`;
-    try {
-      renameSync(file, aside);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; // another taker moved it first
-      throw error;
-    }
-    let moved = '';
-    try {
-      moved = readFileSync(aside, 'utf8');
-    } catch {
-      moved = '';
-    }
-    if (moved !== seen.text) {
-      // The rename caught a fresh lock another taker made meanwhile: it goes back, never replaced.
-      try {
-        linkSync(aside, file);
-      } catch {
-        // a third taker made one already: that lock stands, and the one put aside finds itself fenced at its heartbeat
+export function takePassLock(db: DatabaseSync, o: { nowMs?: number | undefined; beforeTake?: (() => void) | undefined } = {}): PassLock | { busy: string } {
+  const at = o.nowMs ?? Date.now();
+  const owner = JSON.stringify({ pid: process.pid, host: hostname(), token: randomUUID(), started_at: new Date(at).toISOString() });
+  let busy: string | null;
+  try {
+    busy = immediate(db, () => {
+      const held = db.prepare('SELECT value, updated_at FROM auto_state WHERE key = ?').get(PASS_LOCK_KEY) as { value: string; updated_at: string } | undefined;
+      if (held !== undefined) {
+        let h: { pid?: unknown; host?: unknown } = {};
+        try {
+          h = JSON.parse(held.value) as typeof h;
+        } catch {
+          h = {};
+        }
+        const age = at - Date.parse(held.updated_at);
+        const sameHost = h.host === hostname();
+        const live = age < PASS_LOCK_STALE_MS && (sameHost ? typeof h.pid === 'number' && pidAlive(h.pid) : typeof h.host === 'string');
+        if (live) return `another pass holds the pass lock (pid ${String(h.pid)} on ${String(h.host)}, heartbeat ${Math.round(age / 1000)} s ago)`;
       }
-      unlinkQuiet(aside);
-      return { busy: `another pass took ${file} over first` };
-    }
-    unlinkQuiet(aside);
+      o.beforeTake?.();
+      db.prepare('INSERT INTO auto_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at').run(
+        PASS_LOCK_KEY,
+        owner,
+        new Date(at).toISOString(),
+      );
+      if (held !== undefined) insertEvent(db, 'auto-pass-lock-taken-over', null, { previous: held.value, previous_heartbeat: held.updated_at });
+      return null;
+    });
+  } catch (error) {
+    if (storeBusy(error)) return { busy: `another pass is taking the pass lock right now (the store stayed busy: ${errText(error)})` };
+    throw error;
   }
-  return { busy: `could not take ${file}` };
+  if (busy !== null) return { busy };
+  return {
+    beat: (nowMs) => {
+      try {
+        return Number(db.prepare('UPDATE auto_state SET updated_at = ? WHERE key = ? AND value = ?').run(new Date(nowMs).toISOString(), PASS_LOCK_KEY, owner).changes) === 1;
+      } catch (error) {
+        if (storeBusy(error)) return true;
+        throw error;
+      }
+    },
+    release: () => {
+      db.prepare('DELETE FROM auto_state WHERE key = ? AND value = ?').run(PASS_LOCK_KEY, owner);
+    },
+  };
 }
 
 /** Consecutive busy passes (auto_state `busy`): counted up on busy, cleared when a pass takes the lock. */
@@ -386,6 +365,8 @@ interface Ctx {
   paused: boolean;
 }
 
+const LOCK_LOST = 'the pass lock was taken over (its heartbeat had gone stale): this pass claims nothing more';
+
 /**
  * Whether the pass may claim another row: not aborted, not paused since it started (`auto pause` stops a running pass
  * at its next round, P8 round 1 row 8), and its lock is still its own (the heartbeat refreshed here, at every claim,
@@ -398,8 +379,8 @@ function mayClaim(ctx: Ctx): boolean {
     ctx.paused = true;
     return false;
   }
-  if (ctx.lock !== null && !ctx.lock.beat()) {
-    ctx.stopped = 'the pass lock was taken over (its heartbeat had gone stale): this pass claims nothing more';
+  if (ctx.lock !== null && !ctx.lock.beat(ctx.nowMs())) {
+    ctx.stopped = LOCK_LOST;
     ctx.report.errors.push(ctx.stopped);
     return false;
   }
@@ -507,7 +488,7 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     stopped: null,
     paused: false,
   };
-  const lock = takePassLock(o.layout, { nowMs: nowMs() });
+  const lock = takePassLock(store.db, { nowMs: nowMs() });
   if ('busy' in lock) {
     // P8 round 1 row 6: a busy pass is recorded as the last pass, and a lock that stays busy is notified.
     report.errors.push(lock.busy);
@@ -520,7 +501,11 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
   busyStreak(store, false, report.started_at);
   ctx.lock = lock;
   const beat = setInterval(() => {
-    if (ctx.stopped === null && !lock.beat()) ctx.stopped = 'the pass lock was taken over (its heartbeat had gone stale): this pass claims nothing more';
+    try {
+      if (ctx.stopped === null && !lock.beat(ctx.nowMs())) ctx.stopped = LOCK_LOST;
+    } catch {
+      // the store failed this once: the next beat tries again
+    }
   }, HEARTBEAT_MS);
   beat.unref();
   try {
