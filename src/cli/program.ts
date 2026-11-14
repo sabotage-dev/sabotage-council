@@ -10,6 +10,7 @@ import type { PrRef } from '../forge/pr.js';
 import { creditCommand, postCommand, roundStartPr } from './pr.js';
 import { autoInstall, autoPause, autoRun, autoRunOnce, autoStatus, rulingCommand, type AutoIo } from './auto.js';
 import { adjudicateCommand, adjudicateHeadlessCommand, defaultStartWorker, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
+import { seatsEdit, seatsList } from './seats.js';
 import { statsCommand } from './stats.js';
 import { parseSince, WindowError } from '../stats/window.js';
 
@@ -37,7 +38,7 @@ export interface ProgramIo {
   claudeBin?: string | undefined;
   /** `adjudicate --headless`: how often the run is polled (tests). Default 25 ms. */
   headlessPollMs?: number | undefined;
-  /** `stats`: tests pin the report's clock. Default: the current time. */
+  /** `stats` and `seats`: tests pin the clock (the report's time, a backup's name). Default: the current time. */
   now?: (() => string) | undefined;
   /** `auto`: tests set pass options the command line does not (the adjudication step, the notifier, caffeinate). */
   auto?: Pick<AutoIo, 'passOverrides' | 'servicePlatform' | 'serviceLoader' | 'plutil'> | undefined;
@@ -372,5 +373,65 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       });
     });
 
+  // ---------- seats (plan 8.4) ----------
+  const seatsIo = { write: io.write, env: io.env, setExitCode: io.setExitCode, adapters: io.adapters, registry: io.registry };
+  const seats = program.command('seats').description('list, add, remove and swap the three seats (plan 8.4); nothing ever swaps a seat by itself');
+  storeOptions(
+    seats
+      .command('list')
+      .description("the configured seats and fallbacks, each one's enforcement label (as doctor shows it: a preflight, no model call) and a one-line scorecard from the store")
+      .option('--no-preflight', 'skip the preflight: no enforcement label')
+      .option('--json', 'as JSON'),
+  ).action(async (opts: { config?: string; db?: string; roots?: string; preflight?: boolean; json?: boolean }) => {
+    await seatsList(seatsIo, pathsOf(opts), { preflight: opts.preflight !== false, json: opts.json === true });
+  });
+  const seatId = (value: string): string => {
+    if (!/^[a-z][a-z0-9_-]{0,15}$/.test(value)) throw new InvalidArgumentError('a seat id is 1-16 characters: a-z, 0-9, "_" or "-", starting with a letter');
+    return value;
+  };
+  const sandboxMode = (value: string): 'read-only' | 'off' => {
+    if (value !== 'read-only' && value !== 'off') throw new InvalidArgumentError('--sandbox is read-only or off (grok only)');
+    return value;
+  };
+  type EditOpts = { config?: string; db?: string; roots?: string; backend: string; model: string; effort?: string; sandbox?: 'read-only' | 'off'; authHome?: string; dryRun?: boolean };
+  const occupantFlags = (cmd: Command): Command =>
+    cmd
+      .requiredOption('--backend <backend>', 'the occupant\'s backend (codex, claude, grok, antigravity, kiro, opencode, cursor, muse)')
+      .requiredOption('--model <model>', "a model id the backend's adapter lists")
+      .option('--effort <effort>', "the effort (default: none, the CLI's own default)")
+      .option('--sandbox <mode>', 'grok only: read-only or off', sandboxMode)
+      .option('--auth-home <dir>', "kiro and grok only: the seat's own login home (absolute)")
+      .option('--dry-run', 'print the diff and write nothing');
+  const occupantOfOpts = (opts: EditOpts) => ({ backend: opts.backend, model: opts.model, effort: opts.effort, sandbox: opts.sandbox, auth_home: opts.authHome });
+  const editNow = (): Date | undefined => (io.now ? new Date(io.now()) : undefined);
+  storeOptions(
+    occupantFlags(
+      seats
+        .command('swap')
+        .argument('<seat>', 'the seat id', seatId)
+        .description("give a seat a new occupant: only that seat's [[seats]] block changes (its id and fallback stay), after a backup and the config loader's checks"),
+    ),
+  ).action(async (seat: string, opts: EditOpts) => {
+    await seatsEdit(seatsIo, pathsOf(opts), { kind: 'swap', seat, occupant: occupantOfOpts(opts) }, { dryRun: opts.dryRun === true, now: editNow() });
+  });
+  storeOptions(
+    occupantFlags(
+      seats
+        .command('add')
+        .argument('<seat>', 'the new seat id', seatId)
+        .description('append a [[seats]] block; seats are fixed at three (D10), so this works only on a file with two'),
+    ),
+  ).action(async (seat: string, opts: EditOpts) => {
+    await seatsEdit(seatsIo, pathsOf(opts), { kind: 'add', seat, occupant: occupantOfOpts(opts) }, { dryRun: opts.dryRun === true, now: editNow() });
+  });
+  storeOptions(
+    seats
+      .command('remove')
+      .argument('<seat>', 'the seat id', seatId)
+      .description('delete a seat\'s [[seats]] block; seats are fixed at three (D10), so this works only on a file with four (use swap to replace an occupant)')
+      .option('--dry-run', 'print the diff and write nothing'),
+  ).action(async (seat: string, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean }) => {
+    await seatsEdit(seatsIo, pathsOf(opts), { kind: 'remove', seat }, { dryRun: opts.dryRun === true, now: editNow() });
+  });
   return program;
 }
