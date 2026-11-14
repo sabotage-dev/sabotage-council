@@ -8,7 +8,7 @@ import { runDoctor } from './doctor.js';
 import type { MirrorSource } from '../forge/mirror.js';
 import type { PrRef } from '../forge/pr.js';
 import { creditCommand, postCommand, roundStartPr } from './pr.js';
-import { adjudicateCommand, defaultStartWorker, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
+import { adjudicateCommand, adjudicateHeadlessCommand, defaultStartWorker, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
 
 export interface ProgramIo {
   /** Command output, one line per call. */
@@ -30,6 +30,10 @@ export interface ProgramIo {
   ghBin?: string | undefined;
   /** pr mode: where the mirror fetches from (tests: a local repository). Default the GitHub https URL. */
   mirrorSource?: ((ref: PrRef) => MirrorSource) | undefined;
+  /** `adjudicate --headless`: the claude binary (tests: a fake replaying stream-json). Default `claude` on PATH. */
+  claudeBin?: string | undefined;
+  /** `adjudicate --headless`: how often the run is polled (tests). Default 25 ms. */
+  headlessPollMs?: number | undefined;
 }
 
 const defaultIo: ProgramIo = {
@@ -184,11 +188,31 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     program
       .command('adjudicate')
       .argument('<id>', 'the round id', roundId)
-      .argument('<file>', 'ADJUDICATION.json (plan 7.3)')
-      .description("validate the main loop's adjudication against the round, store it, and print the effective verdict")
+      .argument('[file]', 'ADJUDICATION.json (plan 7.3); omitted with --headless')
+      .description(
+        "validate the main loop's adjudication against the round, store it, and print the effective verdict; with --headless, run the restricted headless adjudicator (plan 6.4) and store its result",
+      )
       .option('--check', 'validate only and print what would be stored, with every majority override and its proof; store nothing')
+      .option(
+        '--headless',
+        'launch Claude Code itself, read-only but for its output file, to adjudicate the round ([adjudicator] model, effort, max_turns, timeout_minutes); exit 0 adjudicated, 1 failed, 4 held for your ruling',
+      )
       .option('--json', 'print the result as JSON'),
-  ).action((id: number, file: string, opts: { config?: string; db?: string; roots?: string; json?: boolean; check?: boolean }) => {
+  ).action(async (id: number, file: string | undefined, opts: { config?: string; db?: string; roots?: string; json?: boolean; check?: boolean; headless?: boolean }) => {
+    if (opts.headless === true) {
+      if (file !== undefined || opts.check === true) {
+        io.write('error: --headless takes no file and no --check: the engine writes, validates and stores the adjudication itself');
+        io.setExitCode(1);
+        return;
+      }
+      await adjudicateHeadlessCommand({ ...roundIo, claudeBin: io.claudeBin, pollMs: io.headlessPollMs }, pathsOf(opts), id, opts.json === true);
+      return;
+    }
+    if (file === undefined) {
+      io.write('error: give the ADJUDICATION.json file, or --headless');
+      io.setExitCode(1);
+      return;
+    }
     adjudicateCommand(roundIo, pathsOf(opts), id, file, opts.json === true, opts.check === true);
   });
 

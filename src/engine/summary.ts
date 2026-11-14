@@ -78,6 +78,22 @@ export interface RoundSummary {
   earlier_items: Array<{ id: string; severity: string; origin: string; closed_context: boolean; text: string }>;
   legs: LegSummary[];
   adjudication: { verdict: string | null; owed: number | null; approve: boolean | null; needs_ruling: boolean } | null;
+  /**
+   * A round still awaiting adjudication that is held for the user's ruling (plan 3.8; P7: a headless adjudication
+   * rejected twice, or a contaminated headless run). Null when it is not held.
+   */
+  held: { reason: string | null } | null;
+  /** What the headless adjudicator's runs recorded on the round (P7, plan 6.4); null when none ran. */
+  adjudicator: {
+    model_observed: string | null;
+    effort_observed: string | null;
+    tools: unknown;
+    permission_denials: unknown;
+    cost_usd: number | null;
+    turns: number | null;
+    duration_ms: number | null;
+    transcript: string | null;
+  } | null;
   started_at: string;
   finished_at: string | null;
   settled_at: string | null;
@@ -169,6 +185,8 @@ function identitySummary(store: Store, layout: DataLayout, round: RoundRow): Rou
     earlier_items: [],
     legs: [],
     adjudication: null,
+    held: null,
+    adjudicator: null,
     started_at: round.started_at,
     finished_at: round.finished_at,
     settled_at: null,
@@ -232,6 +250,37 @@ function legSummary(roundDir: string, l: LegRow, settled: boolean): LegSummary {
   };
 }
 
+/** Why a round is held: the reason of its last `needs-ruling` event. */
+function heldReason(events: ReadonlyArray<{ kind: string; detail: unknown }>): string | null {
+  const last = [...events].reverse().find((e) => e.kind === 'needs-ruling');
+  const detail = last?.detail;
+  return typeof detail === 'object' && detail !== null && typeof (detail as { reason?: unknown }).reason === 'string' ? (detail as { reason: string }).reason : null;
+}
+
+function parseJson(text: string | null): unknown {
+  if (text === null) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** The headless adjudicator's record on the round (plan 6.4), or null when no headless run touched it. */
+function adjudicatorOf(round: RoundRow): RoundSummary['adjudicator'] {
+  if (round.adjudicator_model_observed === null && round.adjudicator_ms === null && round.adjudicator_tools_json === null) return null;
+  return {
+    model_observed: round.adjudicator_model_observed,
+    effort_observed: round.adjudicator_effort_observed,
+    tools: parseJson(round.adjudicator_tools_json),
+    permission_denials: parseJson(round.adjudicator_denials_json),
+    cost_usd: round.adjudicator_cost_usd,
+    turns: round.adjudicator_turns,
+    duration_ms: round.adjudicator_ms,
+    transcript: round.adjudicator_record_path,
+  };
+}
+
 export function quorumNote(label: QuorumLabel, ratified: number): string {
   if (label === 'council') return `${ratified} ratified legs: a council round`;
   if (label === 'solo') return 'SOLO REVIEW: one ratified leg. This is not a council verdict, and it never approves (plan 3.1 step 8).';
@@ -292,6 +341,8 @@ export function roundSummary(store: Store, layout: DataLayout, roundId: number):
       round.status === 'adjudicated' || round.status === 'superseded'
         ? { verdict: round.verdict, owed: round.owed_count, approve: round.approve === null ? null : round.approve === 1, needs_ruling: round.needs_ruling === 1 }
         : null,
+    held: round.status === 'awaiting-adjudication' && round.needs_ruling === 1 ? { reason: heldReason(events) } : null,
+    adjudicator: adjudicatorOf(round),
     started_at: round.started_at,
     finished_at: round.finished_at,
     settled_at: settled,

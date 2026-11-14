@@ -46,7 +46,7 @@ function tables(store: Store): string[] {
 }
 
 /** The shipped migrations, by file name. */
-const SHIPPED = ['001_initial.sql', '002_pr_rounds.sql', '003_post_guards.sql'];
+const SHIPPED = ['001_initial.sql', '002_pr_rounds.sql', '003_post_guards.sql', '004_adjudicator_record.sql'];
 const LATEST = SHIPPED.length;
 
 /** A migrations dir holding the shipped migrations plus extra files. */
@@ -62,13 +62,14 @@ describe('store: migrations', () => {
   it('migrates a fresh database: every table of plan 8.1, every shipped version, foreign keys on', () => {
     const store = openTemp('nested/dirs/council.db');
     expect(existsSync(join(dir, 'nested/dirs/council.db'))).toBe(true);
-    expect(store.migration).toEqual({ applied: [1, 2, 3], version: LATEST });
+    expect(store.migration).toEqual({ applied: [1, 2, 3, 4], version: LATEST });
     expect(tables(store)).toEqual([...CORE_TABLES, 'schema_version'].sort());
     const versions = store.db.prepare('SELECT version, name FROM schema_version').all();
     expect(versions.map((r) => ({ ...r }))).toEqual([
       { version: 1, name: 'initial' },
       { version: 2, name: 'pr_rounds' },
       { version: 3, name: 'post_guards' },
+      { version: 4, name: 'adjudicator_record' },
     ]);
     expect({ ...store.db.prepare('PRAGMA foreign_keys').get() }).toEqual({ foreign_keys: 1 });
   });
@@ -89,15 +90,15 @@ describe('store: migrations', () => {
   it('applies only the new migration to an existing store', () => {
     openTemp().close();
     open.pop();
-    const migrations = migrationsWith({ '004_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
+    const migrations = migrationsWith({ '005_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
     const store = openTemp('council.db', migrations);
-    expect(store.migration).toEqual({ applied: [4], version: 4 });
+    expect(store.migration).toEqual({ applied: [5], version: 5 });
   });
 
   it('rolls back a failing migration and leaves the store at its old version', () => {
     openTemp().close();
     open.pop();
-    const migrations = migrationsWith({ '004_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' });
+    const migrations = migrationsWith({ '005_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' });
     expect(() => openTemp('council.db', migrations)).toThrow();
     const store = openTemp();
     expect(store.migration).toEqual({ applied: [], version: LATEST });
@@ -106,7 +107,7 @@ describe('store: migrations', () => {
 
   it('leaves the connection outside a transaction after a failed migration', () => {
     const store = openTemp();
-    const broken = readMigrations(migrationsWith({ '004_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' }));
+    const broken = readMigrations(migrationsWith({ '005_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' }));
     expect(() => migrate(store.db, broken)).toThrow();
     expect(tables(store)).not.toContain('half');
     // BEGIN fails inside an open transaction, so this proves the failed migration was rolled back.
@@ -123,15 +124,15 @@ describe('store: migrations', () => {
   });
 
   it('refuses a store written by a newer build', () => {
-    const migrations = migrationsWith({ '004_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
+    const migrations = migrationsWith({ '005_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
     openTemp('council.db', migrations).close();
     open.pop();
-    expect(() => openTemp()).toThrow(/schema version 4, which this build does not know/);
+    expect(() => openTemp()).toThrow(/schema version 5, which this build does not know/);
   });
 
   it('rejects badly named or non-contiguous migration files', () => {
     expect(() => readMigrations(migrationsWith({ 'two.sql': 'SELECT 1;' }))).toThrow(/not named NNN_name\.sql/);
-    expect(() => readMigrations(migrationsWith({ '005_gap.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
+    expect(() => readMigrations(migrationsWith({ '006_gap.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
     expect(() => readMigrations(migrationsWith({ '001_again.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
   });
 });
@@ -177,6 +178,8 @@ describe('store: schema', () => {
         posted_body_sha256: 'e'.repeat(64),
         post_owner: '{"host":"h","pid":1,"token":"t"}',
         post_claimed_at: '2026-11-12T10:20:30.000Z',
+        adjudicator_effort_observed: 'high',
+        adjudicator_record_path: '/projects/slug/00000000-0000-4000-8000-000000000001.jsonl',
       },
     ],
     [
@@ -388,7 +391,7 @@ describe('store: migration 002 (P6 pr rounds)', () => {
     open.pop();
 
     const store = openTemp();
-    expect(store.migration).toEqual({ applied: [2, 3], version: LATEST });
+    expect(store.migration).toEqual({ applied: [2, 3, 4], version: LATEST });
     const before = store.db.prepare('SELECT kind, marker, dry_run, posted_commit_id, posted_at, posted_body_sha256 FROM rounds WHERE id = 1').get();
     expect({ ...before }).toEqual({ kind: 'council', marker: null, dry_run: 0, posted_commit_id: null, posted_at: null, posted_body_sha256: null });
 
@@ -467,7 +470,7 @@ describe('store: migration 003 (P6 round 1: post claims, pending guards, canonic
     open.pop();
 
     const store = openTemp();
-    expect(store.migration).toEqual({ applied: [3], version: LATEST });
+    expect(store.migration).toEqual({ applied: [3, 4], version: LATEST });
     const rows = (sql: string): unknown[] => store.db.prepare(sql).all().map((r) => ({ ...r }));
     expect(rows('SELECT id, kind, repo, number, branch FROM targets ORDER BY id')).toEqual([
       { id: 1, kind: 'pr', repo: 'github.com/org/repo', number: 5, branch: null },

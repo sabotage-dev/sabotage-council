@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SeatAdapters } from '../adapters/index.js';
-import { adjudicate, AdjudicateError } from '../adjudicate/index.js';
+import { adjudicate, AdjudicateError, adjudicateHeadless, HeadlessError, type HeadlessResult } from '../adjudicate/index.js';
 import { loadConfig, type AdapterRegistry, type ConfigIssue } from '../config/index.js';
 import {
   failRound,
@@ -263,6 +263,13 @@ export function renderSummary(s: RoundSummary): string[] {
     const a = s.adjudication;
     out.push(`adjudication: verdict ${String(a.verdict)}, owed ${String(a.owed)}, approve ${a.approve === true ? 'yes' : 'no'}, needs ruling ${a.needs_ruling ? 'yes' : 'no'}`);
   }
+  if (s.held !== null) out.push(`HELD for your ruling (${s.held.reason ?? 'no reason recorded'}): adjudicate it yourself`);
+  if (s.adjudicator !== null) {
+    const h = s.adjudicator;
+    out.push(
+      `headless adjudicator: model ${String(h.model_observed)}, effort ${String(h.effort_observed)}, $${(h.cost_usd ?? 0).toFixed(4)}, ${Math.round((h.duration_ms ?? 0) / 1000)} s, transcript ${String(h.transcript)}`,
+    );
+  }
   out.push(`cost $${s.cost.usd.toFixed(4)}${s.cost.credits > 0 ? `, ${s.cost.credits} credits` : ''}; wall ${s.wall_ms === null ? 'running' : `${Math.round(s.wall_ms / 1000)} s`}`);
   out.push(`round dir ${s.round_dir}`);
   return out;
@@ -326,5 +333,129 @@ export function adjudicateCommand(io: RoundIo, paths: StorePaths, roundId: numbe
   } catch (error) {
     io.write(`error: ${error instanceof AdjudicateError || error instanceof Error ? error.message : String(error)}`);
     io.setExitCode(1);
+  }
+}
+
+/** Exit code of `adjudicate --headless` when the round is held for the user's ruling (plan 3.8). */
+export const EXIT_NEEDS_RULING = 4;
+
+export interface HeadlessIo extends RoundIo {
+  claudeBin?: string | undefined;
+  pollMs?: number | undefined;
+}
+
+function headlessJson(r: HeadlessResult): Record<string, unknown> {
+  const e = r.stored?.outcome.ok === true ? r.stored.outcome : null;
+  return {
+    round_id: r.roundId,
+    outcome: r.outcome,
+    reason: r.reason,
+    run_dir: r.runDir,
+    bare: r.bare,
+    preflight: r.preflight ? { ok: r.preflight.ok, cli_version: r.preflight.cliVersion, reason: r.preflight.reason } : null,
+    launches: r.launches.map((l) => ({
+      launch: l.n,
+      dir: l.dir,
+      status: l.ratification.status,
+      failure_class: l.ratification.failureClass,
+      failed_checks: l.ratification.checks.filter((c) => !c.ok).map((c) => ({ name: c.name, detail: c.detail })),
+      init_gate: l.initGate,
+      model_observed: l.ratification.modelObserved,
+      effort_observed: l.ratification.effortObserved,
+      tools_offered: l.ratification.toolsOffered,
+      tools_used: l.ratification.toolsUsed,
+      permission_denials: l.ratification.permissionDenials,
+      cost_usd: l.ratification.costUsd,
+      duration_ms: l.exit.durationMs,
+      transcript: l.ratification.recordPath,
+      validation: l.validation,
+    })),
+    adjudication: e
+      ? {
+          verdict: e.effective.verdict,
+          verdict_given: e.adjudication.verdict,
+          owed: e.effective.owed,
+          approve: e.adjudication.approve,
+          needs_ruling: e.adjudication.needs_ruling,
+          legs_clear: e.effective.legsClear,
+          leg_verdicts: e.effective.legVerdicts,
+        }
+      : null,
+  };
+}
+
+async function withStoreAsync<T>(paths: StorePaths, fn: (store: Store) => Promise<T>): Promise<T> {
+  const store = openStore(paths.dbPath);
+  try {
+    return await fn(store);
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * `adjudicate <id> --headless` (P7, plan 6.4, 7.2): runs the restricted headless adjudicator on a settled round and
+ * stores its result through the same store as `adjudicate <id> <file>`. The model and effort are `[adjudicator]`
+ * in the config. Exit 0 adjudicated, 1 failed or refused, 4 held for the user's ruling.
+ */
+export async function adjudicateHeadlessCommand(io: HeadlessIo, paths: StorePaths, roundId: number, json: boolean): Promise<void> {
+  const config = await loadConfig(paths.configPath, { registry: io.registry ?? registryOf(io.adapters) });
+  // --json prints one document: the config's warnings go only to the text output.
+  if (!json) for (const w of config.warnings) io.write(`warn  ${formatIssue(w)}`);
+  if (!config.ok) {
+    io.write(`config ${paths.configPath} has ${config.errors.length} error(s):`);
+    for (const e of config.errors) io.write(`  ${formatIssue(e)}`);
+    io.setExitCode(1);
+    return;
+  }
+  const a = config.config.adjudicator;
+  const model = a.model;
+  if (model === undefined) {
+    io.write(`error: [adjudicator] model is not set in ${paths.configPath}: the headless adjudicator needs a claude model (plan 5.2 example: claude-opus-5-5)`);
+    io.setExitCode(1);
+    return;
+  }
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  process.once('SIGTERM', abort);
+  process.once('SIGINT', abort);
+  try {
+    const r = await withStoreAsync(paths, (store) =>
+      adjudicateHeadless(store, layoutOf(paths), roundId, {
+        settings: { model, effort: a.effort, maxTurns: a.max_turns, timeoutMs: a.timeout_minutes * 60_000 },
+        bin: io.claudeBin,
+        env: io.env,
+        pollMs: io.pollMs,
+        signal: controller.signal,
+      }),
+    );
+    if (json) io.write(JSON.stringify(headlessJson(r), null, 2));
+    else {
+      io.write(`round ${roundId}: ${r.outcome}: ${r.reason}`);
+      for (const l of r.launches) {
+        const x = l.ratification;
+        const cost = x.costUsd !== null ? `, $${x.costUsd.toFixed(4)}` : '';
+        io.write(
+          `  launch ${l.n}: ${x.status}${x.failureClass !== null ? ` (${x.failureClass})` : ''}, model ${String(x.modelObserved)}, effort ${String(x.effortObserved)}, tools ${x.toolsUsed.join(', ') || 'none'}, ${x.permissionDenials.length} denial(s)${cost}, ${Math.round(l.exit.durationMs / 1000)} s`,
+        );
+        if (l.initGate !== null) io.write(`        init gate: ${l.initGate}`);
+        for (const c of x.checks.filter((k) => !k.ok)) io.write(`        failed ${c.name}: ${oneLine(c.detail, 160)}`);
+        for (const e of l.validation?.errors ?? []) io.write(`        rejected ${oneLine(e, 200)}`);
+        if (x.recordPath !== null) io.write(`        transcript ${x.recordPath}`);
+      }
+      const e = r.stored?.outcome.ok === true ? r.stored.outcome : null;
+      if (e) {
+        io.write(`stored: round ${roundId} verdict ${e.effective.verdict}, owed ${e.effective.owed}, approve ${e.adjudication.approve ? 'yes' : 'no'}, needs ruling ${e.adjudication.needs_ruling ? 'yes' : 'no'}`);
+        if (Object.keys(e.effective.legVerdicts).length < 2) io.write('SOLO REVIEW: one ratified leg; this is not a council verdict');
+      }
+      io.write(`run dir ${r.runDir}`);
+    }
+    io.setExitCode(r.outcome === 'adjudicated' ? 0 : r.outcome === 'needs-ruling' ? EXIT_NEEDS_RULING : 1);
+  } catch (error) {
+    io.write(`error: ${error instanceof HeadlessError || error instanceof AdjudicateError || error instanceof Error ? error.message : String(error)}`);
+    io.setExitCode(1);
+  } finally {
+    process.removeListener('SIGTERM', abort);
+    process.removeListener('SIGINT', abort);
   }
 }
