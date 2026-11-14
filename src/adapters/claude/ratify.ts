@@ -103,21 +103,28 @@ function check(checks: RatificationCheck[], name: string, ok: boolean, detail: s
   checks.push({ name, ok, detail });
 }
 
+function firstLineOf(text: string): string {
+  return text.split(/\r?\n/).find((line) => line.trim() !== '')?.trim() ?? '';
+}
+
 /**
- * The answer: the whole reply, every main-thread assistant text block in order. The `result` line holds only the
- * final turn's text, so a NONCE line the leg wrote first (as the brief asks), before its first tool call, was not in
- * it, and a correct leg failed as `empty` (the first live PR round on the sandbox, P6). With no text block, the
- * `result` line's text on success.
+ * The answer: the final turn's text (the `result` line on success, else the last main-thread text block). Seats write
+ * the NONCE line in one of two places, both seen live in P6: as the first line of the final turn, or as the leg's
+ * first message, before its first tool call, with the review in the final turn. In the second shape the final turn
+ * alone has no NONCE line and a correct leg failed as `empty`. So when the final turn does not start with a NONCE
+ * line and the leg's first main-thread text block does, that block's first line is put before the final turn. Only
+ * that one line is taken: text from earlier turns (drafts, quoted fences, interim verdicts) never reaches the parsers.
  */
 export function claudeAnswer(stream: ClaudeStream): string | null {
   const texts = stream.texts.filter((t) => t.trim() !== '');
-  if (texts.length > 0) return texts.join('\n\n');
   const r = stream.result;
-  if (r && r['is_error'] !== true) {
-    const text = str(r['result']);
-    if (text !== null && text.trim() !== '') return text;
-  }
-  return null;
+  const resultText = r && r['is_error'] !== true ? str(r['result']) : null;
+  const final = resultText !== null && resultText.trim() !== '' ? resultText : (texts.at(-1) ?? null);
+  if (final === null) return null;
+  if (firstLineOf(final).startsWith('NONCE:')) return final;
+  const first = texts[0];
+  if (first !== undefined && first !== final && firstLineOf(first).startsWith('NONCE:')) return `${firstLineOf(first)}\n\n${final}`;
+  return final;
 }
 
 const READ_SET: readonly string[] = CLAUDE_READ_TOOLS;

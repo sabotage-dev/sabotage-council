@@ -471,7 +471,7 @@ describe('claude end to end, through a fake CLI', () => {
   });
 });
 
-describe('the answer is the whole reply (P6 sandbox round)', () => {
+describe('the answer: the final turn, with a NONCE line written first (P6 sandbox round)', () => {
   const nonce = '0123456789ab';
   const text = (t: string, parent: string | null = null): unknown => ({
     type: 'assistant',
@@ -483,20 +483,42 @@ describe('the answer is the whole reply (P6 sandbox round)', () => {
     parent_tool_use_id: null,
     message: { id: 'msg_tool', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'a.txt' } }] },
   });
-
-  it('keeps a NONCE line written before the first tool call, which the result line alone drops', () => {
+  const result = (t: string): unknown => ({ type: 'result', subtype: 'success', is_error: false, result: t });
+  const answerOf = (rows: unknown[]): string | null => {
     const path = join(scratch('sc-claude-answer-'), 'stream.jsonl');
-    const review = 'F1 is a real defect.\n\nVERDICT: NEEDS-WORK';
-    writeJsonl(path, [text(`NONCE: ${nonce}`), tool(), text(review), { type: 'result', subtype: 'success', is_error: false, result: review }]);
-    const answer = claudeAnswer(readClaudeStream(path));
-    expect(answer?.split('\n')[0]).toBe(`NONCE: ${nonce}`);
+    writeJsonl(path, rows);
+    return claudeAnswer(readClaudeStream(path));
+  };
+  const review = 'F1 is a real defect.\n\nVERDICT: NEEDS-WORK';
+
+  it('puts a NONCE line the leg wrote as its first message before the final turn', () => {
+    const answer = answerOf([text(`NONCE: ${nonce}\n\nReading the files.`), tool(), text(review), result(review)]);
+    expect(answer).toBe(`NONCE: ${nonce}\n\n${review}`);
     expect(nonceOnFirstLine(answer, nonce).ok).toBe(true);
-    expect(answer?.trimEnd().endsWith('VERDICT: NEEDS-WORK')).toBe(true);
   });
 
-  it('takes no text from a sub-agent row, and falls back to the result line when there is no text block', () => {
-    const path = join(scratch('sc-claude-answer-'), 'stream.jsonl');
-    writeJsonl(path, [text(`NONCE: ${nonce}`, 'toolu_sub'), { type: 'result', subtype: 'success', is_error: false, result: `NONCE: ${nonce}\nonly the result` }]);
-    expect(claudeAnswer(readClaudeStream(path))).toBe(`NONCE: ${nonce}\nonly the result`);
+  it('takes the final turn as it is when it starts with the NONCE line, after narration in an earlier turn', () => {
+    const final = `NONCE: ${nonce}\n\n${review}`;
+    const answer = answerOf([text('Checking the diff first.'), tool(), text(final), result(final)]);
+    expect(answer).toBe(final);
+    expect(nonceOnFirstLine(answer, nonce).ok).toBe(true);
+  });
+
+  it('never takes text from earlier turns: a draft verdict and a quoted findings fence stay out', () => {
+    const draft = 'Draft:\n```findings\nF9 | LOW | x.ts:1 | draft\n```\nVERDICT: SHIP';
+    const answer = answerOf([text(`NONCE: ${nonce}`), tool(), text(draft), tool(), text(review), result(review)]);
+    expect(answer).toBe(`NONCE: ${nonce}\n\n${review}`);
+    expect(answer).not.toContain('draft');
+  });
+
+  it('fails the nonce when neither the first message nor the final turn starts with it', () => {
+    const answer = answerOf([text('Reading.'), tool(), text(`My review for ${nonce}.\n\nVERDICT: SHIP`), result(`My review for ${nonce}.\n\nVERDICT: SHIP`)]);
+    expect(nonceOnFirstLine(answer, nonce).ok).toBe(false);
+  });
+
+  it('takes no NONCE line from a sub-agent row, and uses the result line', () => {
+    const answer = answerOf([text(`NONCE: ${nonce}`, 'toolu_sub'), tool(), text(review), result(review)]);
+    expect(answer).toBe(review);
+    expect(nonceOnFirstLine(answer, nonce).ok).toBe(false);
   });
 });
