@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { CLAIM_STALE_MS, claimRow } from '../src/auto/ledger.js';
 import { BUSY_NOTIFY_AFTER, lastReport, PASS_LOCK_KEY, PASS_LOCK_STALE_MS, PREPARER_TRUST_MS, recordsSha, takePassLock } from '../src/auto/pass.js';
 import { API, FAKE_GH, type Routes } from './helpers/github.js';
-import { CLAIM_STALE_MS as POST_CLAIM_STALE_MS, claimPost, postRound, type PostOptions, type PostResult } from '../src/engine/post.js';
+import { CLAIM_STALE_MS as POST_CLAIM_STALE_MS, claimPost, holdPost, postRound, releasePost, type PostOptions, type PostResult } from '../src/engine/post.js';
 import { ghApi } from '../src/forge/github.js';
 import { openStore } from '../src/store/index.js';
 import { mkdirSync } from 'node:fs';
@@ -400,6 +400,38 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     await u.pass();
     expect(row(u)).toMatchObject({ state: 'posted', event: 'REQUEST_CHANGES' });
     expect(body(u).body).toContain('CI: red (ubuntu-latest / Node 22).');
+  });
+
+  it('a post claim held across calls refuses every call once another post took it over, a reconciliation included, and its release leaves the new holder alone (P8 round 2 row 1)', async () => {
+    const w = await world();
+    w.routes[`POST ${PULL}/reviews`] = { fail: 'gh: connection reset' };
+    w.sync();
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'posting' });
+    const roundId = row(w)['round_id'] as number;
+    const db = w.h.store.db;
+    const held = holdPost(db, roundId);
+    if ('why' in held) throw new Error(held.why);
+    const opts = { config: w.config, layout: w.h.layout, api: ghApi({ bin: FAKE_GH, env: w.gh.env }), roundId, mode: 'post' as const, held };
+    // Under the claim it holds, a reconciliation runs: nothing of the post landed.
+    expect(postRound(w.h.store, { ...opts, reconcileOnly: true })).toMatchObject({ outcome: 'refused', notLanded: true, busy: false });
+    // Held over an hour, the claim is taken over by another post: every later call under the old claim is refused as busy.
+    db.prepare('UPDATE rounds SET post_claimed_at = ? WHERE id = ?').run(new Date(Date.now() - POST_CLAIM_STALE_MS - 60_000).toISOString(), roundId);
+    const other = openStore(w.h.layout.dbPath);
+    let taker = '';
+    try {
+      const c = claimPost(other.db, roundId);
+      if ('why' in c) throw new Error(c.why);
+      taker = c.owner;
+    } finally {
+      other.close();
+    }
+    const reconcile = postRound(w.h.store, { ...opts, reconcileOnly: true });
+    expect(reconcile).toMatchObject({ outcome: 'refused', busy: true, notLanded: false, problems: [expect.stringMatching(/^another post of round \d+ took over the post claim this one held/)] });
+    expect(postRound(w.h.store, { ...opts, expect: row(w)['review_sha256'] as string })).toMatchObject({ outcome: 'refused', busy: true });
+    releasePost(db, held);
+    expect(getRound(db, roundId)?.post_owner).toBe(taker);
+    expect(posts(w)).toBe(1);
   });
 
   it('one review per head across stores: a review with this round marker that lands before the POST is never doubled (P8 round 1 row 2)', async () => {
