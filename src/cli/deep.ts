@@ -16,7 +16,7 @@ import type { Preflight } from '../adapters/types.js';
  *     root and listed nothing from it, and no planted code ran. The only passing verdict. It proves what that dump
  *     covers and nothing about a model turn, which ratification checks per leg.
  *   - canary: no load dump, but the backend's label is `strong` from its own recorded promotion canary on this
- *     version (claude 2.1.322 and 2.1.323): isolation is proven by that canary, not by `--deep`.
+ *     version (claude 2.1.322, 2.1.323 and 2.1.325): isolation is proven by that canary, not by `--deep`.
  *   - refused: the preflight refused the planted root, by a filename scan or another check that is not a load dump.
  *     The leg would never start there, but the backend's own loading is not proven by `--deep`.
  *   - unproven: the preflight passed on the planted root and the backend has no load dump.

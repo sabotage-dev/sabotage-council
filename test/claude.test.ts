@@ -315,6 +315,8 @@ describe('claude launch', () => {
     expect(CLAUDE_DECLARED['2.1.322']).toMatchObject({ settingSources: '', dropsPluginTools: true, enforcement: 'strong' });
     // 2.1.323: the same measured flags and built-in list, and its own canary passed (round 1 row 11).
     expect(CLAUDE_DECLARED['2.1.323']).toEqual(CLAUDE_DECLARED['2.1.322']);
+    // 2.1.325: the same measured flags and built-in list, and its own canary passed (P6, after a live round refused it).
+    expect(CLAUDE_DECLARED['2.1.325']).toEqual(CLAUDE_DECLARED['2.1.322']);
     expect(createClaudeAdapter().enforcement('2.1.322')).toBe('strong');
     expect(createClaudeAdapter().enforcement('2.2.0')).toBe('pending');
   });

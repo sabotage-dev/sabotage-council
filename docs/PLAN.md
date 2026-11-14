@@ -803,7 +803,7 @@ root if anything runs it. A backend fails (`loads`) when a marker appears during
 load dump (codex `prompt-input`, grok `inspect`, opencode `debug config`, a relative path resolved against the
 root) lists a planted file: exit 1. A backend passes as `isolated` (its load dump ran on the planted root and
 listed nothing from it) or, with no load dump, as proven by its own recorded promotion canary when its label is
-`strong` on that version (claude 2.1.322 and 2.1.323). A refusal by a filename scan (`refused`), a pass with no
+`strong` on that version (claude 2.1.322, 2.1.323 and 2.1.325). A refusal by a filename scan (`refused`), a pass with no
 load dump (`unproven`) and a preflight that fails on a clean root too (`unchecked`) print "unproven by --deep":
 exit 2 when nothing loaded. Exit 0 only when every backend is proven.
 
@@ -1017,7 +1017,7 @@ It warns (and `doctor` repeats the warning) when:
 
 | Label | Meaning | Backends now |
 |---|---|---|
-| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | claude 2.1.322 and 2.1.323 with the P2 leg flags (`--tools`, `--restricted`, `--setting-sources ""`): the promotion canary on each version, with a planted user allow rule, had every outside read (by path, through a symlink, Glob and Grep) denied before execution, and write, command and fetch tools not offered. grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
+| `strong` | No tool beyond file reads is offered, and reads are confined to the root. Both are proven before execution: a preflight refusal, or the client denying a request before it runs. Catching a violation after it ran never earns `strong`. | claude 2.1.322, 2.1.323 and 2.1.325 with the P2 leg flags (`--tools`, `--restricted`, `--setting-sources ""`): the promotion canary on each version, with a planted user allow rule, had every outside read (by path, through a symlink, Glob and Grep) denied before execution, and write, command and fetch tools not offered. grok only after a measured configuration proves reads cannot leave the root before execution (the read audit alone is detection) |
 | `sandboxed-exec` | Commands run inside a write- and network-denied sandbox, but reads are not confined to the root. | codex |
 | `pending` | The mechanism exists but its denial has not been measured (14). | claude on an untested version; antigravity 1.5.7 and kiro 3.2.1 (their P3 canaries ran and did not prove every action, 14); opencode 2.2.7 (its P4 canary ran; the read through a symlink inside the root ran, 14); grok with its sandbox running and no MCP server started, until a pre-execution read boundary is measured (N1). Each backend leaves `pending` only through its own canary, including a planted user allow rule |
 | `weak` | Enforcement depends on config the agent may not honour, or is unmeasured. | cursor (no live run in v1, D14); muse (no logged-in run in P4); grok with `--sandbox off` (a leg that starts an MCP server fails outright, owner ruling) |
