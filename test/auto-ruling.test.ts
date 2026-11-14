@@ -364,12 +364,15 @@ describe('caffeinate (macOS: rounds run under caffeinate -i)', { timeout: 120_00
     const [pid, ...args] = readFileSync(log, 'utf8').trim().split(' ');
     expect(args).toEqual(['-i', '-w', String(process.pid)]);
     expect(alive).toBe(true);
-    await new Promise((r) => setTimeout(r, 200));
+    // Stopped with the round: gone once reaped (polled, since a loaded machine reaps late).
     let after = true;
-    try {
-      process.kill(Number(pid), 0);
-    } catch {
-      after = false;
+    for (let i = 0; i < 100 && after; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      try {
+        process.kill(Number(pid), 0);
+      } catch {
+        after = false;
+      }
     }
     if (after) process.kill(Number(pid), 'SIGKILL');
     expect(after).toBe(false);
