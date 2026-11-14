@@ -18,6 +18,7 @@ import { preparedDetail } from './facts.js';
 import { autoOf, markerConfig, participantsOf } from './pr.js';
 import { roundDirOf, type DataLayout } from './prepare.js';
 import { getEvents, getLegs, getRound, insertEvent, now, sha256, type RoundRow } from './records.js';
+import { applyRulings, archivedReviews, latestRelease, sinceRelease } from './ruling.js';
 
 /*
  * `sabotage-council post <round> --dry-run | --post` (plan 7.1 step 5, 3.7, 3.10): the post step after adjudication.
@@ -59,6 +60,11 @@ export interface PostOptions {
    * records it (a crash there, when it throws).
    */
   hooks?: { afterClaim?: (() => void) | undefined; afterPost?: (() => void) | undefined } | undefined;
+  /**
+   * With `--post`: only reconcile an interrupted post (plan 9.4 resume, P8): adopt a review of this round that landed,
+   * and run the guards it owes; if none landed, post nothing and say so (outcome `refused`, `notLanded`).
+   */
+  reconcileOnly?: boolean | undefined;
 }
 
 export type PostOutcome = 'rendered' | 'posted' | 'superseded' | 'refused' | 'already-posted';
@@ -96,6 +102,10 @@ export interface PostResult {
   ci: CiState | null;
   /** The command that comes next, when there is one: a rendered dry run names the `--post --expect` that sends it. */
   next: string | null;
+  /** The event-mapping decision carries the "Ruling needed" section (plan 3.8): the round holds. */
+  ruling: boolean;
+  /** A reconcile-only call found no landed review of this round (P8 resume). */
+  notLanded: boolean;
 }
 
 /** `owner/name` against `auto.repos_hold` patterns (`*` matches any run of characters), case-insensitively. */
@@ -145,7 +155,7 @@ export function staleChangeRequests(reviews: readonly Review[], login: string, r
 }
 
 function base(roundId: number, mode: PostOptions['mode'], commitId: string): PostResult {
-  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, reviewSha256: null, problems: [], reviewId: null, guards: [], ci: null, next: null };
+  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, reviewSha256: null, problems: [], reviewId: null, guards: [], ci: null, next: null, ruling: false, notLanded: false };
 }
 
 /**
@@ -239,8 +249,9 @@ interface Intent {
   reviews_seen?: number[];
 }
 
+/** The latest intent since the round's latest release (P8: a release posts afresh; the ruling COMMENT's is history). */
 function latestIntent(db: DatabaseSync, roundId: number): Intent | undefined {
-  return getEvents(db, roundId)
+  return sinceRelease(getEvents(db, roundId))
     .filter((e) => e.kind === 'posting')
     .at(-1)?.detail as Intent | undefined;
 }
@@ -263,9 +274,12 @@ function bodyMatches(landed: string, intent: Intent): boolean {
  */
 function adoptable(db: DatabaseSync, round: RoundRow, pr: PrSnapshot, login: string, intent: Intent): Review[] {
   const storedElsewhere = db.prepare('SELECT 1 FROM rounds WHERE review_id = ? AND id <> ?');
+  // A ruling COMMENT the round posted before its release (P8) is history, never the release's post.
+  const archived = archivedReviews(db, round.id);
   return pr.reviews.filter(
     (r) =>
       r.state !== 'PENDING' &&
+      !archived.has(r.id) &&
       sameLogin(r.login, login) &&
       firstLine(r.body) === round.marker &&
       (intent.event === undefined || (r.state === 'DISMISSED' ? intent.event !== 'COMMENT' : EVENT_OF_STATE[r.state] === intent.event)) &&
@@ -460,7 +474,7 @@ function unadjudicatedRequests(store: Store, round: RoundRow, pr: PrSnapshot, cf
 
 /** The renders the round's dry runs printed, oldest first: what the user can have seen and approved. */
 function dryRuns(db: DatabaseSync, roundId: number): Array<{ event: string; sha: string; review: string | null }> {
-  return getEvents(db, roundId)
+  return sinceRelease(getEvents(db, roundId))
     .filter((e) => e.kind === 'post-dry-run')
     .map((e) => e.detail as { outcome?: string; event?: string; body_sha256?: string; review_sha256?: string } | null)
     .filter((d) => d?.outcome === 'rendered' && typeof d.event === 'string' && typeof d.body_sha256 === 'string')
@@ -489,6 +503,19 @@ function notApproved(db: DatabaseSync, roundId: number, event: string, sha: stri
   return null;
 }
 
+/* ---------- opt-in tests (P8, plan 6.6) ---------- */
+
+/** What the round's opt-in tests say for the event mapping (3.7 row 5: tests allow): only a PASS allows. */
+export function testsFact(db: DatabaseSync, roundId: number): EventFacts['tests'] {
+  const e = getEvents(db, roundId)
+    .filter((x) => x.kind === 'auto-tests')
+    .at(-1)?.detail as { result?: string | null; note?: string; gate?: string | null } | undefined;
+  if (e === undefined) return { state: 'held', why: 'no opt-in test ran for this round (they run in auto mode only)' };
+  if (e.result === 'PASS') return { state: 'pass', why: e.note ?? 'PASS' };
+  if (e.result === null || e.result === undefined) return { state: 'held', why: `not run: ${e.gate ?? 'unknown'}` };
+  return { state: 'failed', why: `${e.result}: ${e.note ?? ''}`.trim() };
+}
+
 /* ---------- the post step ---------- */
 
 type Refuse = (why: string) => PostResult;
@@ -508,6 +535,8 @@ export function postRound(store: Store, o: PostOptions): PostResult {
   if (round.status !== 'adjudicated' && round.status !== 'identity') return refuse(`round ${round.id} is ${round.status}: a council round posts only once it is adjudicated`);
   if (o.mode === 'post' && round.dry_run === 1) return refuse(`round ${round.id} was started with --dry-run: it can render its post but never post`);
   if (round.marker === null) return refuse(`round ${round.id} has no marker`);
+  // P8, plan 3.8: a round released with skip posts nothing more.
+  if (latestRelease(db, round.id)?.decision === 'skip') return refuse(`round ${round.id} was released with skip by a ruling: nothing more posts`);
   if (o.mode === 'dry-run') return step(store, o, round, result, refuse, null);
 
   // Row 9: one POST per round. The claim is taken before any network call; the round is read again under it.
@@ -586,6 +615,13 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
       return result;
     }
   }
+  if (o.reconcileOnly === true) {
+    // P8 resume: nothing of this round landed, so nothing is adopted, and a reconcile-only call posts nothing.
+    result.notLanded = true;
+    result.problems.push(`no review of round ${round.id} landed on GitHub${intent === undefined ? ' (no post of it began)' : ''}`);
+    insertEvent(db, 'post-reconcile', round.id, { landed: false, intent: intent !== undefined });
+    return result;
+  }
   // Guard: head moved (plan 3.7). The round is superseded and nothing posts.
   if (pr.headSha.toLowerCase() !== head.toLowerCase()) return superseded(pr.headSha);
   if (pr.state === 'closed' && o.mode === 'post') return refuse(`${ref.owner}/${ref.repo}#${ref.number} is closed: nothing posts`);
@@ -594,7 +630,11 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   result.ci = ci;
   const fullName = `${ref.owner}/${ref.repo}`;
   const configuredTests = Object.keys(auto.tests).some((k) => k.toLowerCase() === fullName.toLowerCase());
-  const cr = userChangeRequest(pr.reviews, cfg, head);
+  // P8, plan 3.8: a released round maps with the user's rulings applied, and the release stands in for the hold.
+  const release = latestRelease(db, round.id);
+  const releaseHolds = release?.decision === 'post' ? [`released by a ruling of ${release.by} without an approval (ruling ${round.id} post)`] : [];
+  const userCr = userChangeRequest(pr.reviews, cfg, head);
+  const cr = release !== null ? null : userCr;
   const participants = new Set(participantsOf(pr, cfg));
   const identity = round.kind === 'identity';
   const unadjudicated = unadjudicatedRequests(store, round, pr, cfg);
@@ -604,9 +644,10 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     autoApprove: auto.approve,
     ci,
     ciRedEvent: auto.ci_red_event,
-    tests: configuredTests ? { state: 'held' as const, why: 'opt-in test runs are not built yet (P8)' } : { state: 'off' as const, why: 'no tests configured' },
+    tests: configuredTests ? testsFact(db, round.id) : { state: 'off' as const, why: 'no tests configured' },
     onHoldList: onList(auto.repos_hold, fullName),
     unadjudicated,
+    held: releaseHolds,
   };
 
   let facts: EventFacts;
@@ -626,7 +667,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     }
     // Row 14: on the user's own PR the author row matches first; its comment still carries "Ruling needed" when the
     // round recorded one or the user's change request stands now (N10). Elsewhere the identity rows decide (N2).
-    const authorRuling = common.isAuthor && (round.needs_ruling === 1 || cr !== null);
+    const authorRuling = common.isAuthor && release === null && (round.needs_ruling === 1 || cr !== null);
     const holds = cr !== null ? [`Your own change request (review ${cr.review.id}) stands (plan 3.8).`] : [];
     facts = { ...common, needsRuling: authorRuling, verdict: null, owed: 0, legsClear: false, council: false, adjudicatorApprove: false, userChangeRequest: cr !== null, identityRecheck: recheck };
     decision = decideEvent(facts);
@@ -637,18 +678,22 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     owed = null;
     holdsDismissal = cr !== null || unadjudicated.length > 0;
   } else {
-    const { doc, legsClear, quorum } = adjudicationOf(store, round.id);
+    const stored = adjudicationOf(store, round.id);
+    const quorum = stored.quorum;
+    const applied = release !== null ? applyRulings(store, round, stored.doc, release) : null;
+    const doc = applied?.doc ?? stored.doc;
     const rulings = doc.findings.some((f) => f.outcome === 'ruling');
     const holdLive = cr !== null && cr.onHead;
     const holds = holdLive ? [`Your own change request (review ${cr.review.id}) stands on this head (plan 3.8).`] : [];
     facts = {
       ...common,
-      needsRuling: round.needs_ruling === 1 || doc.needs_ruling || rulings || holdLive,
-      verdict: round.verdict as EventFacts['verdict'],
-      owed: round.owed_count ?? 0,
-      legsClear,
+      needsRuling: applied !== null ? false : round.needs_ruling === 1 || doc.needs_ruling || rulings || holdLive,
+      verdict: (applied?.verdict ?? round.verdict) as EventFacts['verdict'],
+      owed: applied?.owed ?? round.owed_count ?? 0,
+      legsClear: applied?.legsClear ?? stored.legsClear,
       council: quorum === 'council',
-      adjudicatorApprove: round.approve === 1,
+      // The validator forced the adjudicator's approve off while a ruling stood; a release with approve stands in for it.
+      adjudicatorApprove: applied !== null ? release?.decision === 'approve' && applied.owed === 0 : round.approve === 1,
       userChangeRequest: cr !== null,
       identityRecheck: null,
     };
@@ -660,8 +705,8 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
         marker,
         decision,
         adjudication: doc,
-        verdict: round.verdict ?? doc.verdict,
-        owed: round.owed_count ?? 0,
+        verdict: applied?.verdict ?? round.verdict ?? doc.verdict,
+        owed: applied?.owed ?? round.owed_count ?? 0,
         legs: bodyLegs(store, round.id),
         quorum: quorum === 'council' ? 'council' : 'solo',
         ci,
@@ -670,12 +715,13 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
       },
       { nonce: round.nonce, participants },
     );
-    owed = round.owed_count ?? 0;
+    owed = applied?.owed ?? round.owed_count ?? 0;
     // A request the round never adjudicated means its "owes nothing" is not final: our stale request stands too.
     holdsDismissal = facts.needsRuling || unadjudicated.length > 0;
   }
   result.event = decision.event;
   result.row = decision.row;
+  result.ruling = decision.ruling;
   result.body = body;
   result.bodySha256 = sha256(body);
   result.reviewSha256 = reviewSha256(decision.event, body);

@@ -71,6 +71,8 @@ export interface HeadlessOptions {
   signal?: AbortSignal | undefined;
   /** The Node binary that runs the PreToolUse hook. Default: the engine's own. */
   node?: string | undefined;
+  /** The opt-in test result (plan 6.6, P8 auto): `_council/TESTS.md` and ROUND.json's `tests`. Absent: none ran. */
+  tests?: { markdown: string; result: unknown } | undefined;
   /** Tests only: keep the working copy after the call. */
   keepWorkspace?: boolean | undefined;
   /** Tests only: runs on the working copy right after it is copied, before it is proven against the sealed tree. */
@@ -396,7 +398,7 @@ export async function adjudicateHeadless(store: Store, layout: DataLayout, round
     }
     let ws: Workspace;
     try {
-      ws = buildWorkspace(store, layout, roundId, runDir, options.afterCopy);
+      ws = buildWorkspace(store, layout, roundId, runDir, options.afterCopy, options.tests);
     } catch (error) {
       const why = error instanceof Error ? error.message : String(error);
       // A partial copy of the reviewed tree never stays behind (P7 round 1 row 9).

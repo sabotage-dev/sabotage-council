@@ -63,6 +63,8 @@ export interface PrDetail {
   files: { listed: number; checked: boolean; note: string };
   /** The PR's participants (lower case): the only logins a posted body may mention (plan 3.7). */
   participants: string[];
+  /** `owner/name` of the head repository; null when deleted. A fork's head is elsewhere (P8: tests never run for forks). */
+  head_repo?: string | null | undefined;
   /** The seats' untrusted-PR policy as applied (plan 5.2), when the author lacks write access. */
   untrusted: { policy: string; interactive_adjudication: string } | null;
 }

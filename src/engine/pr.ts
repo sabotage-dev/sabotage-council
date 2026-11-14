@@ -31,6 +31,17 @@ export class PrRoundError extends Error {
   }
 }
 
+/** The PR's head is not the one the caller expected (P8: it moved since the ledger claimed it). */
+export class HeadMovedError extends PrRoundError {
+  constructor(
+    message: string,
+    readonly head: string,
+  ) {
+    super(message);
+    this.name = 'HeadMovedError';
+  }
+}
+
 export interface PrRoundOptions {
   config: CouncilConfig;
   configPath: string;
@@ -49,6 +60,15 @@ export interface PrRoundOptions {
   facts?: readonly string[] | undefined;
   questions?: readonly string[] | undefined;
   nonce?: string | undefined;
+  /**
+   * P8 auto: the round is adjudicated by the restricted headless adjudicator (plan 6.3, 6.4), so an author without write
+   * access is not refused; the seats still follow `council.untrusted_seat_policy`.
+   */
+  headless?: boolean | undefined;
+  /** P8 auto: the round number the ledger fixed when it claimed the head (plan 9.4); the count is still recorded. */
+  roundNo?: number | undefined;
+  /** P8 auto: the head the ledger claimed; a PR whose head moved since is refused before anything is written. */
+  expectHead?: string | undefined;
 }
 
 export type PrRoundResult =
@@ -173,19 +193,25 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
   const wrongLogin = loginMismatch(o.api, cfg.login);
   if (wrongLogin !== null) throw new PrRoundError(wrongLogin);
   const pr = readPr(o.api, o.ref);
+  if (o.expectHead !== undefined && pr.headSha.toLowerCase() !== o.expectHead.toLowerCase()) {
+    throw new HeadMovedError(`${prLabel(o.ref)} moved from ${o.expectHead.slice(0, 7)} to ${pr.headSha.slice(0, 7)} since it was queued`, pr.headSha);
+  }
+  if (pr.draft && o.expectHead !== undefined) throw new PrRoundError(`${prLabel(o.ref)} is a draft: auto skips drafts`);
   if (pr.state === 'closed' && !o.dryRun) throw new PrRoundError(`${prLabel(o.ref)} is ${pr.merged ? 'merged' : 'closed'}: a closed pull request takes only --dry-run`);
   const trusted = authorTrusted(pr);
   let untrusted: PrDetail['untrusted'] = null;
   if (!trusted) {
     // Plan 6.3: leg text on someone else's PR is attacker-influenced, and the interactive adjudicator is this session.
-    if (o.config.pr.interactive_adjudication === 'trusted-only') {
+    if (o.headless !== true && o.config.pr.interactive_adjudication === 'trusted-only') {
       throw new PrRoundError(
         `${pr.author} has no write access to ${pr.baseRepo} (permission: ${pr.authorPermission ?? 'unknown'}), so this PR's text is untrusted. The restricted headless adjudicator (plan 6.4) is not built yet (P7); to adjudicate it in this session anyway, accepting that leg text reaches it, set pr.interactive_adjudication = "untrusted-too"`,
       );
     }
-    untrusted = { policy: o.config.council.untrusted_seat_policy, interactive_adjudication: o.config.pr.interactive_adjudication };
+    untrusted = { policy: o.config.council.untrusted_seat_policy, interactive_adjudication: o.headless === true ? 'headless' : o.config.pr.interactive_adjudication };
     warnings.push(
-      `${pr.author} has no write access (permission: ${pr.authorPermission ?? 'unknown'}): this session adjudicates untrusted text (pr.interactive_adjudication = "untrusted-too"), and seats below strong follow council.untrusted_seat_policy = "${untrusted.policy}"`,
+      o.headless === true
+        ? `${pr.author} has no write access (permission: ${pr.authorPermission ?? 'unknown'}): the restricted headless adjudicator reads this round (plan 6.4), and seats below strong follow council.untrusted_seat_policy = "${untrusted.policy}"`
+        : `${pr.author} has no write access (permission: ${pr.authorPermission ?? 'unknown'}): this session adjudicates untrusted text (pr.interactive_adjudication = "untrusted-too"), and seats below strong follow council.untrusted_seat_policy = "${untrusted.policy}"`,
     );
   }
 
@@ -199,7 +225,9 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
 
   const target = prTarget(o.ref, mirror, pr);
   const targetId = upsertTarget(db, target);
-  const count = countRounds({ ref: o.ref, head: pr.headSha, reviews: pr.reviews, credits: creditsOf(db, o.ref), cfg });
+  const computed = countRounds({ ref: o.ref, head: pr.headSha, reviews: pr.reviews, credits: creditsOf(db, o.ref), cfg });
+  // Plan 9.4: the ledger fixes the number when it claims the head, so a retry never counts our own posted review.
+  const count: RoundCount = o.roundNo === undefined ? computed : { ...computed, roundNo: o.roundNo };
   const cr = userChangeRequest(pr.reviews, cfg, pr.headSha);
   const participants = participantsOf(pr, cfg);
 
@@ -237,6 +265,7 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
     baseline_fetch: baselineFetch,
     files: { listed: pr.files.length, checked: files.checked, note: files.note },
     participants,
+    head_repo: pr.headRepo,
     untrusted,
   });
   const prepared = prepareRound(store, {
@@ -257,6 +286,7 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
     },
   });
   for (const i of count.ignored) insertEvent(db, 'marker-ignored', prepared.inputs.roundId, i);
+  if (o.roundNo !== undefined && o.roundNo !== computed.roundNo) insertEvent(db, 'round-number-fixed', prepared.inputs.roundId, { fixed: o.roundNo, computed: computed.roundNo });
   if (cr?.onHead === true) insertEvent(db, 'needs-ruling', prepared.inputs.roundId, { why: 'user-change-request', review_id: cr.review.id });
   return { kind: 'council', prepared, count, warnings };
 }

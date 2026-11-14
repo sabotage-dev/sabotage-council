@@ -148,7 +148,7 @@ export function ratificationTable(s: RoundSummary): string {
   return `${lines.join('\n')}\n`;
 }
 
-/** The test result (plan 6.6): opt-in tests run only in auto (P8); a round without one says so. */
+/** The test result (plan 6.6) when none ran: opt-in tests run only in auto (P8), which passes its own text. */
 export function testsText(): string {
   return '# Test result\n\nNone: no tests ran for this round (opt-in tests, plan 6.6, run only in auto mode). Do not treat a missing test result as a failure.\n';
 }
@@ -157,7 +157,14 @@ export function testsText(): string {
  * Builds the working copy for a headless run in `runDir/work`: the sealed root copied and proven, then `_council/`
  * and the `_mainloop/` placeholder. Throws when no root hashes to the sealed tree or the copy does not.
  */
-export function buildWorkspace(store: Store, layout: DataLayout, roundId: number, runDir: string, afterCopy?: (root: string) => void): Workspace {
+export function buildWorkspace(
+  store: Store,
+  layout: DataLayout,
+  roundId: number,
+  runDir: string,
+  afterCopy?: (root: string) => void,
+  tests?: { markdown: string; result: unknown } | undefined,
+): Workspace {
   const facts = roundFacts(store, layout, roundId);
   const summary = roundSummary(store, layout, roundId);
   const source = sourceRoot(layout, facts);
@@ -199,11 +206,11 @@ export function buildWorkspace(store: Store, layout: DataLayout, roundId: number
     earlier_items: summary.earlier_items,
     human_asks: facts.detail.human_asks.map((text, i) => ({ id: `H${i + 1}`, text })),
     pr: summary.pr ? { author: summary.pr.author, trusted: summary.pr.trusted, user_change_request: summary.pr.user_change_request, review_items: summary.pr.review_items } : null,
-    tests: null,
+    tests: tests?.result ?? null,
   };
   writeFileSync(join(council, 'ROUND.json'), `${JSON.stringify(view, null, 2)}\n`);
   writeFileSync(join(council, 'RATIFICATION.md'), ratificationTable(summary));
-  writeFileSync(join(council, 'TESTS.md'), testsText());
+  writeFileSync(join(council, 'TESTS.md'), tests?.markdown ?? testsText());
   writeFileSync(join(council, 'ADJUDICATE.md'), adjudicateSpec());
   mkdirSync(join(root, MAINLOOP_DIR), { mode: 0o700 });
   const output = join(root, OUTPUT_FILE);
