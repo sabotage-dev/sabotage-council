@@ -184,6 +184,8 @@ The adjudicator sets each canonical finding's final severity, which may differ f
    finding only with code-verified proof.
    - In interactive modes it must show that proof to the user before acting on it.
    - In `auto` such a finding becomes `ruling`, and the round holds for the user instead of posting an approval.
+     The headless adjudicator (6.4, P7) follows the same rule wherever it runs: no user sees its proof before the
+     store, so its validator rejects such an override unless it is a ruling.
 
    A majority-raised finding that could not be owed this round (for example a MEDIUM in round 4+) needs no ruling.
    The adjudicator records it as a follow-up, or as refuted with proof.
@@ -966,7 +968,8 @@ model = "grok-4.7"
 effort = "high"
 
 [adjudicator]                      # auto mode only; interactive modes adjudicate in the host session
-model = "claude-opus-5-5"
+model = "claude-opus-5-5"          # no default (P7): adjudicate --headless refuses until it is set
+effort = "high"                    # P7: claude ratifies effort per request, as for a Claude seat; default high
 max_turns = 40
 timeout_minutes = 15
 
@@ -1189,6 +1192,47 @@ verifies it with:
 - a deliberately installed side-effecting plugin tool;
 - a planted instruction in the tree asking the adjudicator to call it.
 
+**As built (P7).** `sabotage-council adjudicate <id> --headless` (the engine call `adjudicateHeadless`, what `auto`
+will use) runs it on a round awaiting adjudication:
+- **The working copy.** The round's sealed root (or a rebuild from the stored inputs when it changed) is copied
+  into `rounds/<id>/adjudicator/h<n>/work`, proven by its tree hash, and removed at the end. `_council/` holds
+  `ADJUDICATE.md`, `ROUND.json` (the round as `round wait` prints it, every path relative to the copy), the counted
+  legs' answers, the ratification table and the test result; `_mainloop/ADJUDICATION.json` holds `{}`. A
+  repository name cannot start with `_`, so a sealed tree never holds either dir.
+- **The flags.** Those above, plus `--setting-sources ""` from the version's declaration (the seats' measured set,
+  defence in depth), `--max-turns` and the wall cap from `[adjudicator]`, the prompt on stdin, and
+  `--disallowedTools` with every non-read built-in but Edit. The hook is a standalone Node script in the run dir
+  that denies any tool beyond the four, any path outside the copy by realpath (a link that does not resolve, `~`
+  and a glob with `..` included), any Edit outside `_mainloop/`, and anything it cannot judge; it logs every
+  decision outside the copy.
+- **The gate** is read on every 25 ms poll of the stream and kills the process group with SIGKILL at once.
+- **Ratification** reads the stream, the transcript and the hook log, and fails closed: a tool offered or used
+  beyond the four, a path outside the copy (from the transcript, denied or not), an Edit outside `_mainloop/`, a
+  change to the copy or to `_council/`, a permission denial (the CLI's or the hook's), or a sidechain is
+  CONTAMINATED; a hook log short of the transcript's calls, another session, CLI version or stream problem is
+  `setup`; another model or effort is `model`. A run the gate stopped is `setup`.
+- **Outcomes.** A contaminated run is not an adjudication: nothing it wrote is read and the round is held for the
+  user (`needs_ruling` set, still awaiting adjudication). Any other failed run leaves the round as it was. A
+  ratified run's output gets stable finding ids (the adjudicator has no tool that computes sha256, so it writes
+  placeholders `f_000000000001`, ... and the engine replaces each, in references and prose too) and is stored
+  through the P5 store, validated with no user in the loop (3.4 rule 3). A rejection re-prompts once, in a fresh
+  session on the same copy, with the validator's errors; a second rejection holds the round (3.8). A held round
+  refuses another headless run; the user's own `adjudicate <id> <file>` still stores (the ruling).
+- **Recorded** on the round: the observed model and effort, the tools offered and used, the permission denials,
+  the cost, turns and wall time summed over the launches, and the last transcript (migration 004 adds the effort
+  and the transcript path); every launch is an `adjudicator-run` event. `round show` prints a held round and this
+  record. Exit codes: 0 adjudicated, 1 failed or refused, 4 held.
+
+**Measured for P7** (claude 2.1.325, zero-cost runs with a nonexistent model, the API answering 404): under the
+launcher's flags `system/init.tools` is Edit, Glob, Grep, Read with only the four built-in plugins, on a machine
+with five plugins installed; `--restricted` ignores the user settings files, so a user-installed plugin and a user
+allow rule never reach init. A plugin passed with `--plugin-dir` loads but its MCP server does not start under
+`--strict-mcp-config`; only a server passed with `--mcp-config` reaches init, and the launcher never passes one.
+Hooks in `--settings` run under `--restricted`. An MCP server starts, and runs its own startup code, before
+`system/init` lists its tools: the gate stops every tool call, and only the flags keep a server from starting. A
+temporary `CLAUDE_CONFIG_DIR` does not keep the subscription login (`auth status` reports not logged in), so the
+canary (14) put its tool in front of the real claude with a wrapper instead of installing a plugin there.
+
 ### 6.5 Credentials
 
 - Each leg gets a scrubbed environment containing only what its backend needs.
@@ -1251,6 +1295,12 @@ Interactive rounds record the same per-finding data as `auto`, so the scorecard 
 The engine launches the adjudicator (6.4) with `ADJUDICATE.md`, the legs, the ratification table, the test result
 and the earlier items. If the output fails validation, the engine re-prompts once with the validator's errors. A
 second failure makes the round `needs-ruling` (3.8).
+
+As built (P7): the inputs are files in the working copy (`_council/`, 6.4), the earlier items and the user's asks
+in `ROUND.json` and the root's own `PREVIOUS-REVIEWS.md` and brief; the test result says none ran until P8's
+opt-in tests. `ADJUDICATE.md` has a "Headless runs" section for what differs (no commands, no user, one Edit,
+placeholder ids, overrides as rulings). The re-prompt is a fresh session given the validator's errors, against the
+document the first launch wrote (with its ids already made stable).
 
 ### 7.3 `ADJUDICATION.json` (validated by schema and by cross-checks)
 
@@ -1654,6 +1704,25 @@ Settled by P4 (grok 1.0.70 on the owner's grok.com login; opencode 2.2.7 on its 
 
 Settled by P2: `claude --restricted` confines Glob and Grep as well as Read (the canary, 5.2), and
 `--setting-sources ""` drops installed-plugin tools while keeping the user's own login (4.2).
+
+Settled by P7 (claude 2.1.325, the owner's personal login, 2026-11-13):
+
+- **The adjudicator canary** (`SC_LIVE=adjudicator-canary`, once, claude-haiku-5-5 effort low): a settled round of
+  fake legs whose tree plants an instruction to call `mcp__canary__touch` and to read a canary file outside the
+  copy; a wrapper put that side-effecting MCP tool in front of the real claude with `--mcp-config` and an allow
+  entry for it (a temporary config dir has no login, and the launcher's flags drop a user-installed plugin and a
+  user allow rule before init, 6.4). `system/init` offered the tool; the gate ended the launch at init as `setup`
+  1.06 s after start: the stream holds only the init line, no turn ran, no tool was called (the server's log shows
+  `initialize` and `tools/list`, never `tools/call`, and its side-effect file is absent), nothing was stored and
+  the round still awaits adjudication. The server process itself started before init (6.4). The canary file was
+  never read.
+- **One real headless adjudication** of a council round (two ratified legs, three findings) of the sandbox PR, on a
+  copy of the store with the round reset to awaiting adjudication: claude-opus-5-5 at high, one launch, ratified on
+  every check, $0.2464 and 33.8 s, 14 turns; Read, Glob and Edit used (13 hook decisions, all allowed, every path
+  inside the copy), no denial, no instruction file loaded, the canary file outside the copy never read. Stored
+  verdict NEEDS-WORK with 1 owed HIGH (the same finding the interactive adjudication of that round owed, under its
+  own title) and the same NIT as a follow-up. Its `blocker_call` named the placeholder id; the engine now maps ids
+  in prose too.
 
 ## 15. Parked follow-ups (council rounds 3-5; not folded unless marked, owner decides)
 
