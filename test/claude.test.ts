@@ -253,9 +253,9 @@ describe('claude helpers', () => {
   });
 
   it('names the paths of each read tool', () => {
-    expect(toolPaths({ name: 'Read', input: { file_path: '/r/a' }, source: 'stream' })).toEqual(['/r/a']);
-    expect(toolPaths({ name: 'Glob', input: { pattern: '**/*.ts', path: 'src' }, source: 'stream' })).toEqual(['src', '**/*.ts']);
-    expect(toolPaths({ name: 'Grep', input: { pattern: 'x', path: '/etc', glob: '*.conf' }, source: 'stream' })).toEqual(['/etc', '*.conf']);
+    expect(toolPaths({ name: 'Read', input: { file_path: '/r/a' }, id: null, source: 'stream' })).toEqual(['/r/a']);
+    expect(toolPaths({ name: 'Glob', input: { pattern: '**/*.ts', path: 'src' }, id: null, source: 'stream' })).toEqual(['src', '**/*.ts']);
+    expect(toolPaths({ name: 'Grep', input: { pattern: 'x', path: '/etc', glob: '*.conf' }, id: null, source: 'stream' })).toEqual(['/etc', '*.conf']);
   });
 
   it('reads only login-state fields from auth status', () => {

@@ -11,6 +11,8 @@ import { isObject, num, readJsonl, str, type Json } from '../codex/records.js';
 
 export interface ToolUse {
   name: string;
+  /** The tool_use block's `id` (the `tool_use_id` a hook and a tool result name), or null when it has none. */
+  id: string | null;
   input: Json;
   source: 'stream' | 'transcript';
 }
@@ -64,7 +66,7 @@ function toolUsesOf(message: unknown, source: ToolUse['source']): ToolUse[] {
   const out: ToolUse[] = [];
   for (const block of message['content']) {
     if (isObject(block) && str(block['type']) === 'tool_use') {
-      out.push({ name: str(block['name']) ?? '', input: isObject(block['input']) ? block['input'] : {}, source });
+      out.push({ name: str(block['name']) ?? '', id: str(block['id']), input: isObject(block['input']) ? block['input'] : {}, source });
     }
   }
   return out;

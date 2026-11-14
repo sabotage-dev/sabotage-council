@@ -32,5 +32,5 @@ export {
   StreamWatch,
 } from './launch.js';
 export { adjudicatePrompt, repromptText, type PromptInput } from './prompt.js';
-export { adjudicatorOutsidePaths, adjudicatorToolPaths, ratifyAdjudicatorRun, type AdjudicatorRatification, type AdjudicatorRatifyInput } from './ratify.js';
+export { adjudicatorOutsidePaths, adjudicatorToolPaths, hookCoverageProblems, ratifyAdjudicatorRun, type HookEntry, type AdjudicatorRatification, type AdjudicatorRatifyInput } from './ratify.js';
 export { adjudicateSpec, buildWorkspace, copyTreeHash, ratificationTable, removeWorkspace, WorkspaceError, type Workspace } from './workspace.js';

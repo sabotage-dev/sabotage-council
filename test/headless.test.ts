@@ -402,6 +402,34 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
     expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toContain(check);
   });
 
+  // Round 1 row 5: hook coverage is proven per tool use, by tool_use_id, never by a count.
+  const lines = (t: string): string[] => t.split('\n').filter((l) => l.trim() !== '');
+  const swapOne = (t: string, edit: (row: Json) => Json | null, at = 1): string =>
+    `${lines(t)
+      .flatMap((l, i) => (i === at ? [edit(JSON.parse(l) as Json)].filter((x): x is Json => x !== null).map((x) => JSON.stringify(x)) : [l]))
+      .join('\n')}\n`;
+  it.each([
+    ['one call\'s entry missing, with a surplus entry in its place (the count still matches)', { hook: (t: string) => swapOne(t, (row) => ({ ...row, tool_use_id: 'toolu_9999' })) }, ['toolu_0002 has no hook entry', 'hook entry toolu_9999 matches no tool use']],
+    ['a duplicate entry', { hook: (t: string) => `${t}${lines(t)[0]!}\n` }, ['toolu_0001 has 2 hook entries']],
+    ['a surplus entry', { hook: (t: string) => `${t}${JSON.stringify({ tool: 'Read', tool_use_id: 'toolu_9999', paths: [], decision: 'allow', reason: null })}\n` }, ['hook entry toolu_9999 matches no tool use']],
+    ['an entry with no tool_use_id', { hook: (t: string) => `${t}${JSON.stringify({ tool: 'Read', tool_use_id: null, paths: [], decision: 'allow', reason: null })}\n` }, ['has no tool_use_id']],
+    ['an entry for another tool', { hook: (t: string) => swapOne(t, (row) => ({ ...row, tool: 'Glob' })) }, ['Read toolu_0002 has a hook entry for Glob']],
+    ['a tool use with no id in the stream', { stream: (t: string) => t.replace('"id": "toolu_0003", ', '') }, ['a Read tool use (stream) has no id']],
+  ])('fails the hook check on %s', (_what, edit, problems) => {
+    const r = recorded(edit);
+    expect(r.status).toBe('FAIL');
+    expect(r.failureClass).toBe('setup');
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(['hook']);
+    for (const p of problems) expect(r.checks.find((c) => c.name === 'hook')!.detail).toContain(p);
+  });
+
+  it('fails the hook check, and is CONTAMINATED, when the hook denied a call', () => {
+    const r = recorded({ hook: (t: string) => swapOne(t, (row) => ({ ...row, decision: 'deny', reason: 'denied' })) });
+    expect(r.status).toBe('CONTAMINATED');
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(['hook', 'hook-denials']);
+    expect(r.checks.find((c) => c.name === 'hook')!.detail).toContain('toolu_0002 was not allowed by the hook (deny)');
+  });
+
   // Round 1 row 1: the recorded Glob ("**/*") replaced in both records, and the tools' own results replaced.
   const sub = (from: RegExp, to: string) => (t: string): string => t.replace(from, to);
   const both = (from: RegExp, to: string) => ({ stream: sub(from, to), transcript: sub(from, to) });
@@ -652,11 +680,12 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
   });
 
   it.each([
-    ['an Edit outside _mainloop/', { toolUses: [{ name: 'Edit', input: { file_path: 'BRIEF.md', old_string: 'NONCE', new_string: 'X' } }] }, ['edit-paths', 'permission-denials', 'hook-denials']],
-    ['an Edit of its own inputs', { toolUses: [{ name: 'Edit', input: { file_path: '_council/ROUND.json', old_string: '{', new_string: '[' } }] }, ['edit-paths', 'permission-denials', 'hook-denials']],
+    // A denied call has no allow entry, so the hook check fails beside the denials (round 1 row 5).
+    ['an Edit outside _mainloop/', { toolUses: [{ name: 'Edit', input: { file_path: 'BRIEF.md', old_string: 'NONCE', new_string: 'X' } }] }, ['edit-paths', 'permission-denials', 'hook', 'hook-denials']],
+    ['an Edit of its own inputs', { toolUses: [{ name: 'Edit', input: { file_path: '_council/ROUND.json', old_string: '{', new_string: '[' } }] }, ['edit-paths', 'permission-denials', 'hook', 'hook-denials']],
     ['a change to the copy', { writeIntoCopy: 'planted.txt' }, ['copy-unchanged']],
     ['a Glob whose result names a file outside the copy', { toolUses: [{ name: 'Glob', input: { pattern: '**/*' }, result: { filenames: ['../../OUTSIDE-CANARY.txt'] } }] }, ['tool-paths']],
-    ['a tool beyond the four', { toolUses: [{ name: 'Bash', input: { command: 'true' } }] }, ['tools-used', 'permission-denials', 'hook-denials']],
+    ['a tool beyond the four', { toolUses: [{ name: 'Bash', input: { command: 'true' } }] }, ['tools-used', 'permission-denials', 'hook', 'hook-denials']],
     ['a subagent sidechain', { sidechain: true }, ['sidechains']],
     ['another cwd in system/init', { initCwd: '/' }, ['cwd']],
     ['an extra root in the transcript', { extraRoots: ['/'] }, ['extra-roots']],

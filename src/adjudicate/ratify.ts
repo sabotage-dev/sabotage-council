@@ -150,8 +150,9 @@ export function adjudicatorOutsidePaths(use: ToolUse, root: string, aliases: rea
   return out;
 }
 
-interface HookEntry {
+export interface HookEntry {
   tool: string | null;
+  toolUseId: string | null;
   decision: string;
 }
 
@@ -163,12 +164,51 @@ function readHookLog(path: string): { entries: HookEntry[]; malformed: number } 
     if (line.trim() === '') continue;
     try {
       const row = JSON.parse(line) as Record<string, unknown>;
-      entries.push({ tool: typeof row['tool'] === 'string' ? row['tool'] : null, decision: String(row['decision']) });
+      const id = row['tool_use_id'];
+      entries.push({ tool: typeof row['tool'] === 'string' ? row['tool'] : null, toolUseId: typeof id === 'string' && id !== '' ? id : null, decision: String(row['decision']) });
     } catch {
       malformed++;
     }
   }
   return { entries, malformed };
+}
+
+/**
+ * Hook coverage, per tool use (round 1 row 5): every tool use in the stream and the transcript has exactly one hook
+ * entry with its `tool_use_id`, for the same tool, that allowed it. A tool use with no id, an entry with no id, a
+ * missing, duplicate or denied entry, and an entry that matches no tool use are each a problem: a count could not
+ * tell a call the hook never saw (a hook that failed to start is non-blocking in Claude Code) from a surplus line.
+ */
+export function hookCoverageProblems(uses: readonly ToolUse[], entries: readonly HookEntry[]): string[] {
+  const problems: string[] = [];
+  const used = new Map<string, string>();
+  for (const u of uses) {
+    if (u.id === null) {
+      problems.push(`a ${u.name} tool use (${u.source}) has no id`);
+      continue;
+    }
+    const seen = used.get(u.id);
+    if (seen !== undefined && seen !== u.name) problems.push(`tool use ${u.id} is ${seen} in one record and ${u.name} in another`);
+    used.set(u.id, u.name);
+  }
+  const byId = new Map<string, HookEntry[]>();
+  for (const e of entries) {
+    if (e.toolUseId === null) {
+      problems.push(`a hook entry (${e.tool ?? 'no tool'}, ${e.decision}) has no tool_use_id`);
+      continue;
+    }
+    byId.set(e.toolUseId, [...(byId.get(e.toolUseId) ?? []), e]);
+  }
+  for (const [id, name] of used) {
+    const got = byId.get(id) ?? [];
+    const only = got[0];
+    if (only === undefined) problems.push(`${name} ${id} has no hook entry`);
+    else if (got.length > 1) problems.push(`${name} ${id} has ${got.length} hook entries`);
+    else if (only.decision !== 'allow') problems.push(`${name} ${id} was not allowed by the hook (${only.decision})`);
+    else if (only.tool !== name) problems.push(`${name} ${id} has a hook entry for ${String(only.tool)}`);
+  }
+  for (const id of byId.keys()) if (!used.has(id)) problems.push(`hook entry ${id} matches no tool use`);
+  return problems;
 }
 
 export function ratifyAdjudicatorRun(input: AdjudicatorRatifyInput): AdjudicatorRatification {
@@ -289,15 +329,17 @@ export function ratifyAdjudicatorRun(input: AdjudicatorRatifyInput): Adjudicator
   const denials = result && Array.isArray(result['permission_denials']) ? (result['permission_denials'] as unknown[]) : [];
   check('permission-denials', denials.length === 0, `${denials.length} permission denial(s)${denials.length > 0 ? `: ${JSON.stringify(denials).slice(0, 300)}` : ''}`);
 
-  // The hook is the second line: on a run with hooks, every tool call the transcript shows has a hook decision.
+  // The hook is the second line: on a run with hooks, every tool use in the stream and the transcript has exactly one
+  // allow entry with its tool_use_id (round 1 row 5). A `--bare` run has no hook and no such check.
   const hook = input.hookLog === null ? null : readHookLog(input.hookLog);
   if (hook !== null && !gated) {
-    const calls = facts?.toolUses.length ?? 0;
     const denied = hook.entries.filter((e) => e.decision !== 'allow');
+    const problems = hookCoverageProblems(uses, hook.entries);
+    const calls = new Set(uses.map((u) => u.id)).size;
     check(
       'hook',
-      hook.malformed === 0 && hook.entries.length >= calls,
-      `${hook.entries.length} hook decision(s) for ${calls} tool call(s)${denied.length > 0 ? `, ${denied.length} denied` : ''}${hook.malformed > 0 ? `; ${hook.malformed} malformed log line(s)` : ''}`,
+      hook.malformed === 0 && problems.length === 0,
+      `${hook.entries.length} hook decision(s) for ${calls} tool use(s)${denied.length > 0 ? `, ${denied.length} denied` : ''}${hook.malformed > 0 ? `; ${hook.malformed} malformed log line(s)` : ''}${problems.length > 0 ? `; ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? `; and ${problems.length - 5} more` : ''}` : ''}`,
     );
     if (denied.length > 0) check('hook-denials', false, `the hook denied ${denied.length} call(s): ${denied.map((d) => d.tool ?? '?').join(', ')}`);
   }
