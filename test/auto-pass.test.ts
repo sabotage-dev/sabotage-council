@@ -385,6 +385,24 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(dry2.candidates.find((c) => c.pr.endsWith('#2'))).toMatchObject({ action: 'done', why: 'a real pass has this head (approved)' });
   });
 
+  it('a dry pass never touches a real row: a new head does not supersede a held real row until a real pass sees it', async () => {
+    const w = await world();
+    w.adj.kind = 'ruling';
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'needs-ruling', dry_run: 0 });
+    w.addReview(landed(w));
+    const e = pushE(w);
+    w.adj.kind = 'approve';
+    await w.pass({ dryRun: true });
+    expect(row(w)).toMatchObject({ state: 'needs-ruling', dry_run: 0 });
+    expect(ledgerRows(w.h).find((x) => x['head'] === e)).toMatchObject({ state: 'rendered', dry_run: 1 });
+    expect(posts(w)).toBe(1);
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'superseded' });
+    expect(ledgerRows(w.h).find((x) => x['head'] === e)).toMatchObject({ state: 'approved', dry_run: 0 });
+    expect(posts(w)).toBe(2);
+  });
+
   it('a paused daemon does nothing at all', async () => {
     const { setPaused } = await import('../src/auto/pass.js');
     const w = await world();
