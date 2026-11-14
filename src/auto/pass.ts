@@ -672,7 +672,17 @@ async function resumeRows(ctx: Ctx): Promise<void> {
     if (Boolean(row.dry_run) !== ctx.o.dryRun) continue;
     if (claimLive(row, ctx.nowMs())) continue;
     const ref = refOfKey(row.repo, row.num);
-    if (ref === null || !inScope(ctx.auto, `${ref.owner}/${ref.repo}`)) continue;
+    if (ref === null) continue;
+    if (!inScope(ctx.auto, `${ref.owner}/${ref.repo}`)) {
+      // P8 round 1 row 11: a post that may have begun is still reconciled after its repository left the lists (a review
+      // that landed is adopted and its owed guards run); nothing new ever posts there. Any other row is left alone.
+      if (row.state !== 'posting' && row.records_sha === null) continue;
+      const claim = claimRow(db, row, { attempt: false, dryRun: ctx.o.dryRun, nowMs: ctx.nowMs() });
+      if (!claim.ok) continue;
+      ctx.report.candidates.push({ pr: prLabel(ref), head: row.head, source: 'resume', action: 'queued', why: 'out of scope now (repos_allow, repos_skip): reconcile only' });
+      await work(ctx, claim.claim, ref, false, true);
+      continue;
+    }
     const cand = (action: CandidateReport['action'], why: string): void => {
       ctx.report.candidates.push({ pr: prLabel(ref), head: row.head, source: 'resume', action, why });
     };
@@ -805,8 +815,11 @@ async function reviewHeads(ctx: Ctx, candidates: readonly Candidate[]): Promise<
 
 /* ---------- one row's work ---------- */
 
-/** `newAttempt`: the claim started an attempt (a new head, or a retry of a failed one), not a resume. */
-async function work(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean): Promise<void> {
+/**
+ * `newAttempt`: the claim started an attempt (a new head, or a retry of a failed one), not a resume. `reconcileOnly`:
+ * only reconcile a post that may have begun, and post nothing new (a repository that left the lists).
+ */
+async function work(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, reconcileOnly = false): Promise<void> {
   const { db } = ctx.store;
   const controller = new AbortController();
   const outer = ctx.o.signal;
@@ -822,7 +835,10 @@ async function work(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean): Pr
   timer.unref();
   try {
     ctx.o.hooks?.afterRowClaim?.(claim.key);
-    await step(ctx, claim, ref, newAttempt, controller.signal, () => fenced);
+    if (reconcileOnly) {
+      const row = getRow(db, claim.key);
+      if (row !== undefined && !ctx.o.dryRun && (row.state === 'posting' || row.records_sha !== null)) await resumePost(ctx, claim, row, true);
+    } else await step(ctx, claim, ref, newAttempt, controller.signal, () => fenced);
   } catch (error) {
     const row = getRow(db, claim.key);
     if (row !== undefined && (row.state === 'posting' || row.records_sha !== null)) {
@@ -1223,7 +1239,7 @@ function postedRow(ctx: Ctx, roundId: number): number | null {
  * guards); with none, the stored review is re-posted only while the round's records still hash to records_sha, and
  * only that review (`--expect` its review sha256); otherwise the row fails visibly.
  */
-async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void> {
+async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow, reconcileOnly = false): Promise<void> {
   const { store, o } = ctx;
   const round = row.round_id === null ? undefined : getRound(store.db, row.round_id);
   if (round === undefined) {
@@ -1244,6 +1260,12 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void>
     postingNote(ctx, row, `the resume could not reconcile (the next pass tries again): ${rec.problems.join('; ')}`);
     return;
   }
+  if (reconcileOnly) {
+    // P8 round 1 row 11: the repository left the lists, so nothing new posts there; nothing of this post landed.
+    clearPost(ctx, claim);
+    move(ctx, claim, { state: 'skipped', reason: 'its repository left repos_allow or is on repos_skip: reconciled, nothing of this post landed, and nothing new posts' });
+    return;
+  }
   // Nothing landed (the reconciliation held P6's post claim, so no other post of the round ran): a row that fails here
   // for good leaves its post fields behind, since no POST can have been sent, and a ruling may release it.
   const sha = recordsSha(roundDirOf(o.layout, round.id), round.kind);
@@ -1254,16 +1276,13 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void>
   }
   const r = postRound(store, { ...base, expect: row.review_sha256 });
   if (r.outcome === 'refused') {
-    if (!intentRecorded(ctx, round.id) && / is closed: nothing posts| was closed since the post began/.test(r.problems.join('; '))) {
+    const why = r.problems.join('; ');
+    // The reconciliation above found nothing of this post on GitHub, and a refusal sends nothing, so the row may leave
+    // posting whatever intent an earlier attempt recorded (P8 round 1 row 12): a closed PR skips it, a head that has
+    // another review with this round's marker skips it (row 2), and a draft keeps it for when it is ready (row 3).
+    if (/ is closed: nothing posts| was closed since the post began/.test(why) || why.includes(ALREADY_ON_HEAD) || why.includes(` ${IS_DRAFT}: nothing posts`)) {
       clearPost(ctx, claim);
-      abandon(ctx, claim, r.problems.join('; '));
-      return;
-    }
-    if (r.problems.join('; ').includes(ALREADY_ON_HEAD) || r.problems.join('; ').includes(` ${IS_DRAFT}: nothing posts`)) {
-      // Nothing of ours landed, and the head has another review with this round's marker (never a second one), or the
-      // PR is a draft now (the row waits for it to be ready).
-      clearPost(ctx, claim);
-      abandon(ctx, claim, r.problems.join('; '));
+      abandon(ctx, claim, why);
       return;
     }
     clearPost(ctx, claim);

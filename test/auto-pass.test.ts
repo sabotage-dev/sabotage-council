@@ -188,6 +188,56 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(w.notices.map((n) => n.kind)).toEqual(['failure']);
   });
 
+  it('a posting row is still reconciled after its repository left the lists: a landed review is adopted with its guards, else the row is skipped; nothing new posts (P8 round 1 row 11)', async () => {
+    const skip = (w: World): void => {
+      w.config = { ...w.config, auto: { ...w.config.auto!, repos_skip: ['sabotage-dev/sabotage-council'] } };
+    };
+    // The APPROVE landed before the crash: adopted, and its approval race runs.
+    const w = await world();
+    let crash = true;
+    await w.pass({ hooks: { afterPost: () => (crash ? ((crash = false), (() => { throw new Error('the daemon died right after the POST'); })()) : undefined) } });
+    expect(row(w)).toMatchObject({ state: 'posting' });
+    w.addReview(landed(w));
+    skip(w);
+    const r = await w.pass();
+    expect(r.candidates.find((c) => c.source === 'resume')).toMatchObject({ action: 'queued', why: 'out of scope now (repos_allow, repos_skip): reconcile only' });
+    expect(row(w)).toMatchObject({ state: 'approved', review_id: 990001 });
+    expect(posts(w)).toBe(1);
+    expect(getEvents(w.h.store.db, row(w)['round_id'] as number).filter((e) => e.kind === 'guard').map((e) => (e.detail as { kind: string; status: string }).status)).toEqual(['done']);
+    // Nothing landed (a crash before the POST): no new post there, the row is skipped.
+    const v = await world();
+    let crash2 = true;
+    await v.pass({ hooks: { afterPostClaim: () => (crash2 ? ((crash2 = false), (() => { throw new Error('died before the POST'); })()) : undefined) } });
+    expect(row(v)).toMatchObject({ state: 'posting' });
+    skip(v);
+    await v.pass();
+    expect(row(v)).toMatchObject({ state: 'skipped', records_sha: null, event: null });
+    expect(String(row(v)['reason'])).toMatch(/left repos_allow or is on repos_skip: reconciled, nothing of this post landed/);
+    expect(posts(v)).toBe(0);
+    expect(v.notices).toEqual([]);
+  });
+
+  it('a resume on a closed PR skips the row, even after an earlier attempt recorded its intent (P8 round 1 row 12)', async () => {
+    const w = await world();
+    w.routes[`POST ${PULL}/reviews`] = { fail: 'gh: connection reset' };
+    w.sync();
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'posting' });
+    expect(getEvents(w.h.store.db, row(w)['round_id'] as number).map((e) => e.kind)).toContain('posting');
+    Object.assign(json(w.routes, `GET ${PULL}`), { state: 'closed', merged: false });
+    w.routes[`POST ${PULL}/reviews`] = { echoReview: { id: 990001, login: LOGIN } };
+    w.sync();
+    await w.pass();
+    // Skipped (and, its PR closed, retired by the same pass's prune): never failed for good, no notice.
+    const changes = w.h.store.db
+      .prepare("SELECT json_extract(detail_json, '$.to') AS too, json_extract(detail_json, '$.reason') AS why FROM events WHERE kind = 'ledger' AND json_extract(detail_json, '$.change') = 'state' ORDER BY id")
+      .all() as Array<{ too: string; why: string }>;
+    expect(changes.map((c) => c.too)).toEqual(['posting', 'skipped', 'retired']);
+    expect(changes[1]?.why).toMatch(/^the PR closed before the post: .* is closed: nothing posts/);
+    expect(row(w)).toMatchObject({ state: 'retired', attempts: 1, records_sha: null });
+    expect(w.notices).toEqual([]);
+  });
+
   it('the PR closes between the render and the POST: nothing posts and the row is skipped, not left posting', async () => {
     const w = await world();
     await w.pass({
