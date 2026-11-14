@@ -228,7 +228,9 @@ export function ratifyClaudeLeg(input: ClaudeRatifyInput): Ratification {
     }
   }
   check(checks, 'tool-paths', outside.length === 0, outside.length === 0 ? 'every tool path inside the root' : [...new Set(outside)].join('; '));
-  check(checks, 'sidechains', (facts?.sidechains ?? 0) === 0, `${facts?.sidechains ?? 0} sidechain entr(ies)`);
+  // A sub-agent shows as a sidechain entry in the transcript, or as a row with a parent_tool_use_id in either record.
+  const sidechains = stream.sidechains + (facts?.sidechains ?? 0);
+  check(checks, 'sidechains', sidechains === 0, `${sidechains} sidechain entr(ies) (stream ${stream.sidechains}, transcript ${facts?.sidechains ?? 0})`);
 
   const denials = result && Array.isArray(result['permission_denials']) ? result['permission_denials'] : [];
   // A leg with no result line (killed at its cap, or cancelled) reports no denials: the missing result fails the

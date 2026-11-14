@@ -30,6 +30,8 @@ export interface ClaudeStream {
   toolUses: ToolUse[];
   /** Paths named by tool results (`tool_use_result` on the user rows). */
   toolResults: ToolResultPaths[];
+  /** Rows of a sub-agent: any row with a non-null `parent_tool_use_id`. */
+  sidechains: number;
   /** Main-thread assistant text blocks, in order: the whole reply. */
   texts: string[];
   /** `message.id` of each assistant line, in order: one id per API request. */
@@ -39,6 +41,11 @@ export interface ClaudeStream {
   malformed: number;
   /** The last line is cut off. */
   tornTail: boolean;
+}
+
+/** A row a sub-agent wrote: its `parent_tool_use_id` is set (anything but absent or null). */
+export function subAgentRow(row: Json): boolean {
+  return row['parent_tool_use_id'] !== undefined && row['parent_tool_use_id'] !== null;
 }
 
 /** Every path a tool result names: `filePath`, `file.filePath`, and each entry of `filenames`. */
@@ -73,13 +80,14 @@ function toolUsesOf(message: unknown, source: ToolUse['source']): ToolUse[] {
 }
 
 export function readClaudeStream(path: string): ClaudeStream {
-  const out: ClaudeStream = { init: null, result: null, toolUses: [], toolResults: [], texts: [], messageIds: [], extraInit: 0, malformed: 0, tornTail: false };
+  const out: ClaudeStream = { init: null, result: null, toolUses: [], toolResults: [], sidechains: 0, texts: [], messageIds: [], extraInit: 0, malformed: 0, tornTail: false };
   if (!existsSync(path)) return out;
   const { rows, malformed, tornTail } = readJsonl(path);
   out.malformed = malformed;
   out.tornTail = tornTail;
   for (const row of rows) {
     const type = str(row['type']);
+    if (subAgentRow(row)) out.sidechains++;
     if (type === 'system' && str(row['subtype']) === 'init') {
       if (out.init) out.extraInit++;
       else out.init = row;
@@ -95,7 +103,7 @@ export function readClaudeStream(path: string): ClaudeStream {
       const id = isObject(message) ? str(message['id']) : null;
       if (id !== null) out.messageIds.push(id);
       // The reply's text comes from the main thread only: a row with a `parent_tool_use_id` belongs to a sub-agent.
-      const mainThread = row['parent_tool_use_id'] === undefined || row['parent_tool_use_id'] === null;
+      const mainThread = !subAgentRow(row);
       if (mainThread && isObject(message) && Array.isArray(message['content'])) {
         for (const block of message['content']) {
           if (isObject(block) && str(block['type']) === 'text') out.texts.push(str(block['text']) ?? '');
@@ -164,6 +172,7 @@ export interface TranscriptFacts {
   toolUses: ToolUse[];
   /** Paths named by tool results (`toolUseResult` on the user entries). */
   toolResults: ToolResultPaths[];
+  /** Entries marked `isSidechain`, or with a non-null `parent_tool_use_id`. */
   sidechains: number;
   /** Attachment types of instruction files that loaded (user-owned context). */
   instructionFiles: string[];
@@ -196,7 +205,8 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
     if (sid) sessions.add(sid);
     const cwd = str(e['cwd']);
     if (cwd) facts.cwds.push(cwd);
-    if (e['isSidechain'] === true) facts.sidechains++;
+    // A sub-agent's entry: marked `isSidechain`, or carrying a `parent_tool_use_id` (round 1 row 6).
+    if (e['isSidechain'] === true || subAgentRow(e)) facts.sidechains++;
     if (type === 'api-request') {
       const params = isObject(e['params']) ? e['params'] : {};
       const config = isObject(params['output_config']) ? params['output_config'] : {};

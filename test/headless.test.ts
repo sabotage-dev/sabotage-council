@@ -467,6 +467,17 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
     expect(r.checks.find((c) => c.name === check)!.detail).toContain(detail);
   });
 
+  // Round 1 row 6: a row with a parent_tool_use_id is a sub-agent's, in either record.
+  it.each([
+    ['a stream row with a parent_tool_use_id', { stream: sub(/"parent_tool_use_id": null/, '"parent_tool_use_id": "toolu_0001"') }, 'stream 1, transcript 0'],
+    ['a transcript entry with a parent_tool_use_id', { transcript: (t: string) => t.replace(/}\n$/, ', "parent_tool_use_id": "toolu_0001"}\n') }, 'stream 0, transcript 1'],
+  ])('is CONTAMINATED on sidechains with %s', (_what, edit, detail) => {
+    const r = recorded(edit);
+    expect(r.status).toBe('CONTAMINATED');
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(['sidechains']);
+    expect(r.checks.find((c) => c.name === 'sidechains')!.detail).toContain(detail);
+  });
+
   it('ratifies the recorded run with a brace group in one segment (it reduces to the copy)', () => {
     const r = recorded(both(GLOB, '"pattern": "**/*.{js,md}"'));
     expect(r.checks.filter((c) => !c.ok)).toEqual([]);
@@ -687,6 +698,7 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     ['a Glob whose result names a file outside the copy', { toolUses: [{ name: 'Glob', input: { pattern: '**/*' }, result: { filenames: ['../../OUTSIDE-CANARY.txt'] } }] }, ['tool-paths']],
     ['a tool beyond the four', { toolUses: [{ name: 'Bash', input: { command: 'true' } }] }, ['tools-used', 'permission-denials', 'hook', 'hook-denials']],
     ['a subagent sidechain', { sidechain: true }, ['sidechains']],
+    ['a sub-agent row in the stream only (parent_tool_use_id)', { subAgent: true }, ['sidechains']],
     ['another cwd in system/init', { initCwd: '/' }, ['cwd']],
     ['an extra root in the transcript', { extraRoots: ['/'] }, ['extra-roots']],
     ['a loaded instruction file', { instructionFiles: ['CLAUDE.md'] }, ['instruction-files']],

@@ -132,6 +132,9 @@ describe('claude ratification details', () => {
     ['an api-request at another effort', (dir: string) => edit(transcriptOf(dir), (row) => row['type'] === 'api-request', (row) => ((row['params'] as Record<string, Record<string, unknown>>)['output_config'] = { effort: 'high' })), 'effort'],
     ['a transcript cwd outside the root', (dir: string) => edit(transcriptOf(dir), (row) => row['type'] === 'user', (row) => (row['cwd'] = '/elsewhere')), 'cwd'],
     ['a subagent sidechain', (dir: string) => edit(transcriptOf(dir), (row) => row['type'] === 'user', (row) => (row['isSidechain'] = true)), 'sidechains'],
+    // P7 round 1 row 6: a sub-agent row shows as a parent_tool_use_id, in the stream or the transcript.
+    ['a sub-agent row in the stream (parent_tool_use_id)', (dir: string) => edit(join(dir, 'stream.jsonl'), (row) => row['type'] === 'assistant', (row) => (row['parent_tool_use_id'] = 'toolu_parent')), 'sidechains'],
+    ['a sub-agent entry in the transcript (parent_tool_use_id)', (dir: string) => edit(transcriptOf(dir), (row) => row['type'] === 'user', (row) => (row['parent_tool_use_id'] = 'toolu_parent')), 'sidechains'],
     ['permissionMode auto', (dir: string) => edit(join(dir, 'stream.jsonl'), (row) => row['subtype'] === 'init', (row) => (row['permissionMode'] = 'auto')), 'permission-mode'],
     ['another session id', (dir: string) => edit(join(dir, 'stream.jsonl'), (row) => row['subtype'] === 'init', (row) => (row['session_id'] = '11111111-1111-4111-8111-111111111111')), 'session'],
     ['a missing transcript', (dir: string) => writeFileSync(transcriptOf(dir), ''), 'effort'],

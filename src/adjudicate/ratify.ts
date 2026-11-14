@@ -319,7 +319,9 @@ export function ratifyAdjudicatorRun(input: AdjudicatorRatifyInput): Adjudicator
   }
   check('tool-paths', outside.length === 0, outside.length === 0 ? 'every tool path inside the working copy' : [...new Set(outside)].join('; '));
   check('edit-paths', badEdits.length === 0, badEdits.length === 0 ? `every Edit under ${MAINLOOP_DIR}/` : [...new Set(badEdits)].join('; '));
-  check('sidechains', (facts?.sidechains ?? 0) === 0, `${facts?.sidechains ?? 0} sidechain entr(ies)`);
+  // A sub-agent shows as a sidechain entry in the transcript, or as a row with a parent_tool_use_id in either record.
+  const sidechains = stream.sidechains + (facts?.sidechains ?? 0);
+  check('sidechains', sidechains === 0, `${sidechains} sidechain entr(ies) (stream ${stream.sidechains}, transcript ${facts?.sidechains ?? 0})`);
   // A loaded instruction or nested-memory file is a steering channel outside the round's inputs (round 1 row 4).
   if (!gated) {
     const loaded = facts?.instructionFiles ?? [];

@@ -27,7 +27,8 @@
 // - initMcpServers, initAdditionalDirectories: what system/init lists under mcp_servers and additional_directories
 //   (default []);
 // - extraRoots: the transcript's environment attachment additionalWorkingDirectories (default []);
-// - instructionFiles: paths of an `instructions` attachment in the transcript (an instruction file that loaded).
+// - instructionFiles: paths of an `instructions` attachment in the transcript (an instruction file that loaded);
+// - subAgent: one assistant row in the stream with a parent_tool_use_id (a sub-agent's turn), and nothing else.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -171,6 +172,7 @@ if (s.hangAfterInit) {
   if (plugin) callTool(plugin, {});
 }
 
+if (s.subAgent) out({ type: 'assistant', parent_tool_use_id: 'toolu_parent', session_id: session, message: { id: `msg_${n}_sub`, model: reqModel, role: 'assistant', content: [{ type: 'text', text: 'a sub-agent turn' }] } });
 for (const use of s.toolUses ?? []) callTool(use.name, use.input, use.result);
 for (const use of s.transcriptOnly ?? []) {
   record({ type: 'assistant', message: { id: `msg_${n}_t${use.name}`, model: reqModel, role: 'assistant', content: [{ type: 'tool_use', id: `toolu_t_${use.name}`, name: use.name, input: use.input }] } });
