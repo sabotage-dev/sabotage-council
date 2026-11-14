@@ -322,6 +322,8 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
     ['a read outside the copy in the transcript', { transcript: (t: string) => t.replace(/"file_path": "[^"]*BRIEF\.md"/, '"file_path": "/etc/hosts"') }, 'CONTAMINATED', 'tool-paths'],
     ['a plugin tool in system/init', { stream: (t: string) => t.replace('"tools": ["Edit", "Glob", "Grep", "Read"]', '"tools": ["Edit", "Glob", "Grep", "Read", "mcp__p__x"]') }, 'CONTAMINATED', 'offered'],
     ['another effort on a request', { transcript: (t: string) => t.replace('"effort": "high"', '"effort": "low"') }, 'FAIL', 'effort'],
+    // A mode the gate missed (it lost a race, or the run was replayed): the ratifier is the second line.
+    ['another permission mode in system/init', { stream: (t: string) => t.replace('"permissionMode": "dontAsk"', '"permissionMode": "auto"') }, 'CONTAMINATED', 'permission-mode'],
     ['a hook log short of the calls', { hook: (t: string) => t.split('\n').slice(2).join('\n') }, 'FAIL', 'hook'],
   ])('fails the recorded run with %s', (_what, edit, status, check) => {
     const r = recorded(edit);
@@ -446,6 +448,8 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     const l = r.launches[0]!;
     expect(l.initGate).toContain(problem);
     expect(l.ratification).toMatchObject({ status: 'FAIL', failureClass: 'setup' });
+    // The record names the gate as the failed check, with its reason.
+    expect(l.ratification.checks.find((c) => c.name === 'init-gate')).toMatchObject({ ok: false, detail: l.initGate });
     expect(l.exit.doneBy).toBe('cancel');
     expect(existsSync(join(home, 'TOOL-EXECUTED'))).toBe(false);
     const stream = readFileSync(join(l.dir, 'stream.jsonl'), 'utf8');
@@ -513,6 +517,7 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     ['a change to the copy', { writeIntoCopy: 'planted.txt' }, ['copy-unchanged']],
     ['a tool beyond the four', { toolUses: [{ name: 'Bash', input: { command: 'true' } }] }, ['tools-used', 'permission-denials', 'hook-denials']],
     ['a subagent sidechain', { sidechain: true }, ['sidechains']],
+    ['another cwd in system/init', { initCwd: '/' }, ['cwd']],
   ])('is contaminated by %s', async (_what, scenario, failedChecks) => {
     const s = await settledRound();
     const { env } = adjHome([{ ...scenario, output: placeholderDoc(s.summary) }]);
@@ -597,6 +602,8 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     const h = harness();
     const { repo } = fixtureRepo();
     const { prepared } = await runRound(h, resolveDiffTarget(repo, 'main..feature'), { codex: { [OCC.a]: [codexCase('usage-limit')] } });
+    // A leg that failed but left an answer (as a contaminated leg can): it is not a review, so it is not an input.
+    writeFileSync(join(h.layout.roundsDir, String(prepared.inputs.roundId), 'legs', 'a-primary-1', 'answer.md'), 'NONCE: 000000000000\nan answer from a leg that did not ratify\n');
     const s: Settled = { h, roundId: prepared.inputs.roundId, summary: roundSummary(h.store, h.layout, prepared.inputs.roundId) };
     const { env } = adjHome([{ output: placeholderDoc(s.summary) }]);
     const r = await headless(s, env, { keepWorkspace: true });
