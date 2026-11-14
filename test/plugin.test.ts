@@ -112,6 +112,7 @@ describe('plugin', () => {
     expect(read('plugin/ADJUDICATE.md')).toContain('`--post --expect <the review sha256 that dry run printed>`');
     // P9: "which seat should I swap?" points at stats and the swap-candidate flag, which never swaps by itself.
     expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('which seat should I swap?');
+    expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('When the user asks which seat to swap, run `sabotage-council stats` and read its **recommendations**');
     expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('**swap candidate**');
     expect(read('plugin/skills/sabotage-council/SKILL.md')).toContain('nothing swaps a seat by itself');
     expect(read('plugin/commands/council.md')).toContain('`sabotage-council seats swap ... --dry-run`');

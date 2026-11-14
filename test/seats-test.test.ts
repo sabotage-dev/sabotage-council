@@ -211,6 +211,15 @@ describe('seats test: one leg end to end with the fake claude', () => {
     expect(storeRows(p.db)).toMatchObject({ rounds: 0, legs: 0, occupants: 0 });
   });
 
+  it('an answer with no verdict and no findings is not a review (exit 1, empty)', async () => {
+    const fake = fakeClaude({ answer: 'NONCE: ${NONCE}\n\nI could not get to this one.' });
+    const p = places();
+    const r = await run(['seats', 'test', 'claude:claude-haiku-5-5:low', '--json'], fake, p);
+    expect(r.code).toBe(1);
+    expect(JSON.parse(r.text.slice(r.text.indexOf('{')))).toMatchObject({ ratified: false, status: 'FAIL', failure_class: 'empty', verdict: 'none' });
+    expect(running(fake.bin)).toEqual([]);
+  });
+
   it('a leg that fails ratification does not qualify (exit 1), and says which check failed', async () => {
     const fake = fakeClaude({ fixture: fixtureDir('claude', 'contaminated-used') });
     const p = places();
