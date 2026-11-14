@@ -126,6 +126,28 @@ describe('rulings under the daemon (plan 3.8): a held row is released only by a 
     }
   });
 
+  it('a crash right after the ruling COMMENT posted: the resume adopts it and the row holds for a ruling', async () => {
+    const w = await world();
+    w.adj.kind = 'ruling';
+    let crash = true;
+    await w.pass({
+      hooks: {
+        afterPost: () => {
+          if (crash) {
+            crash = false;
+            throw new Error('the daemon died right after the POST');
+          }
+        },
+      },
+    });
+    expect(row(w)).toMatchObject({ state: 'posting', event: 'COMMENT', reason: 'posting the ruling COMMENT' });
+    w.addReview(landed(w));
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'needs-ruling', review_id: 990001 });
+    expect(sent(w)).toHaveLength(1);
+    expect(w.notices.map((n) => n.kind)).toEqual(['needs-ruling']);
+  });
+
   it('refuses a release while the daemon holds the row, and a release of a round that does not hold', async () => {
     const w = await world();
     w.adj.kind = 'hold';
