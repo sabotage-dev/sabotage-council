@@ -494,9 +494,23 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
     expect(paths).toContain('routes/$id');
   });
 
-  it('ratifies the recorded run with a brace group in one segment (it reduces to the copy)', () => {
-    const r = recorded(both(GLOB, '"pattern": "**/*.{js,md}"'));
+  it.each(['**/*.{js,md}', '**/*.ts', 'src/**/x*.md', '*.[jt]s', '_council/legs/*/answer.md'])('ratifies the recorded run with the ordinary pattern %s', (pattern) => {
+    const r = recorded(both(GLOB, `"pattern": "${pattern}"`));
     expect(r.checks.filter((c) => !c.ok)).toEqual([]);
+  });
+
+  it.each([
+    ['a Glob base outside the copy', '"pattern": "*", "path": "/etc"', '/etc (resolves outside the root)'],
+    ['a pattern directory that leaves through its base', '"pattern": "x/*", "path": "/etc"', 'directory x'],
+    ['a Grep glob with an absolute brace alternative', '"pattern": "x", "glob": "{/etc/passwd,**}"', 'brace alternative holding "/"'],
+  ])('is CONTAMINATED on tool-paths with %s', (_what, input, detail) => {
+    // The recorded call is a Glob; the Grep case renames it in both records and the hook log.
+    const r2 = input.includes('"glob"')
+      ? recorded({ ...both(/"name": "Glob", "input": \{"pattern": "\*\*\/\*"\}/g, `"name": "Grep", "input": {${input}}`), hook: (t: string) => t.replace('"tool":"Glob"', '"tool":"Grep"') })
+      : recorded(both(GLOB, input));
+    expect(r2.status).toBe('CONTAMINATED');
+    expect(r2.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(['tool-paths']);
+    expect(r2.checks.find((c) => c.name === 'tool-paths')!.detail).toContain(detail);
   });
 });
 
