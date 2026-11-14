@@ -24,6 +24,7 @@ import {
   getRow,
   heartbeat,
   HEARTBEAT_MS,
+  linkRound,
   markChecked,
   MAX_ATTEMPTS,
   pidAlive,
@@ -93,6 +94,8 @@ export interface PassOptions {
         beforePostRead?: ((roundId: number) => void) | undefined;
         afterLegs?: ((roundId: number) => void) | undefined;
         afterPrepare?: ((roundId: number) => void) | undefined;
+        /** Inside the transaction that inserts the round and links it to the row. */
+        roundInserted?: ((roundId: number) => void) | undefined;
       }
     | undefined;
   log?: ((line: string) => void) | undefined;
@@ -133,7 +136,7 @@ export interface PassReport {
   rows: RowReport[];
   rounds_last_24h: number;
   max_rounds_per_day: number;
-  pruned: { retired: number; round_dirs: number; roots: number };
+  pruned: { retired: number; round_dirs: number; roots: number; orphans: number };
   /** PRs read for continuation (and the prune) this pass, of how many in the ledger. */
   continuation: { read: number; of: number };
   notifications: Array<{ kind: string; key: string; outcome: string }>;
@@ -361,7 +364,7 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     rows: [],
     rounds_last_24h: 0,
     max_rounds_per_day: auto.max_rounds_per_day,
-    pruned: { retired: 0, round_dirs: 0, roots: 0 },
+    pruned: { retired: 0, round_dirs: 0, roots: 0, orphans: 0 },
     continuation: { read: 0, of: 0 },
     notifications: [],
     errors: [],
@@ -747,6 +750,13 @@ async function step(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, sig
       return;
     }
     if (row.round_id === null) {
+      // The daily cap counts every round the daemon starts, a resumed row's too (P8 round 1 row 4; Q8).
+      const used = roundsSince(store, ctx.nowMs());
+      if (used >= ctx.auto.max_rounds_per_day) {
+        const why = `max_rounds_per_day (${ctx.auto.max_rounds_per_day}) reached: ${used} rounds in the last 24 h; the row waits`;
+        ctx.report.candidates.push({ pr: prLabel(ref), head: row.head, source: newAttempt ? 'retry' : 'resume', action: 'deferred', why });
+        return;
+      }
       if (!prepare(ctx, claim, row, ref)) return;
       preparedHere = getRow(db, claim.key)?.round_id ?? null;
       continue;
@@ -758,12 +768,17 @@ async function step(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, sig
     }
     switch (round.status) {
       case 'running': {
-        if (preparedHere !== round.id || existsSync(join(roundDirOf(o.layout, round.id), 'runner.json'))) {
-          // The legs belonged to a process that is gone: the round failed, and the attempt with it.
-          failRound(store, round.id, 'daemon-died', 'the auto pass that ran these legs is gone');
-          fail(ctx, claim, row, 'the pass that ran the legs died');
+        const started = existsSync(join(roundDirOf(o.layout, round.id), 'runner.json'));
+        const prepared = preparedHere === round.id || getEvents(db, round.id).some((e) => e.kind === 'round-prepared');
+        if (started || !prepared) {
+          // The legs belonged to a process that is gone, or its preparation never finished: the round failed, and the
+          // attempt with it.
+          failRound(store, round.id, 'daemon-died', started ? 'the auto pass that ran these legs is gone' : 'the auto pass that prepared this round died before it finished');
+          fail(ctx, claim, row, started ? 'the pass that ran the legs died' : 'the pass that prepared the round died');
           return;
         }
+        // Prepared and linked, its legs never started (the pass that prepared it died first): they run now, on this
+        // round, so a crash leaves no second round for the head (P8 round 1 row 4).
         await legsAndTests(ctx, round, signal);
         preparedHere = null;
         continue;
@@ -837,14 +852,19 @@ function prepare(ctx: Ctx, claim: Claim, row: LedgerRow, ref: PrRef): boolean {
       headless: true,
       roundNo: row.round_no ?? undefined,
       expectHead: row.head,
+      // P8 round 1 row 4: the round is linked to this row, and counted for the daily cap, in the transaction that
+      // inserts it. A claim taken over meanwhile rolls the round back: no round exists that no row knows.
+      onRound: (db, roundId, roundNo, kind) => {
+        if (!linkRound(db, claim, roundId, roundNo)) throw new PassError('the claim was taken over before the round was linked: no round is created');
+        if (kind === 'council') {
+          db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES (?, 'auto-round', ?, ?)").run(new Date(ctx.nowMs()).toISOString(), roundId, JSON.stringify({ row: claim.key, dry_run: o.dryRun }));
+        }
+        o.hooks?.roundInserted?.(roundId);
+      },
     });
     const roundId = r.kind === 'identity' ? r.roundId : r.prepared.inputs.roundId;
     const roundNo = r.kind === 'identity' ? r.roundNo : r.prepared.inputs.roundNo;
-    if (r.kind === 'council') {
-      store.db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES (?, 'auto-round', ?, ?)").run(new Date(ctx.nowMs()).toISOString(), roundId, JSON.stringify({ row: claim.key, dry_run: o.dryRun }));
-    }
     insertEvent(store.db, 'auto-prepared', roundId, { kind: r.kind, round_no: roundNo, warnings: r.warnings });
-    if (!move(ctx, claim, { round_id: roundId, round_no: row.round_no ?? roundNo })) return false;
     o.hooks?.afterPrepare?.(roundId);
     return true;
   } catch (error) {
@@ -1133,6 +1153,21 @@ function prune(ctx: Ctx, candidates: readonly Candidate[]): void {
         rowReport(ctx, row, row.state, 'retired', 'the PR is closed');
       }
     }
+  }
+  // A running round the daemon started (it carries an auto-round event) that no ledger row references: its pass died
+  // before the round was linked (a store from before the link was atomic, or a row reset since). It never runs again,
+  // so it fails and its roots go (P8 round 1 row 4). Rounds of `round start` carry no auto-round event.
+  const orphans = db
+    .prepare(
+      `SELECT r.id FROM rounds r WHERE r.status = 'running'
+         AND EXISTS (SELECT 1 FROM events e WHERE e.round_id = r.id AND e.kind = 'auto-round')
+         AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.round_id = r.id)`,
+    )
+    .all() as Array<{ id: number }>;
+  for (const { id } of orphans) {
+    failRound(store, id, 'orphaned', 'no ledger row references this auto round: the pass that started it died before linking it');
+    report.pruned.roots += removeRoundRoots(o.layout, id).filter((x) => x.removed).length;
+    report.pruned.orphans++;
   }
   // Round dirs older than 90 days (the rows stay: the scorecard needs them), and failed rounds' roots after 2 days.
   const nowMs = ctx.nowMs();

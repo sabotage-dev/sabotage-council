@@ -13,7 +13,7 @@ import { commitExists, type ShadowRepo } from '../root/git.js';
 import type { Store } from '../store/open.js';
 import type { DatabaseSync } from '../store/sqlite.js';
 import type { PrDetail } from './facts.js';
-import { prepareRound, roundDirOf, rosterOf, type DataLayout, type PreparedRound } from './prepare.js';
+import { inTransaction, prepareRound, roundDirOf, rosterOf, type DataLayout, type PreparedRound } from './prepare.js';
 import { carriedItems, insertEvent, now, sha256, upsertTarget, type CarriedItem, type RoundNumbering } from './records.js';
 import { safeName, type ResolvedTarget } from './target.js';
 
@@ -69,6 +69,11 @@ export interface PrRoundOptions {
   roundNo?: number | undefined;
   /** P8 auto: the head the ledger claimed; a PR whose head moved since is refused before anything is written. */
   expectHead?: string | undefined;
+  /**
+   * P8 auto (round 1 row 4): runs in the transaction that inserts the round row, council or identity, so the daemon
+   * links the round to its ledger row atomically with its creation. A throw rolls the round back.
+   */
+  onRound?: ((db: DatabaseSync, roundId: number, roundNo: number, kind: 'council' | 'identity') => void) | undefined;
 }
 
 export type PrRoundResult =
@@ -283,6 +288,7 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
       marker: (roundNo) => roundMarker(o.ref, roundNo, pr.headSha),
       detail,
       dryRun: o.dryRun,
+      onInsert: o.onRound === undefined ? undefined : (d, id, roundNo) => o.onRound?.(d, id, roundNo, 'council'),
     },
   });
   for (const i of count.ignored) insertEvent(db, 'marker-ignored', prepared.inputs.roundId, i);
@@ -297,13 +303,17 @@ function identityRound(store: Store, o: PrRoundOptions, pr: PrSnapshot, count: R
   const target = { mode: 'pr' as const, repoKey: repoKeyOf(o.ref), planPath: null, branch: null, prNumber: o.ref.number };
   const targetId = upsertTarget(db, target);
   const marker = identityMarker(o.ref, pr.headSha);
-  const r = db
-    .prepare(
-      `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, roster_json, started_at, status, kind, marker, dry_run, needs_ruling)
-       VALUES (?, ?, 'pr', ?, ?, ?, ?, 'identity', 'identity', ?, ?, ?)`,
-    )
-    .run(targetId, count.roundNo, pr.headSha, pr.baseSha, JSON.stringify(rosterOf(o.config)), now(), marker, o.dryRun ? 1 : 0, userCr ? 1 : 0);
-  const roundId = Number(r.lastInsertRowid);
+  const roundId = inTransaction(db, o.onRound !== undefined, () => {
+    const r = db
+      .prepare(
+        `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, roster_json, started_at, status, kind, marker, dry_run, needs_ruling)
+         VALUES (?, ?, 'pr', ?, ?, ?, ?, 'identity', 'identity', ?, ?, ?)`,
+      )
+      .run(targetId, count.roundNo, pr.headSha, pr.baseSha, JSON.stringify(rosterOf(o.config)), now(), marker, o.dryRun ? 1 : 0, userCr ? 1 : 0);
+    const id = Number(r.lastInsertRowid);
+    o.onRound?.(db, id, count.roundNo, 'identity');
+    return id;
+  });
   const detail = {
     match,
     pr: { owner: o.ref.owner, repo: o.ref.repo, number: o.ref.number, author: pr.author, base_ref: pr.baseRef, default_branch: pr.defaultBranch, head_sha: pr.headSha },

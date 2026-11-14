@@ -259,6 +259,20 @@ export function update(db: DatabaseSync, claim: Claim, patch: RowPatch): boolean
   });
 }
 
+/**
+ * Links a round to the claimed row, fenced, inside the caller's transaction (the one that inserts the round, P8 round 1
+ * row 4): the round and its link commit together or not at all. The row's number stays the one fixed at its claim.
+ * False (and nothing written) for an owner whose claim was taken over.
+ */
+export function linkRound(db: DatabaseSync, claim: Claim, roundId: number, roundNo: number): boolean {
+  const r = db
+    .prepare('UPDATE ledger SET round_id = ?, round_no = coalesce(round_no, ?), updated_at = ? WHERE repo = ? AND num = ? AND head = ? AND claim_owner = ?')
+    .run(roundId, roundNo, now(), claim.key.repo, claim.key.num, claim.key.head, claim.owner);
+  if (Number(r.changes) !== 1) return false;
+  ledgerEvent(db, { ...claim.key, round_id: roundId }, { change: 'round-linked', round_id: roundId });
+  return true;
+}
+
 /** Releases a claim (the row keeps its state); a no-op for an owner whose claim was taken over. */
 export function release(db: DatabaseSync, claim: Claim): void {
   db.prepare('UPDATE ledger SET claim_owner = NULL, claim_pid = NULL, claim_started = NULL, heartbeat_at = NULL, updated_at = ? WHERE repo = ? AND num = ? AND head = ? AND claim_owner = ?').run(

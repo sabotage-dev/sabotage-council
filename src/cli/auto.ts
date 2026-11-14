@@ -74,7 +74,7 @@ export function renderReport(r: PassReport): string[] {
   for (const x of r.rows) out.push(`row ${x.pr}@${x.head.slice(0, 7)}: ${x.from ?? 'new'} -> ${x.to}${x.round_id !== null ? ` (round ${x.round_id})` : ''}${x.why !== '' ? `: ${x.why}` : ''}`);
   for (const n of r.notifications) out.push(`notify ${n.kind} ${n.outcome}: ${n.key}`);
   out.push(`rounds in the last 24 h: ${r.rounds_last_24h} of ${r.max_rounds_per_day}`);
-  out.push(`pruned: ${r.pruned.retired} row(s) retired, ${r.pruned.round_dirs} round dir(s), ${r.pruned.roots} root(s)`);
+  out.push(`pruned: ${r.pruned.retired} row(s) retired, ${r.pruned.round_dirs} round dir(s), ${r.pruned.roots} root(s), ${r.pruned.orphans ?? 0} orphaned round(s) failed`);
   for (const e of r.errors) out.push(`error ${e}`);
   return out;
 }

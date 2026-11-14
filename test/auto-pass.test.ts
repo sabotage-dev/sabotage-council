@@ -341,6 +341,73 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     }
   });
 
+  it('a round is linked to its row in the transaction that creates it: a crash after it resumes that round, never a second (P8 round 1 row 4)', async () => {
+    const w = await world();
+    const dead = JSON.stringify({ host: hostname(), pid: deadPid(), token: 'dead' });
+    let inside: unknown = null;
+    await w.pass({
+      hooks: {
+        roundInserted: (roundId) => {
+          // Uncommitted yet: the row already names the round, and the cap already counts it.
+          inside = {
+            linked: (w.h.store.db.prepare('SELECT round_id FROM ledger WHERE head = ?').get(w.d) as { round_id: number | null }).round_id === roundId,
+            counted: (w.h.store.db.prepare("SELECT count(*) AS n FROM events WHERE kind = 'auto-round' AND round_id = ?").get(roundId) as { n: number }).n,
+          };
+        },
+        afterPrepare: () => {
+          // The daemon dies right after the round was prepared, before its legs started.
+          w.h.store.db.prepare('UPDATE ledger SET claim_owner = ?, heartbeat_at = ?').run(dead, new Date().toISOString());
+          throw new Error('the daemon died after the prepare');
+        },
+      },
+    });
+    expect(inside).toEqual({ linked: true, counted: 1 });
+    const roundId = row(w)['round_id'] as number;
+    expect(row(w)).toMatchObject({ state: 'running', attempts: 1, claim_owner: dead });
+    expect(getRound(w.h.store.db, roundId)?.status).toBe('running');
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'approved', attempts: 1, round_id: roundId });
+    expect(roundsCount(w.h)).toBe(1);
+    expect(getLegs(w.h.store.db, roundId).length).toBeGreaterThan(0);
+    expect(posts(w)).toBe(1);
+  });
+
+  it('a resume that would prepare a round waits at max_rounds_per_day; a running auto round no row references is failed and its roots pruned (P8 round 1 row 4)', async () => {
+    const w = await world({ auto: 'max_rounds_per_day = 1\n' });
+    // A claim whose pass died before it prepared anything, and one round already in the last 24 h.
+    const { claimRow, release } = await import('../src/auto/ledger.js');
+    const c = claimRow(w.h.store.db, { repo: REPO_KEY, num: 2, head: w.d }, { attempt: true, dryRun: false });
+    if (!c.ok) throw new Error('no claim');
+    release(w.h.store.db, c.claim);
+    w.h.store.db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES (?, 'auto-round', NULL, '{}')").run(new Date(Date.now() - 60 * 60_000).toISOString());
+    const r = await w.pass();
+    expect(r.candidates.find((x) => x.source === 'resume' && x.action === 'deferred')?.why).toBe('max_rounds_per_day (1) reached: 1 rounds in the last 24 h; the row waits');
+    expect(roundsCount(w.h)).toBe(0);
+    expect(row(w)).toMatchObject({ state: 'running', round_id: null, attempts: 1, claim_owner: null });
+    w.h.store.db.prepare("UPDATE events SET ts = ? WHERE kind = 'auto-round'").run(new Date(Date.now() - 25 * 60 * 60_000).toISOString());
+    // The cap frees: the resumed row prepares its round, and a crash leaves it running and linked.
+    await w.pass({
+      hooks: {
+        afterPrepare: () => {
+          throw new Error('the daemon died after the prepare');
+        },
+      },
+    });
+    const orphan = row(w)['round_id'] as number;
+    expect(getRound(w.h.store.db, orphan)?.status).toBe('running');
+    // The row lets go of it (as a reset does): an auto round no row references. A round of `round start` (no
+    // auto-round event) that is running is never touched.
+    w.h.store.db.prepare("UPDATE ledger SET round_id = NULL, state = 'skipped', claim_owner = NULL").run();
+    const cols = 'target_id, round_no, mode, head_sha, base_sha, baseline_sha, nonce, roster_json, started_at, status, kind, marker, dry_run';
+    const manual = Number(w.h.store.db.prepare(`INSERT INTO rounds (${cols}) SELECT ${cols} FROM rounds WHERE id = ?`).run(orphan).lastInsertRowid);
+    const p = await w.pass();
+    expect(p.pruned.orphans).toBe(1);
+    expect(p.pruned.roots).toBeGreaterThan(0);
+    expect(getRound(w.h.store.db, orphan)?.status).toBe('failed');
+    expect(getEvents(w.h.store.db, orphan).find((e) => e.kind === 'round-failed')?.detail).toMatchObject({ stage: 'orphaned' });
+    expect(getRound(w.h.store.db, manual)?.status).toBe('running');
+  });
+
   it('a head already reviewed by us (a marker review on it, another store) is skipped, never reviewed again', async () => {
     const w = await world({
       edit: (routes, _src, d) => {
