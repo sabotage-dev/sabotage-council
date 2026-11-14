@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { syncBeat } from '../beat.js';
 
 export class GitError extends Error {
   constructor(
@@ -90,6 +91,8 @@ export function runGit(args: readonly string[], options: GitOptions = {}): GitRe
   if (options.workTree !== undefined) full.push(`--work-tree=${options.workTree}`);
   full.push(...args);
   const fd = options.stdoutFile === undefined ? undefined : openSync(options.stdoutFile, 'wx', 0o644);
+  // P8 round 2 row 2: the auto daemon's lock and claim are refreshed around each git process (src/beat.ts).
+  syncBeat();
   try {
     const result = spawnSync('git', full, {
       cwd: options.cwd,
@@ -107,6 +110,7 @@ export function runGit(args: readonly string[], options: GitOptions = {}): GitRe
     return { status, stdout: result.stdout ?? Buffer.alloc(0), stderr };
   } finally {
     if (fd !== undefined) closeSync(fd);
+    syncBeat();
   }
 }
 

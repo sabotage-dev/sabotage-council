@@ -3,8 +3,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CLAIM_STALE_MS } from '../src/auto/ledger.js';
-import { BUSY_NOTIFY_AFTER, lastReport, PASS_LOCK_KEY, recordsSha } from '../src/auto/pass.js';
+import { CLAIM_STALE_MS, claimRow } from '../src/auto/ledger.js';
+import { BUSY_NOTIFY_AFTER, lastReport, PASS_LOCK_KEY, PASS_LOCK_STALE_MS, recordsSha, takePassLock } from '../src/auto/pass.js';
 import { API, FAKE_GH, type Routes } from './helpers/github.js';
 import { CLAIM_STALE_MS as POST_CLAIM_STALE_MS, claimPost, postRound, type PostOptions, type PostResult } from '../src/engine/post.js';
 import { ghApi } from '../src/forge/github.js';
@@ -835,6 +835,66 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(row(w)).toMatchObject({ state: 'approved' });
     // Taking the lock clears the streak.
     expect(JSON.parse((w.h.store.db.prepare("SELECT value FROM auto_state WHERE key = 'busy'").get() as { value: string }).value)).toEqual({ count: 0, since: null });
+  });
+
+  it('a prepare longer than the stale limit keeps its lock and its claim fresh: every git and gh process beats them, so another pass is busy and cannot take the row (P8 round 2 row 2)', async () => {
+    const w = await world();
+    let t = Date.now();
+    let seen: unknown = null;
+    await w.pass({
+      now: () => t,
+      hooks: {
+        // The git work after the round's insert (the root build) runs eleven minutes by the pass's clock.
+        roundInserted: () => {
+          t += PASS_LOCK_STALE_MS + 60_000;
+        },
+        // Before the prepare returns, another pass (its own connection) tries the lock and the row at that time.
+        afterPrepare: () => {
+          const other = openStore(w.h.layout.dbPath);
+          try {
+            seen = { lock: takePassLock(other.db, { nowMs: t }), claim: claimRow(other.db, { repo: REPO_KEY, num: 2, head: w.d }, { attempt: false, dryRun: false, nowMs: t }) };
+          } finally {
+            other.close();
+          }
+        },
+      },
+    });
+    expect(seen).toMatchObject({ lock: { busy: expect.stringMatching(/^another pass holds the pass lock/) }, claim: { ok: false, why: expect.stringMatching(/^claimed by pid/) } });
+    expect(row(w)).toMatchObject({ state: 'approved', attempts: 1 });
+    expect(roundsCount(w.h)).toBe(1);
+    expect(posts(w)).toBe(1);
+  });
+
+  it('a claim taken over while the prepare held the event loop stops the row as soon as the prepare returns: no legs run, and the next pass runs them on that round (P8 round 2 row 2)', async () => {
+    const w = await world();
+    const key = { repo: REPO_KEY, num: 2, head: w.d };
+    let taker: ReturnType<typeof claimRow> | null = null;
+    await w.pass({
+      hooks: {
+        afterPrepare: () => {
+          // Another pass found this row's heartbeat stale and took the claim, as the prepare was ending.
+          w.h.store.db.prepare('UPDATE ledger SET heartbeat_at = ?').run(new Date(Date.now() - CLAIM_STALE_MS - 60_000).toISOString());
+          const other = openStore(w.h.layout.dbPath);
+          try {
+            taker = claimRow(other.db, key, { attempt: false, dryRun: false });
+          } finally {
+            other.close();
+          }
+        },
+      },
+    });
+    const roundId = row(w)['round_id'] as number;
+    expect(taker).toMatchObject({ ok: true, takenOver: true });
+    expect(getLegs(w.h.store.db, roundId)).toEqual([]);
+    expect(getRound(w.h.store.db, roundId)?.status).toBe('running');
+    expect(row(w)).toMatchObject({ state: 'running', claim_owner: (taker as unknown as { claim: { owner: string } }).claim.owner });
+    expect(posts(w)).toBe(0);
+    // That pass ends without working the row; the next pass runs the legs of the prepared round, never a second round.
+    w.h.store.db.prepare('UPDATE ledger SET claim_owner = NULL, heartbeat_at = NULL').run();
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'approved', attempts: 1, round_id: roundId });
+    expect(roundsCount(w.h)).toBe(1);
+    expect(posts(w)).toBe(1);
   });
 
   it('a pass whose lock was taken over claims nothing more (P8 round 1 row 6)', async () => {

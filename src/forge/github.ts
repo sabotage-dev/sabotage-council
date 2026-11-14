@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { syncBeat } from '../beat.js';
 
 /*
  * GitHub access for `pr` rounds (plan 5.1 `forge/`, 9.3), through the user's own `gh` CLI (`gh api`). Why `gh` and
@@ -65,7 +66,10 @@ export function ghApi(options: GhOptions = {}): GitHubApi {
   const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1', GH_PAGER: '', CLICOLOR: '0' };
   const timeout = options.timeoutMs ?? 120_000;
   const run = (args: string[], input: string | undefined, what: string): unknown => {
+    // P8 round 2 row 2: the auto daemon's lock and claim are refreshed around each gh process (src/beat.ts).
+    syncBeat();
     const r = spawnSync(bin, ['api', ...args], { env, input, encoding: 'utf8', timeout, maxBuffer: 256 * 1024 * 1024 });
+    syncBeat();
     if (r.error) throw new ForgeError(`${what}: could not run gh (${r.error.message})`);
     if (r.status !== 0) {
       const detail = `${r.stderr}`.trim().split('\n').slice(0, 3).join(' ') || `exit status ${String(r.status)}`;

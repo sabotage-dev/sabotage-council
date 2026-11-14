@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync 
 import { hostname } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { SeatAdapters } from '../adapters/index.js';
+import { onSyncBeat } from '../beat.js';
 import { adjudicateHeadless, HeadlessError, type HeadlessResult } from '../adjudicate/index.js';
 import type { CouncilConfig } from '../config/schema.js';
 import { failRound, removeRoundRoots, roundDirOf, runWorker, type DataLayout } from '../engine/index.js';
@@ -363,9 +364,60 @@ interface Ctx {
   stopped: string | null;
   /** `auto pause` was found before a claim: the pass stops there (P8 round 1 row 8). */
   paused: boolean;
+  /** The row the pass is working on: its claim's heartbeat, and whether that claim was found taken over. */
+  row: RowBeat | null;
+  /** When the beat across synchronous work last refreshed the lock and the claim (the pass's clock). */
+  lastBeat: number | null;
+}
+
+interface RowBeat {
+  claim: Claim;
+  fenced: boolean;
+  controller: AbortController;
 }
 
 const LOCK_LOST = 'the pass lock was taken over (its heartbeat had gone stale): this pass claims nothing more';
+
+/** The beat across synchronous work refreshes the lock and the claim at most this often (P8 round 2 row 2). */
+export const SYNC_BEAT_MS = 5_000;
+
+/** Refreshes the pass lock; a lock taken over stops the pass's claims. A store that failed once is tried again later. */
+function beatLock(ctx: Ctx): void {
+  if (ctx.lock === null || ctx.stopped !== null) return;
+  try {
+    if (!ctx.lock.beat(ctx.nowMs())) ctx.stopped = LOCK_LOST;
+  } catch {
+    // the store failed this once: the next beat tries again
+  }
+}
+
+/** Refreshes the claim of the row being worked; a claim taken over fences the row and aborts its legs and adjudicator. */
+function beatRow(ctx: Ctx): void {
+  const r = ctx.row;
+  if (r === null || r.fenced) return;
+  try {
+    if (!heartbeat(ctx.store.db, r.claim, ctx.nowMs())) {
+      r.fenced = true;
+      r.controller.abort();
+    }
+  } catch {
+    // the store failed this once: the next beat tries again
+  }
+}
+
+/**
+ * P8 round 2 row 2: the beat across synchronous work. Registered for the whole pass (src/beat.ts), it runs before and
+ * after every git, gh and tar process the engine starts while the pass's `prepare`, `fetchPr`, root build and
+ * `postRound` hold the event loop, so the lock and the claim stay fresh where no timer can fire; throttled to
+ * SYNC_BEAT_MS. Forced around the prepare, so a claim lost during it is seen before the round goes on.
+ */
+function beatAll(ctx: Ctx, force: boolean): void {
+  const at = ctx.nowMs();
+  if (!force && ctx.lastBeat !== null && at - ctx.lastBeat >= 0 && at - ctx.lastBeat < SYNC_BEAT_MS) return;
+  ctx.lastBeat = at;
+  beatLock(ctx);
+  beatRow(ctx);
+}
 
 /**
  * Whether the pass may claim another row: not aborted, not paused since it started (`auto pause` stops a running pass
@@ -487,6 +539,8 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     lock: null,
     stopped: null,
     paused: false,
+    row: null,
+    lastBeat: null,
   };
   const lock = takePassLock(store.db, { nowMs: nowMs() });
   if ('busy' in lock) {
@@ -500,14 +554,9 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
   }
   busyStreak(store, false, report.started_at);
   ctx.lock = lock;
-  const beat = setInterval(() => {
-    try {
-      if (ctx.stopped === null && !lock.beat(ctx.nowMs())) ctx.stopped = LOCK_LOST;
-    } catch {
-      // the store failed this once: the next beat tries again
-    }
-  }, HEARTBEAT_MS);
+  const beat = setInterval(() => beatLock(ctx), HEARTBEAT_MS);
   beat.unref();
+  const offSyncBeat = onSyncBeat(() => beatAll(ctx, false));
   try {
     // The account check (P6 row 10, P8): every read and post is made as github.login.
     try {
@@ -533,6 +582,7 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     report.errors.push(errText(error));
     return finish('failed');
   } finally {
+    offSyncBeat();
     clearInterval(beat);
     lock.release();
   }
@@ -815,20 +865,16 @@ async function work(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, rec
   const outer = ctx.o.signal;
   const onOuter = (): void => controller.abort();
   outer?.addEventListener('abort', onOuter, { once: true });
-  let fenced = false;
-  const timer = setInterval(() => {
-    if (!heartbeat(db, claim, ctx.nowMs())) {
-      fenced = true;
-      controller.abort();
-    }
-  }, HEARTBEAT_MS);
+  const rowBeat: RowBeat = { claim, fenced: false, controller };
+  ctx.row = rowBeat;
+  const timer = setInterval(() => beatRow(ctx), HEARTBEAT_MS);
   timer.unref();
   try {
     ctx.o.hooks?.afterRowClaim?.(claim.key);
     if (reconcileOnly) {
       const row = getRow(db, claim.key);
       if (row !== undefined && !ctx.o.dryRun && (row.state === 'posting' || row.records_sha !== null)) resumePost(ctx, claim, row, true);
-    } else await step(ctx, claim, ref, newAttempt, controller.signal, () => fenced);
+    } else await step(ctx, claim, ref, newAttempt, controller.signal, () => rowBeat.fenced);
   } catch (error) {
     const row = getRow(db, claim.key);
     if (row !== undefined && (row.state === 'posting' || row.records_sha !== null)) {
@@ -837,6 +883,7 @@ async function work(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, rec
     } else if (row !== undefined) fail(ctx, claim, row, `unexpected: ${errText(error)}`);
   } finally {
     clearInterval(timer);
+    if (ctx.row === rowBeat) ctx.row = null;
     outer?.removeEventListener('abort', onOuter);
     release(db, claim);
   }
@@ -898,7 +945,12 @@ async function step(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, sig
         ctx.report.candidates.push({ pr: prLabel(ref), head: row.head, source: newAttempt ? 'retry' : 'resume', action: 'deferred', why });
         return;
       }
-      if (!prepare(ctx, claim, row, ref)) return;
+      // P8 round 2 row 2: the prepare holds the event loop (git and gh); the beat runs inside it at every process, and a
+      // forced beat on each side makes a claim lost meanwhile stop this row before its round goes on.
+      beatAll(ctx, true);
+      const ok = prepare(ctx, claim, row, ref);
+      beatAll(ctx, true);
+      if (!ok) return;
       preparedHere = getRow(db, claim.key)?.round_id ?? null;
       continue;
     }

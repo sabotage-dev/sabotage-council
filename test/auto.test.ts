@@ -11,7 +11,8 @@ import { installService, previewService, renderPlist, renderUnit, serviceArgs, s
 import { LOG_TAIL_CHARS, LOG_TAIL_LINES, runTests, testGate, testsFor, testsMarkdown } from '../src/auto/tests.js';
 import { ghApi } from '../src/forge/github.js';
 import { openStore, type Store } from '../src/store/index.js';
-import { openShadow } from '../src/root/git.js';
+import { gitText, openShadow } from '../src/root/git.js';
+import { onSyncBeat } from '../src/beat.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 import { FAKE_GH, fakeGh } from './helpers/github.js';
 import { commitAll, initRepo, writeTree } from './helpers/git-fixture.js';
@@ -246,6 +247,27 @@ describe('the pass lock: an owner-checked lease in the store, a heartbeat, stale
     expect(lock.beat(Date.now())).toBe(false);
     lock.release();
     expect(lease(a)).toBe(theirs);
+  });
+});
+
+describe('the beat across synchronous work (P8 round 2 row 2)', () => {
+  it('runs before and after every git and gh process, never breaks the work it beats for, and stops once removed', () => {
+    const calls: string[] = [];
+    const off = onSyncBeat(() => {
+      calls.push('beat');
+      throw new Error('a beat that fails');
+    });
+    try {
+      expect(gitText(['version'])).toMatch(/^git version /);
+      expect(calls).toEqual(['beat', 'beat']);
+      const gh = fakeGh({ 'GET user': { json: { login: 'reviewer-x' } } });
+      expect(ghApi({ bin: FAKE_GH, env: gh.env }).get('user')).toEqual({ login: 'reviewer-x' });
+      expect(calls).toHaveLength(4);
+    } finally {
+      off();
+    }
+    gitText(['version']);
+    expect(calls).toHaveLength(4);
   });
 });
 
