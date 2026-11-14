@@ -7,6 +7,7 @@ import { claudeErrorTexts, classifyClaudeText, claudeAnswer, offeredTools } from
 import { modelMatches } from '../adapters/claude/known.js';
 import { findTranscript, readClaudeStream, readTranscript, toolPaths, transcriptFacts, type ToolUse } from '../adapters/claude/records.js';
 import { isObject, num, str } from '../adapters/codex/records.js';
+import { globReduce } from './glob.js';
 import { ADJUDICATOR_TOOLS, MAINLOOP_DIR, OUTPUT_PLACEHOLDER } from './launch.js';
 
 /*
@@ -111,6 +112,38 @@ export function adjudicatorToolPaths(use: ToolUse): string[] {
   return toolPaths(use);
 }
 
+/**
+ * Where one tool call reaches outside the working copy (the hook's rule, judged from the record): a Read or Edit
+ * `file_path` and a Glob or Grep `path` as paths; a Glob `pattern` or Grep `glob` by the directories it reduces to
+ * (glob.ts), each judged against the call's base; a pattern that does not reduce fails closed.
+ */
+export function adjudicatorOutsidePaths(use: ToolUse, root: string, aliases: readonly string[]): string[] {
+  const out: string[] = [];
+  const judge = (p: string, label: string): void => {
+    const judged = pathInsideRoot(p, root, aliases);
+    if (!judged.inside) out.push(`${use.name} ${label} (${judged.why})`);
+  };
+  const field = (name: string): string | null => {
+    const v = use.input[name];
+    return typeof v === 'string' && v !== '' ? v : null;
+  };
+  if (use.name === 'Read' || use.name === 'Edit') {
+    const p = field('file_path');
+    if (p !== null) judge(p, p);
+  } else if (use.name === 'Glob' || use.name === 'Grep') {
+    const base = field('path');
+    if (base !== null) judge(base, base);
+    const pattern = field(use.name === 'Glob' ? 'pattern' : 'glob');
+    if (pattern !== null) {
+      const g = globReduce(pattern);
+      if (g.problem !== null) out.push(`${use.name} pattern ${pattern}: ${g.problem}`);
+      const at = base === null ? root : base.startsWith('/') ? base : posix.join(root, base);
+      for (const d of g.dirs) judge(d.startsWith('/') ? d : posix.join(at, d), `pattern ${pattern} (directory ${d === '' ? '.' : d})`);
+    }
+  }
+  return out;
+}
+
 interface HookEntry {
   tool: string | null;
   decision: string;
@@ -210,16 +243,21 @@ export function ratifyAdjudicatorRun(input: AdjudicatorRatifyInput): Adjudicator
   const outDir = posix.join(input.root, MAINLOOP_DIR);
   const outAliases = rootAliases(outDir);
   for (const use of uses) {
-    for (const p of adjudicatorToolPaths(use)) {
-      const judged = pathInsideRoot(p, input.root, aliases);
-      if (!judged.inside) outside.push(`${use.name} ${p} (${judged.why})`);
-      else if (use.name === 'Edit' && !pathInsideRoot(p, input.root, outAliases).inside) badEdits.push(`Edit ${p}`);
+    const reached = adjudicatorOutsidePaths(use, input.root, aliases);
+    outside.push(...reached);
+    if (use.name === 'Edit' && reached.length === 0) {
+      for (const p of adjudicatorToolPaths(use)) if (!pathInsideRoot(p, input.root, outAliases).inside) badEdits.push(`Edit ${p}`);
     }
   }
-  // A glob that climbs (`..`) is judged by the hook too; here any `..` in a pattern fails closed.
-  for (const use of uses) {
-    const pattern = use.name === 'Glob' ? use.input['pattern'] : use.name === 'Grep' ? use.input['glob'] : undefined;
-    if (typeof pattern === 'string' && pattern.includes('..')) outside.push(`${use.name} pattern ${pattern} (climbs)`);
+  // What the tools themselves report reading or finding (a Read's file, an Edit's file, a Glob's or Grep's file
+  // names): a path outside the copy there means the boundary did not hold, whatever the call's input said. These are
+  // real file names, so a `$` in one is a character, not an expansion.
+  const results = [...stream.toolResults, ...(facts?.toolResults ?? [])];
+  for (const r of results) {
+    for (const p of r.paths) {
+      const judged = pathInsideRoot(p, input.root, aliases, { literalDollar: true });
+      if (!judged.inside) outside.push(`the result of ${r.toolUseId ?? 'a tool call'} names ${p} (${judged.why})`);
+    }
   }
   check('tool-paths', outside.length === 0, outside.length === 0 ? 'every tool path inside the working copy' : [...new Set(outside)].join('; '));
   check('edit-paths', badEdits.length === 0, badEdits.length === 0 ? `every Edit under ${MAINLOOP_DIR}/` : [...new Set(badEdits)].join('; '));

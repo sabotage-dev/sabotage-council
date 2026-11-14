@@ -16,6 +16,7 @@ export {
   type ValidationOutcome,
 } from './validate.js';
 export { adjudicateHeadless, HeadlessError, type HeadlessOptions, type HeadlessOutcome, type HeadlessResult, type HeadlessSettings, type LaunchRecord } from './headless.js';
+export { globReduce, type GlobReduction } from './glob.js';
 export { HOOK_SOURCE, shellQuote, writeHook } from './hook.js';
 export { assignStableIds, type IdAssignment } from './ids.js';
 export {
@@ -31,5 +32,5 @@ export {
   StreamWatch,
 } from './launch.js';
 export { adjudicatePrompt, repromptText, type PromptInput } from './prompt.js';
-export { adjudicatorToolPaths, ratifyAdjudicatorRun, type AdjudicatorRatification, type AdjudicatorRatifyInput } from './ratify.js';
+export { adjudicatorOutsidePaths, adjudicatorToolPaths, ratifyAdjudicatorRun, type AdjudicatorRatification, type AdjudicatorRatifyInput } from './ratify.js';
 export { adjudicateSpec, buildWorkspace, copyTreeHash, ratificationTable, removeWorkspace, WorkspaceError, type Workspace } from './workspace.js';

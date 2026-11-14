@@ -11,6 +11,7 @@ import {
   assignStableIds,
   EDIT_RULE,
   findingIdOf,
+  globReduce,
   HeadlessError,
   HOOK_SOURCE,
   OUTPUT_PLACEHOLDER,
@@ -208,6 +209,54 @@ describe('headless adjudicator: placeholder ids (plan 7.3)', () => {
   });
 });
 
+describe('headless adjudicator: what a Glob or Grep pattern can search (round 1 row 1)', () => {
+  it.each([
+    ['**/*.ts', ['']],
+    ['src/**/x*.md', ['src']],
+    ['**/*', ['']],
+    ['*.{ts,tsx}', ['']],
+    ['{src,test}/**/*.ts', ['src', 'test']],
+    ['/abs/copy/*.py', ['/abs/copy']],
+    ['/*', ['/']],
+    ['src/a.ts', ['src/a.ts']],
+    ['repo/*.[jt]s', ['repo']],
+    ['repo/[a-z0-9_]x', ['repo']],
+    ['.eslintrc*', ['']],
+    ['**/.github/*.yml', ['']],
+  ])('%s reduces to %j', (pattern, dirs) => {
+    expect(globReduce(pattern)).toEqual({ dirs, problem: null });
+  });
+
+  it.each([
+    ['{/etc/passwd,**}', 'brace alternative holding "/"'],
+    ['src/{a,/etc/passwd}', 'brace alternative holding "/"'],
+    ['.[.]/[.]/etc/passwd', 'character class [.]'],
+    ['*/../../*', 'climbs (..)'],
+    ['{.,x}./*', 'climbs (..)'],
+    ['.?/x', 'could match ".."'],
+    ['src/.*/x', 'could match ".."'],
+    ['~/x', 'home directory'],
+    ['{~,x}/y', 'home directory'],
+    ['@(a)/x', 'extglob'],
+    ['a|b', 'extglob'],
+    ['\\*', 'escape'],
+    ['{a,{b,c}}', 'nests braces'],
+    ['a}b{', 'unbalanced brace'],
+    ['a{b', 'unbalanced brace'],
+    ['[!a]x', 'character class [!a]'],
+    ['[^a]x', 'character class [^a]'],
+    ['[/]etc', 'unclosed character class'],
+    ['[--0]x', 'range that is not between two letters or digits'],
+    ['a[bc', 'unclosed character class'],
+    ['[z-a]x', 'cannot judge'],
+    [`${'{a,b}'.repeat(9)}`, 'more than 256 alternatives'],
+  ])('%s is a problem: %s', (pattern, problem) => {
+    const got = globReduce(pattern);
+    expect(got.dirs).toEqual([]);
+    expect(got.problem).toContain(problem);
+  });
+});
+
 describe('headless adjudicator: the PreToolUse hook (plan 6.4, second line)', () => {
   /** A working copy with a file, `_mainloop/`, a link out and a dangling link, and a canary outside it. */
   function copyDir(): { root: string; outside: string; log: string; script: string } {
@@ -251,6 +300,22 @@ describe('headless adjudicator: the PreToolUse hook (plan 6.4, second line)', ()
     ['Grep inside', 'Grep', { pattern: 'x', path: 'repo', glob: '*.py' }, 'allow', null],
     ['Grep outside', 'Grep', { pattern: 'x', path: '..' }, 'deny', 'resolves outside the working copy'],
     ['Grep with a climbing glob', 'Grep', { pattern: 'x', glob: '{..,x}/*' }, 'deny', 'climbs'],
+    // Round 1 row 1: a pattern is judged by the directories it reduces to, never by the text before its first wildcard.
+    ['Glob of every TypeScript file', 'Glob', { pattern: '**/*.ts' }, 'allow', null],
+    ['Glob below a literal directory', 'Glob', { pattern: 'src/**/x*.md' }, 'allow', null],
+    ['Glob with a brace group in one segment', 'Glob', { pattern: '**/*.{ts,tsx}' }, 'allow', null],
+    ['Grep with a brace group in one segment', 'Grep', { pattern: 'x', glob: '*.{ts,tsx}' }, 'allow', null],
+    ['Glob with a plain character class', 'Glob', { pattern: 'repo/*.[a-z]y' }, 'allow', null],
+    ['Glob with an absolute pattern inside the copy', 'Glob', { pattern: '@ROOT@/repo/*.py' }, 'allow', null],
+    ['Glob with an absolute brace alternative', 'Glob', { pattern: '{/etc/passwd,**}' }, 'deny', 'brace alternative holding "/"'],
+    ['Glob with an absolute alternative after a literal', 'Glob', { pattern: 'src/{a,/etc/passwd}' }, 'deny', 'brace alternative holding "/"'],
+    ['Grep glob with an absolute brace alternative', 'Grep', { pattern: 'x', glob: '{/etc/passwd,**}' }, 'deny', 'brace alternative holding "/"'],
+    ['Glob that climbs through character classes', 'Glob', { pattern: '.[.]/[.]/etc/passwd' }, 'deny', 'character class [.]'],
+    ['Glob that climbs through a dot segment', 'Glob', { pattern: 'repo/.?/OUTSIDE-CANARY.txt' }, 'deny', 'could match ".."'],
+    ['Glob with an extglob', 'Glob', { pattern: '+(a|b)/*' }, 'deny', 'extglob'],
+    ['Glob with a negated class', 'Glob', { pattern: 'repo/[!a]*' }, 'deny', 'character class [!a]'],
+    ['Glob with nested braces', 'Glob', { pattern: '{a,{b,c}}/*' }, 'deny', 'nests braces'],
+    ['Glob with an outside absolute prefix', 'Glob', { pattern: '/etc*' }, 'deny', 'resolves outside the working copy'],
     ['Edit of the output', 'Edit', { file_path: '_mainloop/ADJUDICATION.json', old_string: '{}', new_string: '{"a":1}' }, 'allow', null],
     ['Edit of a reviewed file', 'Edit', { file_path: 'repo/a.py', old_string: 'x', new_string: 'y' }, 'deny', 'Edit is allowed only under _mainloop/'],
     ['Edit outside the copy', 'Edit', { file_path: '@OUTSIDE@', old_string: 'c', new_string: 'd' }, 'deny', 'resolves outside the working copy'],
@@ -329,6 +394,31 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
     const r = recorded(edit);
     expect(r.status).toBe(status);
     expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toContain(check);
+  });
+
+  // Round 1 row 1: the recorded Glob ("**/*") replaced in both records, and the tools' own results replaced.
+  const sub = (from: RegExp, to: string) => (t: string): string => t.replace(from, to);
+  const both = (from: RegExp, to: string) => ({ stream: sub(from, to), transcript: sub(from, to) });
+  const GLOB = /"pattern": "\*\*\/\*"/g;
+  it.each([
+    ['a Glob pattern with an absolute brace alternative', both(GLOB, '"pattern": "{/etc/passwd,**}"'), 'brace alternative holding "/"'],
+    ['a Glob pattern with an absolute alternative after a literal', both(GLOB, '"pattern": "src/{a,/etc/passwd}"'), 'brace alternative holding "/"'],
+    ['a Glob pattern that climbs through character classes', both(GLOB, '"pattern": ".[.]/[.]/etc/passwd"'), 'character class [.]'],
+    ['a Glob pattern whose literal directory is outside', both(GLOB, '"pattern": "/etc/*"'), 'resolves outside the root'],
+    ['a Glob result naming an absolute path outside', both(/"filenames": \["BRIEF\.md"/g, '"filenames": ["/etc/passwd"'), 'names /etc/passwd'],
+    ['a Glob result that climbs, in the transcript only', { transcript: sub(/"filenames": \["BRIEF\.md"/g, '"filenames": ["../../OUTSIDE-CANARY.txt"') }, 'names ../../OUTSIDE-CANARY.txt'],
+    ['a Read result naming a file outside, in the stream only', { stream: sub(/"filePath": "[^"]*\/PR\.md"/g, '"filePath": "/etc/hosts"') }, 'names /etc/hosts'],
+    ['an Edit result naming a file outside, in the transcript only', { transcript: sub(/"filePath": "[^"]*\/_mainloop\/ADJUDICATION\.json", "oldString"/g, '"filePath": "/tmp/elsewhere.json", "oldString"') }, 'names /tmp/elsewhere.json'],
+  ])('is CONTAMINATED on tool-paths with %s', (_what, edit, detail) => {
+    const r = recorded(edit);
+    expect(r.status).toBe('CONTAMINATED');
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(['tool-paths']);
+    expect(r.checks.find((c) => c.name === 'tool-paths')!.detail).toContain(detail);
+  });
+
+  it('ratifies the recorded run with a brace group in one segment (it reduces to the copy)', () => {
+    const r = recorded(both(GLOB, '"pattern": "**/*.{js,md}"'));
+    expect(r.checks.filter((c) => !c.ok)).toEqual([]);
   });
 });
 
@@ -488,14 +578,39 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     expect(failed[0]!.detail).toContain('/etc/hosts');
   });
 
-  it('judges a glob that climbs from the transcript alone', async () => {
+  it.each([
+    ['*/../../*', 'climbs (..)'],
+    ['{/etc/passwd,**}', 'brace alternative holding "/"'],
+    ['src/{a,/etc/passwd}', 'brace alternative holding "/"'],
+    ['.[.]/[.]/etc/passwd', 'character class [.]'],
+  ])('judges the glob %s from the transcript alone', async (pattern, detail) => {
     const s = await settledRound();
-    const { env } = adjHome([{ transcriptOnly: [{ name: 'Glob', input: { pattern: '*/../../*' } }], output: placeholderDoc(s.summary) }]);
+    const { env } = adjHome([{ transcriptOnly: [{ name: 'Glob', input: { pattern } }], output: placeholderDoc(s.summary) }]);
     const r = await headless(s, env);
     expect(r.outcome).toBe('needs-ruling');
     const failed = r.launches[0]!.ratification.checks.filter((c) => !c.ok);
     expect(failed.map((c) => c.name)).toEqual(['tool-paths', 'hook']);
-    expect(failed[0]!.detail).toContain('(climbs)');
+    expect(failed[0]!.detail).toContain(detail);
+  });
+
+  it('denies a brace glob that names an outside path at the hook, and holds the round', async () => {
+    const s = await settledRound();
+    const { env } = adjHome([{ toolUses: [{ name: 'Glob', input: { pattern: '{/etc/passwd,**}' } }], output: placeholderDoc(s.summary) }]);
+    const r = await headless(s, env);
+    expect(r.outcome).toBe('needs-ruling');
+    const l = r.launches[0]!;
+    expect(l.ratification.status).toBe('CONTAMINATED');
+    expect(l.ratification.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(expect.arrayContaining(['tool-paths', 'permission-denials', 'hook-denials']));
+    const hookLog = readFileSync(join(l.dir, 'hook.log'), 'utf8').trim().split('\n').map((x) => JSON.parse(x) as Json);
+    expect(hookLog[0]).toMatchObject({ tool: 'Glob', decision: 'deny' });
+    expect(String(hookLog[0]!['reason'])).toContain('brace alternative holding "/"');
+  });
+
+  it('allows a brace glob in one segment end to end: adjudicated', async () => {
+    const s = await settledRound();
+    const { env } = adjHome([{ toolUses: [{ name: 'Glob', input: { pattern: '**/*.{py,md}' }, result: { filenames: ['BRIEF.md'] } }, { name: 'Grep', input: { pattern: 'x', glob: '*.{py,md}' } }], output: placeholderDoc(s.summary) }]);
+    const r = await headless(s, env);
+    expect(r.outcome, r.reason).toBe('adjudicated');
   });
 
   it('cancels a running launch when the call is aborted: failed, nothing stored, the process gone', async () => {
@@ -515,6 +630,7 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     ['an Edit outside _mainloop/', { toolUses: [{ name: 'Edit', input: { file_path: 'BRIEF.md', old_string: 'NONCE', new_string: 'X' } }] }, ['edit-paths', 'permission-denials', 'hook-denials']],
     ['an Edit of its own inputs', { toolUses: [{ name: 'Edit', input: { file_path: '_council/ROUND.json', old_string: '{', new_string: '[' } }] }, ['edit-paths', 'permission-denials', 'hook-denials']],
     ['a change to the copy', { writeIntoCopy: 'planted.txt' }, ['copy-unchanged']],
+    ['a Glob whose result names a file outside the copy', { toolUses: [{ name: 'Glob', input: { pattern: '**/*' }, result: { filenames: ['../../OUTSIDE-CANARY.txt'] } }] }, ['tool-paths']],
     ['a tool beyond the four', { toolUses: [{ name: 'Bash', input: { command: 'true' } }] }, ['tools-used', 'permission-denials', 'hook-denials']],
     ['a subagent sidechain', { sidechain: true }, ['sidechains']],
     ['another cwd in system/init', { initCwd: '/' }, ['cwd']],

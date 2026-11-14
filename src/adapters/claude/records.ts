@@ -15,10 +15,19 @@ export interface ToolUse {
   source: 'stream' | 'transcript';
 }
 
+/** The paths a tool's own result reports (a Read's `file.filePath`, an Edit's `filePath`, a Glob's `filenames`). */
+export interface ToolResultPaths {
+  toolUseId: string | null;
+  paths: string[];
+  source: 'stream' | 'transcript';
+}
+
 export interface ClaudeStream {
   init: Json | null;
   result: Json | null;
   toolUses: ToolUse[];
+  /** Paths named by tool results (`tool_use_result` on the user rows). */
+  toolResults: ToolResultPaths[];
   /** Main-thread assistant text blocks, in order: the whole reply. */
   texts: string[];
   /** `message.id` of each assistant line, in order: one id per API request. */
@@ -28,6 +37,26 @@ export interface ClaudeStream {
   malformed: number;
   /** The last line is cut off. */
   tornTail: boolean;
+}
+
+/** Every path a tool result names: `filePath`, `file.filePath`, and each entry of `filenames`. */
+export function resultPaths(result: unknown): string[] {
+  if (!isObject(result)) return [];
+  const out: string[] = [];
+  const add = (v: unknown): void => {
+    if (typeof v === 'string' && v !== '') out.push(v);
+  };
+  add(result['filePath']);
+  if (isObject(result['file'])) add(result['file']['filePath']);
+  if (Array.isArray(result['filenames'])) for (const f of result['filenames']) add(f);
+  return out;
+}
+
+/** The tool_use_id of a user row's tool_result block, when it has exactly one. */
+function resultIdOf(message: unknown): string | null {
+  if (!isObject(message) || !Array.isArray(message['content'])) return null;
+  const ids = message['content'].filter((b) => isObject(b) && str(b['type']) === 'tool_result').map((b) => (isObject(b) ? str(b['tool_use_id']) : null));
+  return ids.length === 1 ? (ids[0] ?? null) : null;
 }
 
 function toolUsesOf(message: unknown, source: ToolUse['source']): ToolUse[] {
@@ -42,7 +71,7 @@ function toolUsesOf(message: unknown, source: ToolUse['source']): ToolUse[] {
 }
 
 export function readClaudeStream(path: string): ClaudeStream {
-  const out: ClaudeStream = { init: null, result: null, toolUses: [], texts: [], messageIds: [], extraInit: 0, malformed: 0, tornTail: false };
+  const out: ClaudeStream = { init: null, result: null, toolUses: [], toolResults: [], texts: [], messageIds: [], extraInit: 0, malformed: 0, tornTail: false };
   if (!existsSync(path)) return out;
   const { rows, malformed, tornTail } = readJsonl(path);
   out.malformed = malformed;
@@ -55,6 +84,9 @@ export function readClaudeStream(path: string): ClaudeStream {
     } else if (type === 'result') {
       if (out.result) out.extraInit++;
       out.result = row;
+    } else if (type === 'user') {
+      const paths = resultPaths(row['tool_use_result']);
+      if (paths.length > 0) out.toolResults.push({ toolUseId: resultIdOf(row['message']), paths, source: 'stream' });
     } else if (type === 'assistant') {
       out.toolUses.push(...toolUsesOf(row['message'], 'stream'));
       const message = row['message'];
@@ -128,6 +160,8 @@ export interface TranscriptFacts {
   assistantTexts: string[];
   apiErrors: Array<{ status: number | null; text: string }>;
   toolUses: ToolUse[];
+  /** Paths named by tool results (`toolUseResult` on the user entries). */
+  toolResults: ToolResultPaths[];
   sidechains: number;
   /** Attachment types of instruction files that loaded (user-owned context). */
   instructionFiles: string[];
@@ -143,6 +177,7 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
     assistantTexts: [],
     apiErrors: [],
     toolUses: [],
+    toolResults: [],
     sidechains: 0,
     instructionFiles: [],
   };
@@ -172,6 +207,9 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
         facts.assistantModels.push(model);
       }
       facts.toolUses.push(...toolUsesOf(message, 'transcript'));
+    } else if (type === 'user') {
+      const paths = resultPaths(e['toolUseResult']);
+      if (paths.length > 0) facts.toolResults.push({ toolUseId: resultIdOf(e['message']), paths, source: 'transcript' });
     } else if (type === 'attachment') {
       const att = isObject(e['attachment']) ? e['attachment'] : {};
       if (str(att['type']) === 'instructions' || str(att['type']) === 'nested_memory') {

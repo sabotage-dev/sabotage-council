@@ -11,7 +11,9 @@
 // - hangAfterInit: print init, then wait `actAfterMs` (default 1500) and act as a model that calls the first offered
 //   tool beyond the four: it writes $HOME/TOOL-EXECUTED (the canary's side effect), then answers. A run the init gate
 //   kills never gets there;
-// - toolUses: [{ name, input }] calls before the output Edit (paths relative to the cwd are kept as given);
+// - toolUses: [{ name, input, result }] calls before the output Edit (paths relative to the cwd are kept as given);
+//   `result` is the tool's own result record (tool_use_result in the stream, toolUseResult in the transcript); by
+//   default an allowed Read reports { file: { filePath } } and an Edit { filePath }, resolved against the cwd;
 // - output: the ADJUDICATION.json to write with one Edit (an object or a string); `${NONCE}`, `${HEAD}` and `${ROUND}`
 //   in a string are the round's, read from _council/ROUND.json. Absent: no Edit (the placeholder stays);
 // - transcriptOnly: [{ name, input }] tool uses that appear in the transcript only (no hook, no stream line);
@@ -130,11 +132,15 @@ function runHook(name, input, toolUseId) {
   return null;
 }
 
-function callTool(name, input) {
+function callTool(name, input, given) {
   const toolUseId = `toolu_${n}_${msg + 1}`;
   turn([{ type: 'tool_use', id: toolUseId, name, input }]);
   const denied = runHook(name, input, toolUseId);
   let text = 'ok';
+  const abs = (p) => (isAbsolute(p) ? p : join(cwd, p));
+  let toolResult = given;
+  if (toolResult === undefined && denied === null && name === 'Read') toolResult = { type: 'text', file: { filePath: abs(input.file_path) } };
+  if (toolResult === undefined && denied === null && name === 'Edit') toolResult = { filePath: abs(input.file_path) };
   if (denied !== null) {
     denials.push({ tool_name: name, tool_use_id: toolUseId, tool_input: input });
     text = `Permission denied: ${denied}`;
@@ -146,8 +152,8 @@ function callTool(name, input) {
     writeFileSync(join(home, 'TOOL-EXECUTED'), `${name}\n`);
   }
   const result = { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: text }] } };
-  out({ ...result, session_id: session });
-  record(result);
+  out({ ...result, session_id: session, ...(toolResult !== undefined ? { tool_use_result: toolResult } : {}) });
+  record({ ...result, ...(toolResult !== undefined ? { toolUseResult: toolResult } : {}) });
 }
 
 if (s.hangAfterInit) {
@@ -157,7 +163,7 @@ if (s.hangAfterInit) {
   if (plugin) callTool(plugin, {});
 }
 
-for (const use of s.toolUses ?? []) callTool(use.name, use.input);
+for (const use of s.toolUses ?? []) callTool(use.name, use.input, use.result);
 for (const use of s.transcriptOnly ?? []) {
   record({ type: 'assistant', message: { id: `msg_${n}_t${use.name}`, model: reqModel, role: 'assistant', content: [{ type: 'tool_use', id: `toolu_t_${use.name}`, name: use.name, input: use.input }] } });
 }

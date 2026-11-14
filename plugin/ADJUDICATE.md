@@ -188,6 +188,9 @@ Then this section overrides every step above that runs a command or waits for th
   test result.
 - Your tools are Read, Glob and Grep inside the working directory, and Edit on `_mainloop/ADJUDICATION.json` only.
   A run that reads or edits anywhere else, or changes anything else, is discarded and the round is held for the user.
+- Keep every Glob `pattern` and Grep `glob` to one plain directory inside the working directory: no `..`, no `~`, no
+  brace group holding `/` (`*.{ts,tsx}` is fine), no `(`, `)`, `|` or backslash, and character classes of letters,
+  digits and `_` only. A pattern the engine cannot judge is denied, and any denied call discards the run.
 - `_mainloop/ADJUDICATION.json` holds `{}`. Read it, then write the whole document with one Edit. There is no
   `--check`: the engine validates the file when you finish. A rejection gives you one more run with the errors; a
   second rejection holds the round for the user.

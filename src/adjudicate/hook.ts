@@ -1,5 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { globReduce } from './glob.js';
 import type { HookCommand } from './launch.js';
 
 /*
@@ -9,8 +10,10 @@ import type { HookCommand } from './launch.js';
  *
  *   - the tool is not Read, Glob, Grep or Edit (a tool that reached the run past the init gate never executes);
  *   - the session's cwd is not the working copy;
- *   - a path names the home directory (`~`), climbs (`..` anywhere in a glob), resolves outside the copy, or is a
- *     link that does not resolve;
+ *   - a path names the home directory (`~`), resolves outside the copy, or is a link that does not resolve;
+ *   - a Glob `pattern` or Grep `glob` cannot be reduced to directories inside the copy (glob.ts: braces holding `/`,
+ *     extglob, `..`, a character class or a dot segment that could climb); each directory it reduces to is judged by
+ *     realpath like a path;
  *   - an Edit targets anything outside `_mainloop/`;
  *   - anything in the hook itself fails (fail closed).
  *
@@ -26,6 +29,9 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 const [rootArg, log] = process.argv.slice(2);
 const ALLOWED = ['Read', 'Glob', 'Grep', 'Edit'];
 const OUT = '_mainloop';
+
+// The pattern rule, the same function the ratifier runs (src/adjudicate/glob.ts).
+${globReduce.toString()}
 
 function realish(p) {
   // The realpath of the longest existing prefix, with the rest appended (a path the tool would create).
@@ -76,17 +82,19 @@ function decide(input, root) {
   const paths = checks.map((c) => c.path);
   for (const c of checks) {
     if (c.path.startsWith('~')) return { deny: c.path + ' names the home directory', paths };
-    let target = c.path;
+    let targets = [c.path];
     if (c.kind === 'glob') {
-      if (c.path.includes('..')) return { deny: 'the pattern ' + c.path + ' climbs (..)', paths };
-      const meta = c.path.search(/[*?[{]/);
-      const literal = meta < 0 ? c.path : c.path.slice(0, meta);
-      target = isAbsolute(literal) ? literal : join(isAbsolute(c.base) ? c.base : join(root, c.base), literal);
+      // Only a pattern that reduces to directories is judged, and then each directory by realpath.
+      const g = globReduce(c.path);
+      if (g.problem !== null) return { deny: 'the pattern ' + c.path + ' ' + g.problem, paths };
+      const base = isAbsolute(c.base) ? c.base : join(root, c.base);
+      targets = g.dirs.map((d) => (isAbsolute(d) ? d : join(base, d)));
     }
-    const abs = resolve(root, target);
-    const real = realish(abs);
-    if (!within(root, real)) return { deny: c.path + ' resolves outside the working copy (' + real + ')', paths };
-    if (tool === 'Edit' && !within(join(root, OUT), real)) return { deny: 'Edit is allowed only under ' + OUT + '/, not ' + c.path, paths };
+    for (const target of targets) {
+      const real = realish(resolve(root, target));
+      if (!within(root, real)) return { deny: c.path + ' resolves outside the working copy (' + real + ')', paths };
+      if (tool === 'Edit' && !within(join(root, OUT), real)) return { deny: 'Edit is allowed only under ' + OUT + '/, not ' + c.path, paths };
+    }
   }
   return { deny: null, paths };
 }
