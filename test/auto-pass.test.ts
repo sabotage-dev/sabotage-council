@@ -196,6 +196,39 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(w.notices).toEqual([]);
   });
 
+  it('one review per head across stores: a review with this round marker that lands before the POST is never doubled (P8 round 1 row 2)', async () => {
+    // Another store on the same account posts its own review of this round first: the row is skipped, nothing posts.
+    const other = await world();
+    await other.pass({
+      hooks: {
+        beforePostRead: (roundId) => {
+          const marker = getRound(other.h.store.db, roundId)!.marker!;
+          other.addReview(ghReview(7001, LOGIN, 'COMMENTED', other.d, '2026-11-13T12:00:00Z', `${marker}\n\nAnother store's review of this head.`));
+        },
+      },
+    });
+    expect(row(other)).toMatchObject({ state: 'skipped', records_sha: null, event: null });
+    expect(String(row(other)['reason'])).toMatch(/^the head already has our review: a review by reviewer-x with this round's marker is already on this head \(review 7001, COMMENTED\)/);
+    expect(posts(other)).toBe(0);
+    expect(other.notices).toEqual([]);
+    // The very review this post would send is already there (posted by hand): adopted, with its guards, no second POST.
+    const same = await world();
+    await same.pass({
+      hooks: {
+        beforePostRead: (roundId) => {
+          const body = readFileSync(join(roundDirOf(same.h.layout, roundId), 'AUTO-POST.md'), 'utf8');
+          same.addReview(ghReview(7002, LOGIN, 'APPROVED', same.d, '2026-11-13T12:00:00Z', body));
+        },
+      },
+    });
+    expect(row(same)).toMatchObject({ state: 'approved', review_id: 7002, event: 'APPROVE' });
+    expect(posts(same)).toBe(0);
+    const roundId = row(same)['round_id'] as number;
+    expect(getRound(same.h.store.db, roundId)).toMatchObject({ event_posted: 'APPROVE', review_id: 7002 });
+    expect(getEvents(same.h.store.db, roundId).find((e) => e.kind === 'post-adopted')?.detail).toMatchObject({ review_id: 7002, preexisting: true });
+    expect(getEvents(same.h.store.db, roundId).filter((e) => e.kind === 'guard').map((e) => (e.detail as { outcome: string }).outcome)).toEqual(['kept: no review landed meanwhile and the head held']);
+  });
+
   it('the head moves mid-round: the round is superseded and nothing posts; the next pass reviews the new head', async () => {
     const w = await world();
     let e = '';

@@ -7,7 +7,7 @@ import type { SeatAdapters } from '../adapters/index.js';
 import { adjudicateHeadless, HeadlessError, type HeadlessResult } from '../adjudicate/index.js';
 import type { CouncilConfig } from '../config/schema.js';
 import { failRound, removeRoundRoots, roundDirOf, runWorker, type DataLayout } from '../engine/index.js';
-import { pendingGuards, postRound, type PostResult } from '../engine/post.js';
+import { ALREADY_ON_HEAD, pendingGuards, postRound, type PostResult } from '../engine/post.js';
 import { autoOf, HeadMovedError, preparePrRound } from '../engine/pr.js';
 import { getEvents, getRound, insertEvent, type RoundRow } from '../engine/records.js';
 import { preparedDetail } from '../engine/facts.js';
@@ -89,6 +89,8 @@ export interface PassOptions {
         afterPost?: ((roundId: number) => void) | undefined;
         /** After P6's post claim, before its intent and POST. */
         afterPostClaim?: ((roundId: number) => void) | undefined;
+        /** After P6's render under its claim, before its last read of the pull request and its intent. */
+        beforePostRead?: ((roundId: number) => void) | undefined;
         afterLegs?: ((roundId: number) => void) | undefined;
         afterPrepare?: ((roundId: number) => void) | undefined;
       }
@@ -922,6 +924,7 @@ async function postStep(ctx: Ctx, claim: Claim, round: RoundRow): Promise<void> 
       hooks: {
         afterPost: o.hooks?.afterPost === undefined ? undefined : () => o.hooks?.afterPost?.(round.id),
         afterClaim: o.hooks?.afterPostClaim === undefined ? undefined : () => o.hooks?.afterPostClaim?.(round.id),
+        beforeFinalRead: o.hooks?.beforePostRead === undefined ? undefined : () => o.hooks?.beforePostRead?.(round.id),
       },
     });
     if (r.outcome === 'refused' && !intentRecorded(ctx, round.id)) {
@@ -946,10 +949,17 @@ function clearPost(ctx: Ctx, claim: Claim): void {
     .run(claim.key.repo, claim.key.num, claim.key.head, claim.owner);
 }
 
-/** A post that cannot go ahead and sent nothing: a closed PR is skipped, anything else is a failed attempt. */
+/**
+ * A post that cannot go ahead and sent nothing: a closed PR is skipped, and so is a head that already has our review
+ * with this round's marker (P8 round 1 row 2: one review per head); anything else is a failed attempt.
+ */
 function abandon(ctx: Ctx, claim: Claim, why: string): void {
   if (/ is closed: nothing posts| was closed since the post began/.test(why)) {
     move(ctx, claim, { state: 'skipped', reason: `the PR closed before the post: ${why}` });
+    return;
+  }
+  if (why.includes(ALREADY_ON_HEAD)) {
+    move(ctx, claim, { state: 'skipped', reason: `the head already has our review: ${why}` });
     return;
   }
   const row = getRow(ctx.store.db, claim.key);
@@ -1055,6 +1065,12 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void>
   const r = postRound(store, { ...base, expect: row.review_sha256 });
   if (r.outcome === 'refused') {
     if (!intentRecorded(ctx, round.id) && / is closed: nothing posts| was closed since the post began/.test(r.problems.join('; '))) {
+      clearPost(ctx, claim);
+      abandon(ctx, claim, r.problems.join('; '));
+      return;
+    }
+    if (r.problems.join('; ').includes(ALREADY_ON_HEAD)) {
+      // Nothing of ours landed, and the head has another review with this round's marker: never a second one.
       clearPost(ctx, claim);
       abandon(ctx, claim, r.problems.join('; '));
       return;

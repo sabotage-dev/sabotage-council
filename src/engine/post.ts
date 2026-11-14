@@ -517,6 +517,42 @@ export function testsFact(db: DatabaseSync, roundId: number): EventFacts['tests'
   return { state: 'failed', why: `${e.result}: ${e.note ?? ''}`.trim() };
 }
 
+/* ---------- one review per head (P8 round 1 row 2) ---------- */
+
+/** What a refusal says when the head already has our review with this round's marker: the daemon skips the row. */
+export const ALREADY_ON_HEAD = 'is already on this head';
+
+/**
+ * The final pre-POST read of the reviews: ours (github.login), submitted, first line this round's marker, bound to this
+ * head, held by no other round of this store (that round's own post, P6 round 1 row 4), and not the ruling COMMENT
+ * the round archived at its release. One that is exactly the review this post would send (its event and body) is
+ * adopted; any other refuses the post, a dismissed one included. Two stores on one account are serialized only by this
+ * read (N116): there is no GitHub-side reservation, so two posts that both read before either lands can still both
+ * send.
+ */
+function alreadyOnHead(db: DatabaseSync, api: GitHubApi, round: RoundRow, ref: PrRef, login: string, event: ReviewEvent, body: string): { adopt: Review | null; refuse: string | null } {
+  const reviews = api.list(`${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number)}/reviews`).map(normalizeReview);
+  const archived = archivedReviews(db, round.id);
+  const heldElsewhere = db.prepare('SELECT 1 FROM rounds WHERE review_id = ? AND id <> ?');
+  const found = reviews.filter(
+    (r) =>
+      r.state !== 'PENDING' &&
+      !archived.has(r.id) &&
+      sameLogin(r.login, login) &&
+      firstLine(r.body) === round.marker &&
+      r.commitId.toLowerCase() === round.head_sha.toLowerCase() &&
+      heldElsewhere.get(r.id, round.id) === undefined,
+  );
+  const only = found[0];
+  if (only === undefined) return { adopt: null, refuse: null };
+  if (found.length === 1 && EVENT_OF_STATE[only.state] === event && bodyMatches(only.body, { body })) return { adopt: only, refuse: null };
+  const list = found.map((r) => `review ${r.id}, ${r.state}`).join('; ');
+  return {
+    adopt: null,
+    refuse: `a review by ${login} with this round's marker ${ALREADY_ON_HEAD} (${list}), sent by another store on this account or by hand, and it is not the one review this post would send: nothing posts, so the head never gets a second review`,
+  };
+}
+
 /* ---------- the post step ---------- */
 
 type Refuse = (why: string) => PostResult;
@@ -786,6 +822,11 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
       `the base of ${ref.owner}/${ref.repo}#${ref.number} is now ${last.baseRef}, not the default branch ${last.defaultBranch}, and this identity review was rendered on ${pr.baseRef}: nothing posts; run post ${round.id} --dry-run to show the user the review that applies now`,
     );
   }
+  // P8 round 1 row 2: one review per head, across stores. A review by github.login with this round's marker already on
+  // this head (another store on the same account, or a post by hand) is adopted when it is exactly the review this post
+  // would send and no other round of this store holds it; any other is a refusal. A second POST never goes out.
+  const twin = alreadyOnHead(db, o.api, round, ref, cfg.login, decision.event, body);
+  if (twin.refuse !== null) return refuse(twin.refuse);
 
   // The intent and the guards it owes, in one transaction before the POST (plan 9.4, row 2). A re-post after an
   // interrupted POST that did not land replaces the guards that never ran. The same transaction checks that this
@@ -814,6 +855,23 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   }
   if (fenced === 'release') {
     return refuse(`a ruling released round ${round.id} after this post began: this one records no intent and posts nothing, since its render predates that ruling; the next post maps the release (post ${round.id} --dry-run)`);
+  }
+  if (twin.adopt !== null) {
+    // Recorded as this round's post with its intent and guards, as a review that landed after a crash is (row 4).
+    const a = twin.adopt;
+    recordPosted(
+      db,
+      round,
+      { event: decision.event, reviewId: a.id, commitId: a.commitId, postedAt: a.submittedAt === '' ? now() : a.submittedAt, bodySha256: result.bodySha256 ?? sha256(body) },
+      'post-adopted',
+      { review_id: a.id, state: a.state, commit_id: a.commitId, preexisting: true },
+    );
+    result.outcome = 'already-posted';
+    result.reviewId = a.id;
+    result.problems.push(`review ${a.id} by ${a.login} with this round's marker, event and body was already on this head: adopted as this round's post, and no second review was sent`);
+    runGuards(store, o.api, getRound(db, round.id) ?? round, ref, cfg);
+    result.guards = reports(db, round.id);
+    return result;
   }
   const posted = normalizeReview(o.api.send('POST', `${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number)}/reviews`, { commit_id: head, event: decision.event, body }));
   o.hooks?.afterPost?.();
