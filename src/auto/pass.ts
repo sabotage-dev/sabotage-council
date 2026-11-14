@@ -1043,15 +1043,15 @@ async function maybeTests(ctx: Ctx, round: RoundRow, signal: AbortSignal): Promi
     run = await runTests({ mirror, head: round.head_sha, roundDir, spec, env: o.env, signal });
   }
   recordTests(roundDir, run, gate.run ? null : gate.why);
-  insertEvent(store.db, 'auto-tests', round.id, { result: run?.result ?? null, note: run?.note ?? null, gate: gate.run ? null : gate.why, exit_code: run?.exitCode ?? null, duration_ms: run?.durationMs ?? null, log: run?.log ?? null });
+  insertEvent(store.db, 'auto-tests', round.id, { result: run?.result ?? null, note: run?.note ?? null, gate: gate.run ? null : gate.why, exit_code: run?.exitCode ?? null, duration_ms: run?.durationMs ?? null, log: run?.log ?? null, err_log: run?.errLog ?? null });
 }
 
 function testsInput(ctx: Ctx, round: RoundRow): { markdown: string; result: unknown } | undefined {
   const e = getEvents(ctx.store.db, round.id)
     .filter((x) => x.kind === 'auto-tests')
-    .at(-1)?.detail as { result: string | null; note: string | null; gate: string | null; exit_code: number | null; duration_ms: number | null; log: string | null } | undefined;
+    .at(-1)?.detail as { result: string | null; note: string | null; gate: string | null; exit_code: number | null; duration_ms: number | null; log: string | null; err_log?: string | null } | undefined;
   if (e === undefined) return undefined;
-  const run: TestRun | null = e.result === null ? null : { result: e.result as TestRun['result'], note: e.note ?? '', exitCode: e.exit_code, durationMs: e.duration_ms ?? 0, log: e.log };
+  const run: TestRun | null = e.result === null ? null : { result: e.result as TestRun['result'], note: e.note ?? '', exitCode: e.exit_code, durationMs: e.duration_ms ?? 0, log: e.log, errLog: e.err_log ?? null };
   return { markdown: testsMarkdown(run, e.gate, roundDirOf(ctx.o.layout, round.id)), result: e };
 }
 

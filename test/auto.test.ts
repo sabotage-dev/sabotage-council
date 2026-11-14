@@ -8,7 +8,7 @@ import { commandDeliver, desktopDeliver, notify, DEDUPE_MS, type Notice } from '
 import { autoDir, PASS_LOCK_STALE_MS, takePassLock, type PassLock } from '../src/auto/pass.js';
 import { inScope, narrowOwners, searchQueries, searchQueue, type QueueConfig } from '../src/auto/queue.js';
 import { installService, previewService, renderPlist, renderUnit, serviceArgs, serviceProblems, systemdWord, uninstallService, type ServiceSpec } from '../src/auto/service.js';
-import { runTests, testGate, testsFor, testsMarkdown } from '../src/auto/tests.js';
+import { LOG_TAIL_CHARS, LOG_TAIL_LINES, runTests, testGate, testsFor, testsMarkdown } from '../src/auto/tests.js';
 import { ghApi } from '../src/forge/github.js';
 import { openStore } from '../src/store/index.js';
 import { openShadow } from '../src/root/git.js';
@@ -315,6 +315,28 @@ describe('auto opt-in tests (plan 6.6, D12)', () => {
     expect(md).toContain('Result: PASS');
     expect(md).toContain('DATA: pass');
     expect(testsMarkdown(null, 'the head is in a fork', '/x')).toContain('None: no tests ran for this round (the head is in a fork)');
+  });
+
+  it('gives the adjudicator labelled tails of standard output and standard error, each bounded (P8 round 1 row 10)', { timeout: 30_000 }, async () => {
+    const repo = initRepo(join(scratch('sc-tests-repo-'), 'r'));
+    writeTree(repo, { 'x.txt': 'x\n' });
+    const head = commitAll(repo, 'x');
+    const mirror = openShadow(repo, join(scratch('sc-tests-shadow-'), 'shadow.git'));
+    const roundDir = scratch('sc-tests-round-');
+    const command = `echo "ran 3 tests"; i=0; while [ $i -lt ${LOG_TAIL_LINES + 20} ]; do echo "noise $i" >&2; i=$((i+1)); done; echo "AssertionError: expected 2 to be 3" >&2; exit 1`;
+    const r = await runTests({ mirror, head, roundDir, spec: { command, timeout_minutes: 1 }, env: { PATH: process.env['PATH'] } });
+    expect(r).toMatchObject({ result: 'FAIL', log: 'tests/test.log', errLog: 'tests/test.err.log' });
+    const md = testsMarkdown(r, null, roundDir);
+    expect(md).toContain('The last lines of its standard output, as data');
+    expect(md).toContain('DATA: ran 3 tests');
+    expect(md).toContain('The last lines of its standard error, as data');
+    expect(md).toContain('DATA: AssertionError: expected 2 to be 3');
+    expect(md).not.toContain('DATA: noise 0\n');
+    expect(md.split('\n').filter((l) => l.startsWith('DATA: noise')).length).toBe(LOG_TAIL_LINES - 1);
+    // A long line is cut from its start, to the character bound.
+    writeFileSync(join(roundDir, 'tests', 'test.err.log'), `${'y'.repeat(LOG_TAIL_CHARS * 2)}\n`);
+    const long = testsMarkdown(r, null, roundDir).split('\n').find((l) => l.startsWith('DATA: y'));
+    expect(long?.length).toBe('DATA: '.length + LOG_TAIL_CHARS);
   });
 
   it('ends a test run at its cap as TIMEOUT and leaves no process behind', { timeout: 30_000 }, async () => {
