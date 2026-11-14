@@ -81,8 +81,14 @@ export const councilSchema = z.strictObject({
   high_only_from_round: positiveInt.default(4),
 });
 
+/**
+ * The headless adjudicator (plan 5.2, 6.4; P7). `model` has no default: the engine never picks a paid model for the
+ * user, so `adjudicate --headless` refuses until it is set. `effort` is required by claude (it is ratified per
+ * request, as for a Claude seat); the plan's example seats all run `high`, so that is the default.
+ */
 export const adjudicatorSchema = z.strictObject({
   model: modelId.optional(),
+  effort: effort.default('high'),
   max_turns: positiveInt.default(40),
   timeout_minutes: positiveInt.default(15),
 });

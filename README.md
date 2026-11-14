@@ -29,11 +29,11 @@ Planned modes:
 
 ## Status
 
-Building (P6). Built so far: the config schema and loader, the run store, the review root and brief, the reply
+Building (P7). Built so far: the config schema and loader, the run store, the review root and brief, the reply
 parsers, the headless transport with the codex, claude, grok, cursor and muse seats, the ACP transport with the
 antigravity, kiro and opencode seats, the round runner with the `plan`, `diff` and `pr` modes, the `adjudicate`
-validator, the GitHub post step, and the Claude Code plugin. `auto` comes later. The v1 build plan is
-[docs/PLAN.md](docs/PLAN.md).
+validator, the restricted headless adjudicator, the GitHub post step, and the Claude Code plugin. `auto` comes
+later. The v1 build plan is [docs/PLAN.md](docs/PLAN.md).
 
 Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322, 2.1.323 and 2.1.325, the
 versions its canary ran on) and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their
@@ -65,6 +65,7 @@ sabotage-council round start plan docs/PLAN.md --json   # or: round start diff [
 sabotage-council round wait <id>                         # blocks until the legs settle; prints JSON
 sabotage-council round show <id>                         # a readable summary, any time
 sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, print the effective verdict
+sabotage-council adjudicate <id> --headless              # or: the engine runs a restricted Claude Code to adjudicate
 sabotage-council post <id> --dry-run                     # pr: the exact review that would post, and its review sha256
 sabotage-council post <id> --post --expect <sha256>      # pr: post that review, one review on the reviewed head
 ```
@@ -134,6 +135,29 @@ sabotage-council post <id> --post --expect <sha256>      # pr: post that review,
   recorded it and stores it, once, only if every check passes; each rejection names its class (`[attribution]`,
   `[round-rule]`, ...). `--check` validates only and lists every majority override with its proof, to show before
   storing.
+- `adjudicate <id> --headless [--json]` (plan 6.4, 7.2) has the engine adjudicate the round itself, with no user in
+  the loop: it is what `auto` will use. It needs `[adjudicator] model` in the config (`effort` defaults to `high`,
+  `max_turns` to 40, `timeout_minutes` to 15). The engine copies the round's frozen root into a working directory,
+  proves the copy by its tree hash, adds the inputs (`_council/`: `ADJUDICATE.md`, the round as `round wait` prints
+  it, the counted legs' answers, the ratification table, the test result) and an empty `_mainloop/ADJUDICATION.json`,
+  and runs your unmodified `claude -p` there with `--restricted`, `--permission-mode dontAsk`, `--permission-prompts
+  none`, `--tools Read,Glob,Grep,Edit`, `--allowedTools Read Glob Grep "Edit(./_mainloop/**)"`,
+  `--strict-mcp-config`, `--setting-sources ""`, and settings that block reads outside the working directory and run
+  a PreToolUse hook that re-checks every path by realpath, and every Glob or Grep pattern by the directories it can
+  search (a brace group holding `/`, extglob, `..` or a class that could climb is denied); with `ANTHROPIC_API_KEY`
+  it runs `--bare`, which skips hooks. It reads `system/init` before the first turn and kills the run there,
+  recording `setup` and no adjudication, when it was offered any tool beyond those four, is not in `dontAsk`, or
+  lists an MCP server or an additional directory. It ratifies the run from its stream, its transcript and the
+  hook's log: a run that read or edited outside its bounds (by its calls' paths and patterns, or by the paths its
+  tools' results report), changed the copy, had an extra working directory, loaded an instruction file or ran a
+  sub-agent is contaminated, nothing it wrote is read, and the round is held for your ruling; every tool use must
+  have exactly one allowing hook entry with its id. Otherwise the engine replaces the placeholder finding ids with
+  stable ones and stores the document through the same validator (a majority override is stored only as a
+  `ruling` here, as no one saw its proof); a rejection re-prompts once with the errors, and a second one holds the
+  round (`round show` says HELD; adjudicate it yourself). One headless run per round at a time (a dead owner's lock
+  is taken over by exactly one caller). The adjudicator's observed model, effort, tools and permission denials
+  (merged over every run), cost, duration and transcript are recorded on the round, and its cost is in the round's
+  total. Exit 0 adjudicated, 1 failed, 4 held.
 - Every command takes `--config`, `--db` and `--roots`. The store defaults to
   `~/.local/share/sabotage-council/council.db`, with round dirs in `rounds/<id>/` beside it; roots are built under
   `~/.cache/sabotage-council/roots/` as `<store tag>-<round id>-a<attempt>` and deleted, by that name only, once the

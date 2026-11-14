@@ -55,7 +55,7 @@ describe('config: valid documents', () => {
     ]);
     expect(config.seats[0]?.fallback).toEqual({ backend: 'kiro', model: 'gpt-5.6-sol', effort: 'high', on: ['usage_limit', 'auth'] });
     expect(config.council).toEqual({ leg_timeout_minutes: 25, untrusted_seat_policy: 'fallback', high_only_from_round: 4 });
-    expect(config.adjudicator).toEqual({ model: 'claude-opus-5-5', max_turns: 40, timeout_minutes: 15 });
+    expect(config.adjudicator).toEqual({ model: 'claude-opus-5-5', effort: 'high', max_turns: 40, timeout_minutes: 15 });
     expect(config.github).toEqual({ login: 'your-login', council_logins: [], markers_also_count: [] });
     expect(config.auto).toEqual({
       interval_minutes: 5,
@@ -79,7 +79,7 @@ describe('config: valid documents', () => {
   it('fills every default from a seats-only document', async () => {
     const { config, modelsChecked, warnings } = okOf(await parseConfigText(toml(seat(A), seat(C), seat(D))));
     expect(config.council).toEqual({ leg_timeout_minutes: 25, untrusted_seat_policy: 'fallback', high_only_from_round: 4 });
-    expect(config.adjudicator).toEqual({ max_turns: 40, timeout_minutes: 15 });
+    expect(config.adjudicator).toEqual({ effort: 'high', max_turns: 40, timeout_minutes: 15 });
     expect(config.pr).toEqual({ interactive_adjudication: 'trusted-only' });
     expect(config.followups).toEqual({});
     expect(config.notify).toEqual({});

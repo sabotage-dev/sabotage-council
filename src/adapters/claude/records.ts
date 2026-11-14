@@ -11,7 +11,16 @@ import { isObject, num, readJsonl, str, type Json } from '../codex/records.js';
 
 export interface ToolUse {
   name: string;
+  /** The tool_use block's `id` (the `tool_use_id` a hook and a tool result name), or null when it has none. */
+  id: string | null;
   input: Json;
+  source: 'stream' | 'transcript';
+}
+
+/** The paths a tool's own result reports (a Read's `file.filePath`, an Edit's `filePath`, a Glob's `filenames`). */
+export interface ToolResultPaths {
+  toolUseId: string | null;
+  paths: string[];
   source: 'stream' | 'transcript';
 }
 
@@ -19,6 +28,10 @@ export interface ClaudeStream {
   init: Json | null;
   result: Json | null;
   toolUses: ToolUse[];
+  /** Paths named by tool results (`tool_use_result` on the user rows). */
+  toolResults: ToolResultPaths[];
+  /** Rows of a sub-agent: any row with a non-null `parent_tool_use_id`. */
+  sidechains: number;
   /** Main-thread assistant text blocks, in order: the whole reply. */
   texts: string[];
   /** `message.id` of each assistant line, in order: one id per API request. */
@@ -30,38 +43,67 @@ export interface ClaudeStream {
   tornTail: boolean;
 }
 
+/** A row a sub-agent wrote: its `parent_tool_use_id` is set (anything but absent or null). */
+export function subAgentRow(row: Json): boolean {
+  return row['parent_tool_use_id'] !== undefined && row['parent_tool_use_id'] !== null;
+}
+
+/** Every path a tool result names: `filePath`, `file.filePath`, and each entry of `filenames`. */
+export function resultPaths(result: unknown): string[] {
+  if (!isObject(result)) return [];
+  const out: string[] = [];
+  const add = (v: unknown): void => {
+    if (typeof v === 'string' && v !== '') out.push(v);
+  };
+  add(result['filePath']);
+  if (isObject(result['file'])) add(result['file']['filePath']);
+  if (Array.isArray(result['filenames'])) for (const f of result['filenames']) add(f);
+  return out;
+}
+
+/** The tool_use_id of a user row's tool_result block, when it has exactly one. */
+function resultIdOf(message: unknown): string | null {
+  if (!isObject(message) || !Array.isArray(message['content'])) return null;
+  const ids = message['content'].filter((b) => isObject(b) && str(b['type']) === 'tool_result').map((b) => (isObject(b) ? str(b['tool_use_id']) : null));
+  return ids.length === 1 ? (ids[0] ?? null) : null;
+}
+
 function toolUsesOf(message: unknown, source: ToolUse['source']): ToolUse[] {
   if (!isObject(message) || !Array.isArray(message['content'])) return [];
   const out: ToolUse[] = [];
   for (const block of message['content']) {
     if (isObject(block) && str(block['type']) === 'tool_use') {
-      out.push({ name: str(block['name']) ?? '', input: isObject(block['input']) ? block['input'] : {}, source });
+      out.push({ name: str(block['name']) ?? '', id: str(block['id']), input: isObject(block['input']) ? block['input'] : {}, source });
     }
   }
   return out;
 }
 
 export function readClaudeStream(path: string): ClaudeStream {
-  const out: ClaudeStream = { init: null, result: null, toolUses: [], texts: [], messageIds: [], extraInit: 0, malformed: 0, tornTail: false };
+  const out: ClaudeStream = { init: null, result: null, toolUses: [], toolResults: [], sidechains: 0, texts: [], messageIds: [], extraInit: 0, malformed: 0, tornTail: false };
   if (!existsSync(path)) return out;
   const { rows, malformed, tornTail } = readJsonl(path);
   out.malformed = malformed;
   out.tornTail = tornTail;
   for (const row of rows) {
     const type = str(row['type']);
+    if (subAgentRow(row)) out.sidechains++;
     if (type === 'system' && str(row['subtype']) === 'init') {
       if (out.init) out.extraInit++;
       else out.init = row;
     } else if (type === 'result') {
       if (out.result) out.extraInit++;
       out.result = row;
+    } else if (type === 'user') {
+      const paths = resultPaths(row['tool_use_result']);
+      if (paths.length > 0) out.toolResults.push({ toolUseId: resultIdOf(row['message']), paths, source: 'stream' });
     } else if (type === 'assistant') {
       out.toolUses.push(...toolUsesOf(row['message'], 'stream'));
       const message = row['message'];
       const id = isObject(message) ? str(message['id']) : null;
       if (id !== null) out.messageIds.push(id);
       // The reply's text comes from the main thread only: a row with a `parent_tool_use_id` belongs to a sub-agent.
-      const mainThread = row['parent_tool_use_id'] === undefined || row['parent_tool_use_id'] === null;
+      const mainThread = !subAgentRow(row);
       if (mainThread && isObject(message) && Array.isArray(message['content'])) {
         for (const block of message['content']) {
           if (isObject(block) && str(block['type']) === 'text') out.texts.push(str(block['text']) ?? '');
@@ -128,9 +170,17 @@ export interface TranscriptFacts {
   assistantTexts: string[];
   apiErrors: Array<{ status: number | null; text: string }>;
   toolUses: ToolUse[];
+  /** Paths named by tool results (`toolUseResult` on the user entries). */
+  toolResults: ToolResultPaths[];
+  /** Entries marked `isSidechain`, or with a non-null `parent_tool_use_id`. */
   sidechains: number;
   /** Attachment types of instruction files that loaded (user-owned context). */
   instructionFiles: string[];
+  /**
+   * Extra working directories the session could read, from each `environment` attachment's
+   * `additionalWorkingDirectories` (a value that is not a list is recorded as one entry).
+   */
+  extraRoots: string[];
 }
 
 export function transcriptFacts(t: Transcript): TranscriptFacts {
@@ -143,8 +193,10 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
     assistantTexts: [],
     apiErrors: [],
     toolUses: [],
+    toolResults: [],
     sidechains: 0,
     instructionFiles: [],
+    extraRoots: [],
   };
   const sessions = new Set<string>();
   for (const e of t.entries) {
@@ -153,7 +205,8 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
     if (sid) sessions.add(sid);
     const cwd = str(e['cwd']);
     if (cwd) facts.cwds.push(cwd);
-    if (e['isSidechain'] === true) facts.sidechains++;
+    // A sub-agent's entry: marked `isSidechain`, or carrying a `parent_tool_use_id` (round 1 row 6).
+    if (e['isSidechain'] === true || subAgentRow(e)) facts.sidechains++;
     if (type === 'api-request') {
       const params = isObject(e['params']) ? e['params'] : {};
       const config = isObject(params['output_config']) ? params['output_config'] : {};
@@ -172,12 +225,21 @@ export function transcriptFacts(t: Transcript): TranscriptFacts {
         facts.assistantModels.push(model);
       }
       facts.toolUses.push(...toolUsesOf(message, 'transcript'));
+    } else if (type === 'user') {
+      const paths = resultPaths(e['toolUseResult']);
+      if (paths.length > 0) facts.toolResults.push({ toolUseId: resultIdOf(e['message']), paths, source: 'transcript' });
     } else if (type === 'attachment') {
       const att = isObject(e['attachment']) ? e['attachment'] : {};
       if (str(att['type']) === 'instructions' || str(att['type']) === 'nested_memory') {
         const items = Array.isArray(att['files']) ? att['files'] : Array.isArray(att['detail']) ? att['detail'] : [];
         for (const item of items) if (isObject(item) && str(item['path'])) facts.instructionFiles.push(str(item['path']) as string);
         if (items.length === 0) facts.instructionFiles.push(str(att['type']) ?? 'instructions');
+      }
+      if (str(att['type']) === 'environment') {
+        const snapshot = isObject(att['snapshot']) ? att['snapshot'] : {};
+        const dirs = snapshot['additionalWorkingDirectories'];
+        if (Array.isArray(dirs)) for (const d of dirs) facts.extraRoots.push(typeof d === 'string' ? d : JSON.stringify(d));
+        else if (dirs !== undefined) facts.extraRoots.push(`not a list: ${JSON.stringify(dirs)}`);
       }
     }
   }

@@ -172,10 +172,33 @@ Each rejection starts with its class in brackets.
   `kind: "human_ask"` and one `human_asks` row pointing at it; an open ask's row is owed. Plan and diff rounds have
   none. When the user's own change request stands on this head, `needs_ruling` must be true (plan 3.8).
 - `[refutation]`: a refuted row carries proof. A majority override (a finding raised by 2 or more seats, owed at
-  the seats' severity, that is refuted, made a follow-up, noted or nit, or lowered) carries proof; in `auto` it is a
-  ruling; interactively, `--check` lists it and you show the user the proof before storing.
+  the seats' severity, that is refuted, made a follow-up, noted or nit, or lowered) carries proof; in `auto` and in
+  a headless run it is a ruling; interactively, `--check` lists it and you show the user the proof before storing.
 - `[approval]`: approve only as above (no ruling, 0 owed, legs clear, not solo).
 - `[followups]`: `followups` lists every follow-up row, and only follow-up or nit rows.
+
+## Headless runs
+
+The engine can run you itself, with no user in the loop (`sabotage-council adjudicate <id> --headless`, and `auto`).
+Then this section overrides every step above that runs a command or waits for the user:
+
+- Your working directory is a copy of the round's frozen snapshot. `_council/ROUND.json` is the round as
+  `round wait` prints it, with every path relative to the working directory: `answer_path` is each counted leg's
+  answer under `_council/legs/`. `_council/RATIFICATION.md` is the ratification table and `_council/TESTS.md` the
+  test result.
+- Your tools are Read, Glob and Grep inside the working directory, and Edit on `_mainloop/ADJUDICATION.json` only.
+  A run that reads or edits anywhere else, or changes anything else, is discarded and the round is held for the user.
+- Keep every Glob `pattern` and Grep `glob` to one plain directory inside the working directory: no `..`, no `~`, no
+  brace group holding `/` (`*.{ts,tsx}` is fine), no `(`, `)`, `|` or backslash, and character classes of letters,
+  digits and `_` only. A pattern the engine cannot judge is denied, and any denied call discards the run.
+- `_mainloop/ADJUDICATION.json` holds `{}`. Read it, then write the whole document with one Edit. There is no
+  `--check`: the engine validates the file when you finish. A rejection gives you one more run with the errors; a
+  second rejection holds the round for the user.
+- You cannot compute the sha256 finding ids. Write placeholder ids in order (`f_000000000001`, `f_000000000002`, ...)
+  and use the same id wherever you name that finding (`fix_row`, `followups`); the engine replaces each with the
+  stable id of its path and title before validating. `same_as` and `closes_item` name earlier ids exactly as given.
+- No user can see a majority override's proof before the store, so step 5's override is a `ruling` with
+  `needs_ruling: true`. The engine rejects anything else.
 
 ## After it is stored
 

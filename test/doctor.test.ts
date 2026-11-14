@@ -41,7 +41,7 @@ describe('doctor', () => {
       'ok    node v22.13.0 satisfies >=22.13',
       `ok    config ${configPath} loaded`,
       'note  config-wide model and family checks are not run here; each seat is preflighted below',
-      `ok    store ${dbPath} at schema version 3, applied migration(s) 1, 2, 3`,
+      `ok    store ${dbPath} at schema version 4, applied migration(s) 1, 2, 3, 4`,
       'seats:',
       '  a  codex / gpt-6.1-sol / high  (fallback kiro / gpt-5.6-sol / high on usage_limit, auth)',
       '  b  claude / claude-sonnet-5-5 / high',
@@ -54,7 +54,7 @@ describe('doctor', () => {
     await doctor();
     const { code, lines } = await doctor();
     expect(code).toBe(0);
-    expect(lines).toContain(`ok    store ${dbPath} at schema version 3`);
+    expect(lines).toContain(`ok    store ${dbPath} at schema version 4`);
   });
 
   it('fails on config errors, prints them with key paths, and still checks the store', async () => {
@@ -63,7 +63,7 @@ describe('doctor', () => {
     expect(code).toBe(1);
     expect(lines).toContain(`fail  config ${configPath} has 1 error(s)`);
     expect(lines).toContain('        council.quorum: quorum is fixed at 2 and is not configurable (D10)');
-    expect(lines).toContain(`ok    store ${dbPath} at schema version 3, applied migration(s) 1, 2, 3`);
+    expect(lines).toContain(`ok    store ${dbPath} at schema version 4, applied migration(s) 1, 2, 3, 4`);
     expect(lines).not.toContain('seats:');
   });
 

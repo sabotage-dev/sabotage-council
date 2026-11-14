@@ -252,6 +252,8 @@ describe('CLI: round start / wait / show and adjudicate', () => {
         },
       ],
       adjudication: null,
+      held: null,
+      adjudicator: null,
       started_at: '2026-01-01T00:00:00.000Z',
       finished_at: null,
       settled_at: '2026-01-01T00:01:00.000Z',

@@ -15,3 +15,22 @@ export {
   type EffectiveResult,
   type ValidationOutcome,
 } from './validate.js';
+export { adjudicateHeadless, HeadlessError, takeAdjudicatorLock, type HeadlessOptions, type HeadlessOutcome, type HeadlessResult, type HeadlessSettings, type LaunchRecord } from './headless.js';
+export { globReduce, type GlobReduction } from './glob.js';
+export { HOOK_SOURCE, shellQuote, writeHook } from './hook.js';
+export { assignStableIds, type IdAssignment } from './ids.js';
+export {
+  ADJUDICATOR_TOOLS,
+  adjudicatorArgs,
+  adjudicatorInitProblem,
+  adjudicatorSettings,
+  COUNCIL_DIR,
+  EDIT_RULE,
+  MAINLOOP_DIR,
+  OUTPUT_FILE,
+  OUTPUT_PLACEHOLDER,
+  StreamWatch,
+} from './launch.js';
+export { adjudicatePrompt, repromptText, type PromptInput } from './prompt.js';
+export { adjudicatorOutsidePaths, adjudicatorToolPaths, hookCoverageProblems, ratifyAdjudicatorRun, type HookEntry, type AdjudicatorRatification, type AdjudicatorRatifyInput } from './ratify.js';
+export { adjudicateSpec, buildWorkspace, copyTreeHash, ratificationTable, removeWorkspace, WorkspaceError, type Workspace } from './workspace.js';

@@ -88,6 +88,8 @@ export interface AdjudicateOptions {
    * process that adjudicates the same round at that moment (fold row 4).
    */
   beforeTransaction?: (() => void) | undefined;
+  /** The headless adjudicator wrote the document (P7): validated with no user in the loop (plan 3.4 rule 3). */
+  headless?: boolean | undefined;
 }
 
 /** Writes a file whole or not at all: a temp file in the same dir, then a rename. */
@@ -113,7 +115,7 @@ export function adjudicate(store: Store, layout: DataLayout, roundId: number, te
     if (round?.status !== 'awaiting-adjudication') {
       throw new AdjudicateError(`round ${roundId} is ${String(round?.status)}; only a round awaiting adjudication can be adjudicated`);
     }
-    return { outcome: validateAdjudicationText(text, adjudicationContext(store, layout, roundId).ctx), roundId, stored: false };
+    return { outcome: validateAdjudicationText(text, { ...adjudicationContext(store, layout, roundId).ctx, headless: options.headless }), roundId, stored: false };
   }
   options.beforeTransaction?.();
   db.exec('BEGIN IMMEDIATE');
@@ -129,9 +131,9 @@ export function adjudicate(store: Store, layout: DataLayout, roundId: number, te
       throw new AdjudicateError(`round ${roundId} is ${String(round?.status)}; only a round awaiting adjudication can be adjudicated`);
     }
     const { ctx, facts, legs } = adjudicationContext(store, layout, roundId);
-    outcome = validateAdjudicationText(text, ctx);
+    outcome = validateAdjudicationText(text, { ...ctx, headless: options.headless });
     if (!outcome.ok) {
-      insertEvent(db, 'adjudication-rejected', roundId, { errors: outcome.errors });
+      insertEvent(db, 'adjudication-rejected', roundId, { errors: outcome.errors, headless: options.headless === true });
       commit();
       return { outcome, roundId, stored: false };
     }
@@ -201,6 +203,7 @@ export function adjudicate(store: Store, layout: DataLayout, roundId: number, te
       extracted: eff.extracted.length,
       majority_overrides: eff.majorityOverrides,
       warnings: outcome.warnings,
+      headless: options.headless === true,
       // The whole validated document: the store keeps what the file says (fold row 4, codex F7).
       document: a,
     });

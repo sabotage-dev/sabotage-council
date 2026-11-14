@@ -101,6 +101,15 @@ export interface RoundRow {
   /** Migration 003 (P6 round 1): the post claim. */
   post_owner: string | null;
   post_claimed_at: string | null;
+  /** 001 and migration 004 (P7): what the headless adjudicator's runs recorded on the round. */
+  adjudicator_model_observed: string | null;
+  adjudicator_effort_observed: string | null;
+  adjudicator_tools_json: string | null;
+  adjudicator_denials_json: string | null;
+  adjudicator_cost_usd: number | null;
+  adjudicator_turns: number | null;
+  adjudicator_ms: number | null;
+  adjudicator_record_path: string | null;
 }
 
 export function getRound(db: DatabaseSync, id: number): RoundRow | undefined {
