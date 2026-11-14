@@ -111,6 +111,8 @@ export const autoSchema = z.strictObject({
   repos_skip: z.array(repoPattern).default([]),
   repos_hold: z.array(repoPattern).default([]),
   include_assigned: z.boolean().default(false),
+  /** Q11: team review requests count as requests (`review-requested:@me`); false keeps direct ones only. */
+  include_team_requests: z.boolean().default(true),
   approve: z.boolean().default(true),
   ci_gate: z.enum(CI_GATES).default('required-checks'),
   /** What CI red posts when nothing is owed (plan 3.7 row 7): REQUEST_CHANGES, or COMMENT. */

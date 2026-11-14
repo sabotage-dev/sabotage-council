@@ -63,6 +63,7 @@ describe('config: valid documents', () => {
       repos_skip: [],
       repos_hold: ['your-org/infra-*'],
       include_assigned: false,
+      include_team_requests: true,
       approve: true,
       ci_gate: 'required-checks',
       ci_red_event: 'REQUEST_CHANGES',
@@ -94,6 +95,7 @@ describe('config: valid documents', () => {
     expect(config.auto).toMatchObject({
       interval_minutes: 5,
       include_assigned: false,
+      include_team_requests: true,
       approve: true,
       ci_gate: 'required-checks',
       max_rounds_per_day: 30,
