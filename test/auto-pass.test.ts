@@ -638,6 +638,34 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(row(w)['state']).toBe('approved');
   });
 
+  it('auto pause stops a running pass at its next round: new heads and resumed rows alike (P8 round 1 row 8)', async () => {
+    const { setPaused } = await import('../src/auto/pass.js');
+    // New heads: #2 posts, then the user pauses; #3 is never claimed.
+    const w = await world({ edit: secondPr });
+    const r = await w.pass({ hooks: { afterPost: () => setPaused(w.h.store, true, 'an incident') } });
+    expect(r.outcome).toBe('paused');
+    expect(row(w)).toMatchObject({ state: 'approved' });
+    expect(ledgerRows(w.h).filter((x) => x['num'] === 3)).toEqual([]);
+    expect(r.candidates.find((c) => c.pr.endsWith('#3'))).toMatchObject({ action: 'deferred', why: 'auto is paused: the pass stopped before this round' });
+    // Resumed rows: two rows a dead pass left claimed and unprepared; the pause after the first stops the second.
+    const v = await world({ edit: secondPr });
+    v.routes[SEARCH] = searchOf();
+    v.sync();
+    const { claimRow, release } = await import('../src/auto/ledger.js');
+    for (const num of [2, 3]) {
+      const c = claimRow(v.h.store.db, { repo: REPO_KEY, num, head: v.d }, { attempt: true, dryRun: false, roundNo: 4 });
+      if (!c.ok) throw new Error('no claim');
+      release(v.h.store.db, c.claim);
+      // Resumed oldest first: #2, then #3.
+      v.h.store.db.prepare('UPDATE ledger SET updated_at = ? WHERE num = ?').run(`2026-11-13T00:00:0${num}Z`, num);
+    }
+    const rv = await v.pass({ hooks: { afterPost: () => setPaused(v.h.store, true, 'an incident') } });
+    expect(rv.outcome).toBe('paused');
+    expect(ledgerRows(v.h).find((x) => x['num'] === 2)).toMatchObject({ state: 'approved' });
+    expect(ledgerRows(v.h).find((x) => x['num'] === 3)).toMatchObject({ state: 'running', attempts: 1, round_id: null, claim_owner: null });
+    expect(rv.candidates.find((c) => c.source === 'resume' && c.action === 'deferred')).toMatchObject({ pr: 'sabotage-dev/sabotage-council#3' });
+  });
+
   it('retires the rows of a closed PR and prunes round dirs past 90 days (the rows stay)', async () => {
     const w = await world();
     await w.pass();

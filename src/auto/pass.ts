@@ -377,15 +377,22 @@ interface Ctx {
   lock: PassLock | null;
   /** Why the pass stopped claiming rows, once it did (the lock taken over). */
   stopped: string | null;
+  /** `auto pause` was found before a claim: the pass stops there (P8 round 1 row 8). */
+  paused: boolean;
 }
 
 /**
- * Whether the pass may claim another row: not aborted, and its lock is still its own (the heartbeat refreshed here,
- * at every claim, since synchronous steps hold the timer back). Once false, the pass claims nothing more.
+ * Whether the pass may claim another row: not aborted, not paused since it started (`auto pause` stops a running pass
+ * at its next round, P8 round 1 row 8), and its lock is still its own (the heartbeat refreshed here, at every claim,
+ * since synchronous steps hold the timer back). Once false, the pass claims nothing more.
  */
 function mayClaim(ctx: Ctx): boolean {
   if (ctx.o.signal?.aborted === true) return false;
-  if (ctx.stopped !== null) return false;
+  if (ctx.stopped !== null || ctx.paused) return false;
+  if (pauseState(ctx.store).paused) {
+    ctx.paused = true;
+    return false;
+  }
   if (ctx.lock !== null && !ctx.lock.beat()) {
     ctx.stopped = 'the pass lock was taken over (its heartbeat had gone stale): this pass claims nothing more';
     ctx.report.errors.push(ctx.stopped);
@@ -493,6 +500,7 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     log,
     lock: null,
     stopped: null,
+    paused: false,
   };
   const lock = takePassLock(o.layout, { nowMs: nowMs() });
   if ('busy' in lock) {
@@ -527,6 +535,7 @@ export async function runPass(store: Store, o: PassOptions): Promise<PassReport>
     await resumeRows(ctx);
     await reviewHeads(ctx, candidates);
     if (ctx.stopped !== null) return finish('failed');
+    if (ctx.paused) return finish('paused');
     prune(ctx, candidates);
     report.rounds_last_24h = roundsSince(store, nowMs());
     return finish('done');
@@ -656,7 +665,10 @@ async function resumeRows(ctx: Ctx): Promise<void> {
   const { db } = ctx.store;
   const rows = db.prepare("SELECT * FROM ledger WHERE state IN ('running', 'posting') ORDER BY updated_at").all() as unknown as LedgerRow[];
   for (const row of rows) {
-    if (!mayClaim(ctx)) return;
+    if (!mayClaim(ctx)) {
+      if (ctx.paused) ctx.report.candidates.push({ pr: prOf(row), head: row.head, source: 'resume', action: 'deferred', why: 'auto is paused: the pass stopped before this row' });
+      return;
+    }
     if (Boolean(row.dry_run) !== ctx.o.dryRun) continue;
     if (claimLive(row, ctx.nowMs())) continue;
     const ref = refOfKey(row.repo, row.num);
@@ -697,7 +709,10 @@ async function resumeRows(ctx: Ctx): Promise<void> {
 async function reviewHeads(ctx: Ctx, candidates: readonly Candidate[]): Promise<void> {
   const { store, o, report } = ctx;
   for (const c of candidates) {
-    if (!mayClaim(ctx)) return;
+    if (!mayClaim(ctx)) {
+      if (ctx.paused) report.candidates.push({ pr: `${c.fullName}#${c.ref.number}`, head: c.head, source: c.source, action: 'deferred', why: 'auto is paused: the pass stopped before this round' });
+      return;
+    }
     const pr = `${c.fullName}#${c.ref.number}`;
     const cand = (action: CandidateReport['action'], why: string): void => {
       report.candidates.push({ pr, head: c.head, source: c.source, action, why });
