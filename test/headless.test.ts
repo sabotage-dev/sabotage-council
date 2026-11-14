@@ -480,6 +480,20 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
     expect(r.checks.find((c) => c.name === 'sidechains')!.detail).toContain(detail);
   });
 
+  // Round 1 row 11: none of the four tools runs a shell, so a "$" in a path is a character, as the hook treats it.
+  it('ratifies the recorded run with a "$" in a Read, an Edit and a Glob path', () => {
+    const dollar = (t: string): string =>
+      t
+        .replace(/"file_path": "([^"]*)\/PR\.md"/g, '"file_path": "$1/app/routes/$$id.tsx"')
+        .replace(/"filePath": "([^"]*)\/PR\.md"/g, '"filePath": "$1/app/routes/$$id.tsx"')
+        .replace(/"pattern": "\*\*\/\*"/g, '"pattern": "app/$$slug/**/*", "path": "routes/$$id"');
+    const r = recorded({ stream: dollar, transcript: dollar });
+    expect(r.checks.filter((c) => !c.ok)).toEqual([]);
+    const paths = (r.detail['toolUses'] as Array<{ paths: string[] }>).flatMap((u) => u.paths);
+    expect(paths.some((p) => p.endsWith('/app/routes/$id.tsx'))).toBe(true);
+    expect(paths).toContain('routes/$id');
+  });
+
   it('ratifies the recorded run with a brace group in one segment (it reduces to the copy)', () => {
     const r = recorded(both(GLOB, '"pattern": "**/*.{js,md}"'));
     expect(r.checks.filter((c) => !c.ok)).toEqual([]);
@@ -670,6 +684,14 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     const hookLog = readFileSync(join(l.dir, 'hook.log'), 'utf8').trim().split('\n').map((x) => JSON.parse(x) as Json);
     expect(hookLog[0]).toMatchObject({ tool: 'Glob', decision: 'deny' });
     expect(String(hookLog[0]!['reason'])).toContain('brace alternative holding "/"');
+  });
+
+  it('adjudicates a run that read a file with "$" in its name (round 1 row 11)', async () => {
+    const s = await settledRound();
+    const { env } = adjHome([{ toolUses: [{ name: 'Read', input: { file_path: 'app/routes/$id.tsx' } }, { name: 'Glob', input: { pattern: '*.tsx', path: 'app/routes/$id' } }], output: placeholderDoc(s.summary) }]);
+    const r = await headless(s, env);
+    expect(r.outcome, r.reason).toBe('adjudicated');
+    expect(r.launches[0]!.ratification.checks.find((c) => c.name === 'tool-paths')).toMatchObject({ ok: true });
   });
 
   it('allows a brace glob in one segment end to end: adjudicated', async () => {

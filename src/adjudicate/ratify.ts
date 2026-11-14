@@ -121,12 +121,14 @@ export function adjudicatorToolPaths(use: ToolUse): string[] {
 /**
  * Where one tool call reaches outside the working copy (the hook's rule, judged from the record): a Read or Edit
  * `file_path` and a Glob or Grep `path` as paths; a Glob `pattern` or Grep `glob` by the directories it reduces to
- * (glob.ts), each judged against the call's base; a pattern that does not reduce fails closed.
+ * (glob.ts), each judged against the call's base; a pattern that does not reduce fails closed. None of the four tools
+ * runs a shell, so a `$` is a character of the path, as the hook treats it (P7 round 1 row 11): `app/routes/$id.tsx`
+ * is a file name, not an expansion.
  */
 export function adjudicatorOutsidePaths(use: ToolUse, root: string, aliases: readonly string[]): string[] {
   const out: string[] = [];
   const judge = (p: string, label: string): void => {
-    const judged = pathInsideRoot(p, root, aliases);
+    const judged = pathInsideRoot(p, root, aliases, { literalDollar: true });
     if (!judged.inside) out.push(`${use.name} ${label} (${judged.why})`);
   };
   const field = (name: string): string | null => {
@@ -304,7 +306,7 @@ export function ratifyAdjudicatorRun(input: AdjudicatorRatifyInput): Adjudicator
     const reached = adjudicatorOutsidePaths(use, input.root, aliases);
     outside.push(...reached);
     if (use.name === 'Edit' && reached.length === 0) {
-      for (const p of adjudicatorToolPaths(use)) if (!pathInsideRoot(p, input.root, outAliases).inside) badEdits.push(`Edit ${p}`);
+      for (const p of adjudicatorToolPaths(use)) if (!pathInsideRoot(p, input.root, outAliases, { literalDollar: true }).inside) badEdits.push(`Edit ${p}`);
     }
   }
   // What the tools themselves report reading or finding (a Read's file, an Edit's file, a Glob's or Grep's file
