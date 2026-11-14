@@ -274,6 +274,10 @@ describe('the auto and ruling commands', { timeout: 120_000 }, () => {
     expect((await run('auto', 'pause', '--reason', 'away')).lines).toEqual(['paused: passes do nothing until `auto resume` (a pass already running finishes its current round)']);
     expect((await run('auto', 'run-once', '--dry-run')).lines.find((l) => l.startsWith('pass '))).toMatch(/^pass paused/);
     await run('auto', 'resume');
+    // The daemon loop the service runs, stopped after one pass.
+    const loop = await run('auto', 'run', '--dry-run', '--passes', '1');
+    expect(loop.code).toBe(0);
+    expect(loop.lines.find((l) => l.startsWith('pass '))).toMatch(/^pass done \(dry run: nothing posts\)/);
     const inst = await run('auto', 'install', '--dry-run', '--no-load', '--dir', serviceDir);
     expect(inst.code, inst.lines.join('\n')).toBe(0);
     const plist = readFileSync(join(serviceDir, 'dev.sabotage-council.auto.plist'), 'utf8');
