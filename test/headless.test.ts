@@ -14,6 +14,7 @@ import {
   HeadlessError,
   HOOK_SOURCE,
   OUTPUT_PLACEHOLDER,
+  ratifyAdjudicatorRun,
   type HeadlessResult,
   type HeadlessSettings,
 } from '../src/adjudicate/index.js';
@@ -169,6 +170,25 @@ describe('headless adjudicator: placeholder ids (plan 7.3)', () => {
     expect(r.changed).toEqual({ f_000000000001: a, f_000000000002: b });
   });
 
+  it('names the stable id in prose that named a placeholder (the live run\'s blocker_call did)', () => {
+    const doc = {
+      findings: [{ id: 'f_000000000001', title: 't', path: 'p', proof: 'see f_000000000001', same_as: null }],
+      earlier_items: [{ source: 'R1', status: 'closed', evidence: 'fixed by f_000000000001', fix_row: null }],
+      reason: 'f_000000000001 owed',
+      summary: 'One owed row (f_000000000001); f_0000000000012 is not an id; f_aaaaaaaaaaaa is an earlier one.',
+      blocker_call: 'f_000000000001 blocks',
+      not_verified: ['f_000000000001 at runtime'],
+    };
+    const id = findingIdOf(T, 'p', 't');
+    const out = JSON.parse(assignStableIds(JSON.stringify(doc), T).text) as typeof doc;
+    expect(out.blocker_call).toBe(`${id} blocks`);
+    expect(out.reason).toBe(`${id} owed`);
+    expect(out.summary).toBe(`One owed row (${id}); f_0000000000012 is not an id; f_aaaaaaaaaaaa is an earlier one.`);
+    expect(out.not_verified).toEqual([`${id} at runtime`]);
+    expect(out.findings[0]!.proof).toBe(`see ${id}`);
+    expect(out.earlier_items[0]!.evidence).toBe(`fixed by ${id}`);
+  });
+
   it('never remaps same_as or closes_item, leaves a placeholder used twice for the validator, and passes non-JSON through', () => {
     const doc = {
       findings: [
@@ -254,6 +274,59 @@ describe('headless adjudicator: the PreToolUse hook (plan 6.4, second line)', ()
     const r = spawnSync(process.execPath, [c.script, c.root, c.log], { input: 'not json', encoding: 'utf8' });
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout) as Json).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+  });
+});
+
+describe('headless adjudicator: the recorded live run, replayed through the ratifier', () => {
+  const REC = new URL('./fixtures/claude-adjudicator/success/', import.meta.url).pathname;
+  const kase = JSON.parse(readFileSync(join(REC, 'case.json'), 'utf8')) as { session: string; model: string; effort: string; cli_version: string };
+
+  /** The recorded run with its placeholders filled: a real working copy, the transcript under a projects dir, the hook log. */
+  function recorded(edit: { stream?: (t: string) => string; transcript?: (t: string) => string; hook?: (t: string) => string } = {}) {
+    const base = realpathSync(scratch('sc-adj-rec-'));
+    const root = join(base, 'work');
+    mkdirSync(join(root, '_mainloop'), { recursive: true });
+    const fill = (name: string): string => readFileSync(join(REC, name), 'utf8').split('__SC_ROOT__').join(root);
+    writeFileSync(join(root, '_mainloop', 'ADJUDICATION.json'), fill('ADJUDICATION.json'));
+    writeFileSync(join(base, 'stream.jsonl'), (edit.stream ?? ((t) => t))(fill('stream.jsonl')));
+    writeFileSync(join(base, 'stderr.log'), '');
+    mkdirSync(join(base, 'projects', 'slug'), { recursive: true });
+    writeFileSync(join(base, 'projects', 'slug', `${kase.session}.jsonl`), (edit.transcript ?? ((t) => t))(fill('transcript.jsonl')));
+    writeFileSync(join(base, 'hook.log'), (edit.hook ?? ((t) => t))(fill('hook.log')));
+    return ratifyAdjudicatorRun({
+      root,
+      model: kase.model,
+      effort: kase.effort,
+      sessionId: kase.session,
+      cliVersion: kase.cli_version,
+      streamFile: join(base, 'stream.jsonl'),
+      stderrFile: join(base, 'stderr.log'),
+      projectsDir: join(base, 'projects'),
+      hookLog: join(base, 'hook.log'),
+      timedOut: false,
+      initGate: null,
+      copyUnchanged: () => ({ unchanged: true, changes: [] }),
+      output: join(root, '_mainloop', 'ADJUDICATION.json'),
+    });
+  }
+
+  it('ratifies the recorded run (claude 2.1.325, claude-opus-5-5 at high): every check passes', () => {
+    const r = recorded();
+    expect(r.checks.filter((c) => !c.ok)).toEqual([]);
+    expect(r).toMatchObject({ status: 'PASS', modelObserved: 'claude-opus-5-5', effortObserved: 'high', toolsOffered: ['Edit', 'Glob', 'Grep', 'Read'], toolsUsed: ['Edit', 'Glob', 'Read'], permissionDenials: [] });
+    expect(r.costUsd).toBeGreaterThan(0);
+    expect(r.checks.map((c) => c.name)).toContain('hook');
+  });
+
+  it.each([
+    ['a read outside the copy in the transcript', { transcript: (t: string) => t.replace(/"file_path": "[^"]*BRIEF\.md"/, '"file_path": "/etc/hosts"') }, 'CONTAMINATED', 'tool-paths'],
+    ['a plugin tool in system/init', { stream: (t: string) => t.replace('"tools": ["Edit", "Glob", "Grep", "Read"]', '"tools": ["Edit", "Glob", "Grep", "Read", "mcp__p__x"]') }, 'CONTAMINATED', 'offered'],
+    ['another effort on a request', { transcript: (t: string) => t.replace('"effort": "high"', '"effort": "low"') }, 'FAIL', 'effort'],
+    ['a hook log short of the calls', { hook: (t: string) => t.split('\n').slice(2).join('\n') }, 'FAIL', 'hook'],
+  ])('fails the recorded run with %s', (_what, edit, status, check) => {
+    const r = recorded(edit);
+    expect(r.status).toBe(status);
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toContain(check);
   });
 });
 
@@ -409,6 +482,29 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
     // The read is caught from the transcript alone; the hook log is short of the transcript's calls too.
     expect(failed.map((c) => c.name)).toEqual(['tool-paths', 'hook']);
     expect(failed[0]!.detail).toContain('/etc/hosts');
+  });
+
+  it('judges a glob that climbs from the transcript alone', async () => {
+    const s = await settledRound();
+    const { env } = adjHome([{ transcriptOnly: [{ name: 'Glob', input: { pattern: '*/../../*' } }], output: placeholderDoc(s.summary) }]);
+    const r = await headless(s, env);
+    expect(r.outcome).toBe('needs-ruling');
+    const failed = r.launches[0]!.ratification.checks.filter((c) => !c.ok);
+    expect(failed.map((c) => c.name)).toEqual(['tool-paths', 'hook']);
+    expect(failed[0]!.detail).toContain('(climbs)');
+  });
+
+  it('cancels a running launch when the call is aborted: failed, nothing stored, the process gone', async () => {
+    const s = await settledRound();
+    const { env } = adjHome([{ hangAfterInit: true, actAfterMs: 8000, output: placeholderDoc(s.summary) }]);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 500);
+    const started = Date.now();
+    const r = await headless(s, env, { signal: controller.signal });
+    expect(Date.now() - started).toBeLessThan(6000);
+    expect(r.outcome).toBe('failed');
+    expect(r.launches[0]!.exit.doneBy).toBe('cancel');
+    expect(getRound(s.h.store.db, s.roundId)).toMatchObject({ status: 'awaiting-adjudication', needs_ruling: 0 });
   });
 
   it.each([

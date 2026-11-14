@@ -1,0 +1,58 @@
+{
+  "nonce": "e6da78ab4e3e",
+  "head_sha": "7f830c9b59ead5b2ea016b36994556cfdd32221d",
+  "round": 1,
+  "verdict": "NEEDS-WORK",
+  "approve": false,
+  "needs_ruling": false,
+  "reason": "rangeMean, added by this PR, divides by (hi - lo) instead of the inclusive count (hi - lo + 1): every result is wrong and a single-element range returns Infinity/NaN. Verified at sabotage-council-sandbox/src/range.js:15.",
+  "findings": [
+    {
+      "id": "f_000000000001",
+      "title": "rangeMean divides by (hi - lo) instead of (hi - lo + 1); wrong mean, Infinity/NaN for single-element range",
+      "path": "sabotage-council-sandbox/src/range.js",
+      "line": 15,
+      "severity": "HIGH",
+      "outcome": "owed",
+      "owner": "this",
+      "proof": "sabotage-council-sandbox/src/range.js:13-16 (added in PR.diff:15-18): comment says 'from lo to hi, both included' and rangeSum (range.js:4, loop i <= hi) sums hi - lo + 1 integers, but rangeMean returns rangeSum(lo, hi) / (hi - lo). rangeMean(1, 3) = 6/2 = 3 (correct 2); rangeMean(5, 5) = 5/0 = Infinity (correct 5); rangeMean(0, 0) = 0/0 = NaN. Fix: divide by (hi - lo + 1), or return (lo + hi) / 2, and decide the lo > hi case explicitly.",
+      "kind": "finding",
+      "raised_by": [
+        { "seat": "b", "leg_finding": "F1", "severity": "HIGH" },
+        { "seat": "c", "leg_finding": "F1", "severity": "HIGH" }
+      ],
+      "same_as": null,
+      "closes_item": null
+    },
+    {
+      "id": "f_000000000002",
+      "title": "clamp has undocumented behavior for lo > hi and NaN input",
+      "path": "sabotage-council-sandbox/src/range.js",
+      "line": 10,
+      "severity": "NIT",
+      "outcome": "nit",
+      "owner": "this",
+      "proof": "sabotage-council-sandbox/src/range.js:9-11: Math.min(Math.max(x, lo), hi) returns hi whenever lo > hi and NaN for NaN x; both are the conventional clamp behaviour with an implicit lo <= hi precondition. Only the comment at range.js:8 is silent about it; no wrong outcome on valid input.",
+      "kind": "finding",
+      "raised_by": [
+        { "seat": "b", "leg_finding": "F2", "severity": "NIT" }
+      ],
+      "same_as": null,
+      "closes_item": null
+    }
+  ],
+  "unmapped": [],
+  "earlier_items": [],
+  "human_asks": [],
+  "leg_verdicts": [
+    { "seat": "b", "raw": "NEEDS-WORK", "effective": "NEEDS-WORK" },
+    { "seat": "c", "raw": "NEEDS-WORK", "effective": "NEEDS-WORK" }
+  ],
+  "not_verified": [
+    "No tests exist or ran for this round (_council/TESTS.md); the rangeMean values are hand arithmetic from the source, not runtime output.",
+    "Seat a failed (usage_limit) and is not counted; the round is a 2-leg council."
+  ],
+  "followups": ["f_000000000002"],
+  "summary": "Council round (2 of 3 legs: b, c; a failed on usage limit). Both counted legs independently found the same HIGH: rangeMean's divisor omits the +1 for an inclusive range, verified at sabotage-council-sandbox/src/range.js:15. clamp is correct; b's NIT about its unstated lo <= hi precondition is a nit. One owed row; no earlier items, no human change request.",
+  "blocker_call": "f_000000000001 blocks: change sabotage-council-sandbox/src/range.js:15 to rangeSum(lo, hi) / (hi - lo + 1) (or (lo + hi) / 2) and define the lo > hi case."
+}
