@@ -29,11 +29,12 @@ Planned modes:
 
 ## Status
 
-Building (P7). Built so far: the config schema and loader, the run store, the review root and brief, the reply
+Building (P8). Built so far: the config schema and loader, the run store, the review root and brief, the reply
 parsers, the headless transport with the codex, claude, grok, cursor and muse seats, the ACP transport with the
 antigravity, kiro and opencode seats, the round runner with the `plan`, `diff` and `pr` modes, the `adjudicate`
-validator, the restricted headless adjudicator, the GitHub post step, and the Claude Code plugin. `auto` comes
-later. The v1 build plan is [docs/PLAN.md](docs/PLAN.md).
+validator, the restricted headless adjudicator, the GitHub post step, the Claude Code plugin, and the `auto` daemon
+with rulings and opt-in tests. The scorecard and the `seats` commands come later. The v1 build plan is
+[docs/PLAN.md](docs/PLAN.md).
 
 Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322, 2.1.323 and 2.1.325, the
 versions its canary ran on) and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their
@@ -136,7 +137,7 @@ sabotage-council post <id> --post --expect <sha256>      # pr: post that review,
   `[round-rule]`, ...). `--check` validates only and lists every majority override with its proof, to show before
   storing.
 - `adjudicate <id> --headless [--json]` (plan 6.4, 7.2) has the engine adjudicate the round itself, with no user in
-  the loop: it is what `auto` will use. It needs `[adjudicator] model` in the config (`effort` defaults to `high`,
+  the loop: it is what `auto` uses. It needs `[adjudicator] model` in the config (`effort` defaults to `high`,
   `max_turns` to 40, `timeout_minutes` to 15). The engine copies the round's frozen root into a working directory,
   proves the copy by its tree hash, adds the inputs (`_council/`: `ADJUDICATE.md`, the round as `round wait` prints
   it, the counted legs' answers, the ratification table, the test result) and an empty `_mainloop/ADJUDICATION.json`,
@@ -158,6 +159,13 @@ sabotage-council post <id> --post --expect <sha256>      # pr: post that review,
   is taken over by exactly one caller). The adjudicator's observed model, effort, tools and permission denials
   (merged over every run), cost, duration and transcript are recorded on the round, and its cost is in the round's
   total. Exit 0 adjudicated, 1 failed, 4 held.
+- `ruling <id> <finding-id> uphold|overturn [--note]` records your ruling on a `ruling` finding (plan 3.8), and
+  `ruling <id> approve|post|skip [--note]` releases a round held for your ruling: `approve` maps its review again with
+  your rulings applied (upheld is owed, overturned is refuted) and lets it approve if every other gate allows;
+  `post` posts that review with the approval held; `skip` posts nothing more. Every ruling finding must be ruled
+  first, and `approve` is refused while one is upheld. A round that already posted its "Ruling needed" comment posts
+  the release as one more review on the same head. Nothing else releases a held round, so it never turns into an
+  approval on its own.
 - Every command takes `--config`, `--db` and `--roots`. The store defaults to
   `~/.local/share/sabotage-council/council.db`, with round dirs in `rounds/<id>/` beside it; roots are built under
   `~/.cache/sabotage-council/roots/` as `<store tag>-<round id>-a<attempt>` and deleted, by that name only, once the
@@ -170,6 +178,48 @@ posts only when you say so in your next message, with `--expect` set to that rev
 body): a review that changed since waits for a new go. The plugin pre-approves only the read-only commands and
 `adjudicate`: Claude Code asks you to approve every `round start` and every `post`, since a round costs money, a
 review is public, and the session reads the legs' untrusted answers.
+
+### The auto-reviewer
+
+`auto` reviews every pull request where you are requested as a reviewer, one council round per new head, adjudicated
+by the restricted headless adjudicator, and posts one review per round as you (plan 9.4). It needs `[github] login`,
+`[adjudicator] model` and an `[auto]` table whose `repos_allow` names the repositories it may touch: an empty list
+allows nothing, and a search result outside it is dropped before anything about that PR is read.
+
+```sh
+sabotage-council auto run-once --dry-run   # one pass; renders reviews, posts nothing
+sabotage-council auto status               # paused or not, the service, open ledger rows, the last pass
+sabotage-council auto install --dry-run    # a launchd agent (macOS) or systemd user unit (Linux) running the shadow mode
+sabotage-council auto install              # the same, posting; auto uninstall removes it; auto pause / resume
+```
+
+- **Queue.** GitHub's search for open, non-draft PRs with a review requested from you (`review-requested:@me`, which
+  includes your teams; `auto.include_team_requests = false` keeps direct requests only; `include_assigned = true`
+  adds `assignee:@me`), narrowed to the owners `repos_allow` names. Your own PRs, drafts and `repos_skip` are
+  skipped. After your review clears the request, a PR stays in scope while your latest review of it is a change
+  request, a comment, or a dismissed approval, so later pushes get delta rounds (at most 20 such PRs read per pass,
+  in turn). A head you already reviewed (by any store, or by hand with a marker) is not reviewed again.
+- **One row per head.** Each head is claimed (owner, heartbeat; a dead daemon's claim is taken over), numbered once
+  at its first claim, and gets two attempts: a failed round is retried with a new round, a failed adjudication by
+  re-running only the adjudicator. Before a review posts, the row records a hash of the round's records and the
+  review it means to post; after a crash, the next pass adopts the review that landed, or posts that same review
+  only while the records still hash the same, or fails visibly.
+- **Holds and rulings.** `repos_hold` posts but never approves; your own change request on the head, a ruling the
+  adjudicator asks for, or an adjudicator run that went out of bounds holds the row for `ruling`. The CI gate and
+  the post's guards are `post`'s (above).
+- **Opt-in tests.** `[auto.tests."owner/repo"]` (`setup`, `command`, `timeout_minutes`) runs only for PRs whose
+  author has write access and whose head is in the same repository, never a fork, on a copy of the head outside the
+  review root, with only PATH, LANG, LC_ALL and TZ from your environment. The result goes to the adjudicator; only
+  a PASS lets the round approve.
+- **Notifications** on a needed ruling, a final failure, an approval held, and an approval withdrawn: to
+  `notify.command` (an executable that gets the event as JSON on stdin) or the desktop, once per PR head and kind
+  per 24 hours.
+- **Limits.** `max_rounds_per_day` (30) council rounds in any 24 hours; on macOS each round runs under
+  `caffeinate -i`. Round dirs older than 90 days and failed rounds' roots older than 2 days are pruned; rows of
+  closed PRs retire.
+
+Heavy `auto` use on a consumer Claude plan is not "ordinary, individual usage"; use `ANTHROPIC_API_KEY` or a
+Team/Enterprise plan for the seats and the adjudicator (plan 6.5).
 
 ### Backend notes
 
