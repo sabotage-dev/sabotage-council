@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DEFAULT_MIGRATIONS_DIR, migrate, openStore, readMigrations, type Store } from '../src/store/index.js';
 
 const CORE_TABLES = [
+  'auto_state',
   'credits',
   'earlier_items',
   'events',
@@ -46,7 +47,7 @@ function tables(store: Store): string[] {
 }
 
 /** The shipped migrations, by file name. */
-const SHIPPED = ['001_initial.sql', '002_pr_rounds.sql', '003_post_guards.sql', '004_adjudicator_record.sql'];
+const SHIPPED = ['001_initial.sql', '002_pr_rounds.sql', '003_post_guards.sql', '004_adjudicator_record.sql', '005_auto_ledger.sql'];
 const LATEST = SHIPPED.length;
 
 /** A migrations dir holding the shipped migrations plus extra files. */
@@ -62,7 +63,7 @@ describe('store: migrations', () => {
   it('migrates a fresh database: every table of plan 8.1, every shipped version, foreign keys on', () => {
     const store = openTemp('nested/dirs/council.db');
     expect(existsSync(join(dir, 'nested/dirs/council.db'))).toBe(true);
-    expect(store.migration).toEqual({ applied: [1, 2, 3, 4], version: LATEST });
+    expect(store.migration).toEqual({ applied: [1, 2, 3, 4, 5], version: LATEST });
     expect(tables(store)).toEqual([...CORE_TABLES, 'schema_version'].sort());
     const versions = store.db.prepare('SELECT version, name FROM schema_version').all();
     expect(versions.map((r) => ({ ...r }))).toEqual([
@@ -70,6 +71,7 @@ describe('store: migrations', () => {
       { version: 2, name: 'pr_rounds' },
       { version: 3, name: 'post_guards' },
       { version: 4, name: 'adjudicator_record' },
+      { version: 5, name: 'auto_ledger' },
     ]);
     expect({ ...store.db.prepare('PRAGMA foreign_keys').get() }).toEqual({ foreign_keys: 1 });
   });
@@ -90,15 +92,15 @@ describe('store: migrations', () => {
   it('applies only the new migration to an existing store', () => {
     openTemp().close();
     open.pop();
-    const migrations = migrationsWith({ '005_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
+    const migrations = migrationsWith({ '006_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
     const store = openTemp('council.db', migrations);
-    expect(store.migration).toEqual({ applied: [5], version: 5 });
+    expect(store.migration).toEqual({ applied: [6], version: 6 });
   });
 
   it('rolls back a failing migration and leaves the store at its old version', () => {
     openTemp().close();
     open.pop();
-    const migrations = migrationsWith({ '005_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' });
+    const migrations = migrationsWith({ '006_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' });
     expect(() => openTemp('council.db', migrations)).toThrow();
     const store = openTemp();
     expect(store.migration).toEqual({ applied: [], version: LATEST });
@@ -107,7 +109,7 @@ describe('store: migrations', () => {
 
   it('leaves the connection outside a transaction after a failed migration', () => {
     const store = openTemp();
-    const broken = readMigrations(migrationsWith({ '005_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' }));
+    const broken = readMigrations(migrationsWith({ '006_broken.sql': 'CREATE TABLE half (x INTEGER);\nTHIS IS NOT SQL;' }));
     expect(() => migrate(store.db, broken)).toThrow();
     expect(tables(store)).not.toContain('half');
     // BEGIN fails inside an open transaction, so this proves the failed migration was rolled back.
@@ -124,15 +126,15 @@ describe('store: migrations', () => {
   });
 
   it('refuses a store written by a newer build', () => {
-    const migrations = migrationsWith({ '005_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
+    const migrations = migrationsWith({ '006_add_note.sql': 'ALTER TABLE targets ADD COLUMN note TEXT;' });
     openTemp('council.db', migrations).close();
     open.pop();
-    expect(() => openTemp()).toThrow(/schema version 5, which this build does not know/);
+    expect(() => openTemp()).toThrow(/schema version 6, which this build does not know/);
   });
 
   it('rejects badly named or non-contiguous migration files', () => {
     expect(() => readMigrations(migrationsWith({ 'two.sql': 'SELECT 1;' }))).toThrow(/not named NNN_name\.sql/);
-    expect(() => readMigrations(migrationsWith({ '006_gap.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
+    expect(() => readMigrations(migrationsWith({ '007_gap.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
     expect(() => readMigrations(migrationsWith({ '001_again.sql': 'SELECT 1;' }))).toThrow(/without gaps or duplicates/);
   });
 });
@@ -274,8 +276,16 @@ describe('store: schema', () => {
         records_sha: 'e'.repeat(64),
         review_id: 3_456_789_012,
         updated_at: '2026-11-12T10:21:00.000Z',
+        claim_owner: '{"host":"h","pid":4242,"token":"t"}',
+        event: 'REQUEST_CHANGES',
+        review_sha256: 'd'.repeat(64),
+        dry_run: 0,
+        reason: 'posted REQUEST_CHANGES',
+        created_at: '2026-11-12T10:00:00.000Z',
+        checked_at: '2026-11-12T10:30:00.000Z',
       },
     ],
+    ['auto_state', { key: 'paused', value: '{"paused":false}', updated_at: '2026-11-12T10:31:00.000Z' }],
     ['followups', { id: 1, target_id: 1, round_id: 1, finding_id: 'C1', status: 'exported', exported_at: '2026-11-12T10:22:00.000Z', hook_rc: 0 }],
     [
       'credits',
@@ -391,7 +401,7 @@ describe('store: migration 002 (P6 pr rounds)', () => {
     open.pop();
 
     const store = openTemp();
-    expect(store.migration).toEqual({ applied: [2, 3, 4], version: LATEST });
+    expect(store.migration).toEqual({ applied: [2, 3, 4, 5], version: LATEST });
     const before = store.db.prepare('SELECT kind, marker, dry_run, posted_commit_id, posted_at, posted_body_sha256 FROM rounds WHERE id = 1').get();
     expect({ ...before }).toEqual({ kind: 'council', marker: null, dry_run: 0, posted_commit_id: null, posted_at: null, posted_body_sha256: null });
 
@@ -470,7 +480,7 @@ describe('store: migration 003 (P6 round 1: post claims, pending guards, canonic
     open.pop();
 
     const store = openTemp();
-    expect(store.migration).toEqual({ applied: [3, 4], version: LATEST });
+    expect(store.migration).toEqual({ applied: [3, 4, 5], version: LATEST });
     const rows = (sql: string): unknown[] => store.db.prepare(sql).all().map((r) => ({ ...r }));
     expect(rows('SELECT id, kind, repo, number, branch FROM targets ORDER BY id')).toEqual([
       { id: 1, kind: 'pr', repo: 'github.com/org/repo', number: 5, branch: null },
@@ -505,5 +515,26 @@ describe('store: migration 003 (P6 round 1: post claims, pending guards, canonic
     expect(() => guard({ round_id: 9 })).toThrow(/FOREIGN KEY constraint failed/);
     expect(() => guard({})).not.toThrow();
     expect(() => guard({ kind: 'withdraw-off-head', review_id: 5, status: 'done', done_at: 'y' })).not.toThrow();
+  });
+});
+
+describe('store: migration 005 (P8 auto ledger)', () => {
+  it('upgrades a P7 store: ledger rows keep their values, the new columns start empty, and the CHECKs hold', () => {
+    const p7 = join(dir, 'migrations-p7');
+    mkdirSync(p7);
+    for (const f of SHIPPED.filter((x) => !x.startsWith('005_'))) copyFileSync(join(DEFAULT_MIGRATIONS_DIR, f), join(p7, f));
+    const old = openTemp('council.db', p7);
+    old.db
+      .prepare("INSERT INTO ledger (repo, num, head, state, attempts, updated_at) VALUES ('github.com/o/r', 1, ?, 'posted', 1, '2026-11-12T00:00:00Z')")
+      .run('a'.repeat(40));
+    old.close();
+    open.pop();
+    const store = openTemp();
+    expect(store.migration).toEqual({ applied: [5], version: LATEST });
+    const row = store.db.prepare('SELECT state, attempts, claim_owner, event, review_sha256, dry_run, reason, created_at, checked_at FROM ledger').get();
+    expect({ ...row }).toEqual({ state: 'posted', attempts: 1, claim_owner: null, event: null, review_sha256: null, dry_run: 0, reason: null, created_at: null, checked_at: null });
+    expect(() => store.db.prepare("UPDATE ledger SET event = 'MERGE'").run()).toThrow(/CHECK/);
+    expect(() => store.db.prepare("UPDATE ledger SET review_sha256 = 'nothex'").run()).toThrow(/CHECK/);
+    expect(() => store.db.prepare('UPDATE ledger SET dry_run = 2').run()).toThrow(/CHECK/);
   });
 });
