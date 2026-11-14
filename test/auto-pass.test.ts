@@ -8,6 +8,7 @@ import { autoDir, BUSY_NOTIFY_AFTER, lastReport, recordsSha } from '../src/auto/
 import { API, type Routes } from './helpers/github.js';
 import { mkdirSync } from 'node:fs';
 import { scratch } from './helpers/fixtures.js';
+import { git } from './helpers/git-fixture.js';
 import { getEvents, getLegs, getRound, roundDirOf } from '../src/engine/index.js';
 import { codexCase, claudeCase, fakeHome, OCC } from './helpers/round.js';
 import { cleanScratchAfterAll } from './helpers/fixtures.js';
@@ -464,6 +465,34 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(row(w)).toMatchObject({ state: 'approved', attempts: 1, round_id: roundId });
     expect(roundsCount(w.h)).toBe(1);
     expect(getLegs(w.h.store.db, roundId).length).toBeGreaterThan(0);
+    expect(posts(w)).toBe(1);
+  });
+
+  it('an identity round is linked to its row in the transaction that creates it, and costs nothing against the cap (P8 round 1 row 4)', async () => {
+    const w = await world({
+      edit: (routes, src, d) => {
+        // reviewer-x approved PR 9 at C6, whose tree is this head's.
+        routes['GET search/issues'] = { json: { items: [{ number: 9 }] } };
+        routes[`GET ${API}/pulls/9/reviews`] = { json: [ghReview(9101, LOGIN, 'APPROVED', src.shas['C6']!, '2026-11-12T09:00:00Z', 'ok')] };
+        const tree = git(src.repo, ['rev-parse', `${d}^{tree}`]);
+        routes[`GET ${API}/git/commits/${src.shas['C6']!}`] = { json: { tree: { sha: tree } } };
+        routes[`GET ${API}/git/commits/${d}`] = { json: { tree: { sha: tree } } };
+      },
+    });
+    let linked: unknown = null;
+    const r = await w.pass({
+      hooks: {
+        roundInserted: (roundId) => {
+          linked = (w.h.store.db.prepare('SELECT round_id FROM ledger WHERE head = ?').get(w.d) as { round_id: number | null }).round_id === roundId;
+        },
+      },
+    });
+    expect(linked).toBe(true);
+    const roundId = row(w)['round_id'] as number;
+    expect(getRound(w.h.store.db, roundId)).toMatchObject({ kind: 'identity', status: 'identity', event_posted: 'APPROVE' });
+    expect(row(w)).toMatchObject({ state: 'approved', round_no: 4 });
+    expect(roundsCount(w.h)).toBe(1);
+    expect(r.rounds_last_24h).toBe(0);
     expect(posts(w)).toBe(1);
   });
 
