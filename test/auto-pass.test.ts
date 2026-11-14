@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLAIM_STALE_MS } from '../src/auto/ledger.js';
 import { autoDir, BUSY_NOTIFY_AFTER, lastReport, recordsSha } from '../src/auto/pass.js';
-import { API, type Routes } from './helpers/github.js';
+import { API, FAKE_GH, type Routes } from './helpers/github.js';
+import { CLAIM_STALE_MS as POST_CLAIM_STALE_MS, claimPost, postRound, type PostOptions, type PostResult } from '../src/engine/post.js';
+import { ghApi } from '../src/forge/github.js';
+import { openStore } from '../src/store/index.js';
 import { mkdirSync } from 'node:fs';
 import { scratch } from './helpers/fixtures.js';
 import { git } from './helpers/git-fixture.js';
@@ -266,6 +269,113 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(String(row(w)['reason'])).toMatch(/the PR closed before the post/);
     expect(posts(w)).toBe(0);
     expect(w.notices).toEqual([]);
+  });
+
+  it('a resume holds one post claim from its reconciliation to its re-post; a post that holds or takes the claim keeps the row posting, and the next pass adopts it (P8 round 2 row 1)', async () => {
+    const postWith = (v: World, route: Routes[string]): void => {
+      v.routes[`POST ${PULL}/reviews`] = route;
+      v.sync();
+    };
+    const old = (): string => new Date(Date.now() - POST_CLAIM_STALE_MS - 60_000).toISOString();
+    /** A post by hand from its own process: its own connection to the store, the review the daemon rendered. */
+    const handPost = (v: World, roundId: number, hooks?: PostOptions['hooks']): PostResult => {
+      const other = openStore(v.h.layout.dbPath);
+      try {
+        return postRound(other, { config: v.config, layout: v.h.layout, api: ghApi({ bin: FAKE_GH, env: v.gh.env }), roundId, mode: 'post', expect: row(v)['review_sha256'] as string, hooks });
+      } finally {
+        other.close();
+      }
+    };
+    const notes = (v: World): string[] => getEvents(v.h.store.db, row(v)['round_id'] as number).filter((e) => e.kind === 'auto-posting-note').map((e) => (e.detail as { why: string }).why);
+
+    // A: the first POST failed after its intent (nothing landed). Between the resume's reconciliation and its re-post, a
+    // post by hand finds the round's claim held and sends nothing; the re-post goes out once.
+    const w = await world();
+    postWith(w, { fail: 'gh: connection reset' });
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'posting', event: 'APPROVE' });
+    postWith(w, { echoReview: { id: 990001, login: LOGIN } });
+    let hand: PostResult | null = null;
+    await w.pass({ hooks: { afterReconcile: (id) => (hand = handPost(w, id)) } });
+    expect(hand).toMatchObject({ outcome: 'refused', busy: true, problems: [expect.stringMatching(/^another post of round \d+ holds it/)] });
+    expect(row(w)).toMatchObject({ state: 'approved', review_id: 990001 });
+    expect(posts(w)).toBe(2);
+
+    // B: the same, but the hand post takes over the claim the resume held (held over an hour), POSTs, and dies before it
+    // records its review. The resume's re-post is refused as busy and the row stays posting, fields intact, nothing
+    // failed; the next pass reconciles and adopts the hand post's review. Nothing more is sent.
+    const v = await world();
+    postWith(v, { fail: 'gh: connection reset' });
+    await v.pass();
+    const before = row(v);
+    postWith(v, { echoReview: { id: 990001, login: LOGIN } });
+    let died: unknown = null;
+    await v.pass({
+      hooks: {
+        afterReconcile: (id) => {
+          v.h.store.db.prepare('UPDATE rounds SET post_claimed_at = ? WHERE id = ?').run(old(), id);
+          try {
+            handPost(v, id, {
+              afterPost: () => {
+                throw new Error('the post by hand died right after its POST');
+              },
+            });
+          } catch (error) {
+            died = error;
+          }
+        },
+      },
+    });
+    expect(String(died)).toMatch(/died right after its POST/);
+    expect(posts(v)).toBe(2);
+    expect(row(v)).toMatchObject({ state: 'posting', attempts: 1, records_sha: before['records_sha'], event: 'APPROVE', review_sha256: before['review_sha256'] });
+    expect(notes(v).at(-1)).toMatch(/^another post of round \d+ took its post claim over, so this re-post sent nothing \(the next pass reconciles it\)/);
+    expect(v.notices).toEqual([]);
+    v.addReview(landed(v));
+    await v.pass();
+    expect(row(v)).toMatchObject({ state: 'approved', review_id: 990001 });
+    expect(posts(v)).toBe(2);
+    expect(getEvents(v.h.store.db, row(v)['round_id'] as number).map((e) => e.kind)).toContain('post-adopted');
+
+    // C: a fresh post while a post by hand holds the claim sends nothing and the row stays posting, not failed; a
+    // resume while the claim is still held waits; once it is released, the next pass posts the review once.
+    const u = await world();
+    const live = JSON.stringify({ host: hostname(), pid: process.pid, token: 'hand' });
+    await u.pass({ hooks: { afterLegs: (id) => void u.h.store.db.prepare('UPDATE rounds SET post_owner = ?, post_claimed_at = ? WHERE id = ?').run(live, new Date().toISOString(), id) } });
+    expect(row(u)).toMatchObject({ state: 'posting', attempts: 1, event: 'APPROVE' });
+    expect(notes(u).at(-1)).toMatch(/^another post of round \d+ holds its post claim, so nothing posted here/);
+    await u.pass();
+    expect(row(u)).toMatchObject({ state: 'posting', attempts: 1 });
+    expect(notes(u).at(-1)).toMatch(/^another post of round \d+ holds its post claim, so the resume waits/);
+    expect(posts(u)).toBe(0);
+    u.h.store.db.prepare('UPDATE rounds SET post_owner = NULL, post_claimed_at = NULL').run();
+    await u.pass();
+    expect(row(u)).toMatchObject({ state: 'approved', review_id: 990001 });
+    expect(posts(u)).toBe(1);
+    expect(u.notices).toEqual([]);
+
+    // D: a fresh post whose claim is taken over while it runs (held over an hour) is fenced at its intent: nothing is
+    // sent, and the row stays posting for the next pass, which posts once the other post ended with nothing landed.
+    const t = await world();
+    await t.pass({
+      hooks: {
+        afterPostClaim: (id) => {
+          t.h.store.db.prepare('UPDATE rounds SET post_claimed_at = ? WHERE id = ?').run(old(), id);
+          const other = openStore(t.h.layout.dbPath);
+          try {
+            expect(claimPost(other.db, id)).toMatchObject({ owner: expect.any(String) });
+          } finally {
+            other.close();
+          }
+        },
+      },
+    });
+    expect(row(t)).toMatchObject({ state: 'posting', attempts: 1, event: 'APPROVE' });
+    expect(posts(t)).toBe(0);
+    t.h.store.db.prepare('UPDATE rounds SET post_owner = NULL, post_claimed_at = NULL').run();
+    await t.pass();
+    expect(row(t)).toMatchObject({ state: 'approved', review_id: 990001 });
+    expect(posts(t)).toBe(1);
   });
 
   it('one review per head across stores: a review with this round marker that lands before the POST is never doubled (P8 round 1 row 2)', async () => {

@@ -7,7 +7,7 @@ import type { SeatAdapters } from '../adapters/index.js';
 import { adjudicateHeadless, HeadlessError, type HeadlessResult } from '../adjudicate/index.js';
 import type { CouncilConfig } from '../config/schema.js';
 import { failRound, removeRoundRoots, roundDirOf, runWorker, type DataLayout } from '../engine/index.js';
-import { ALREADY_ON_HEAD, IS_DRAFT, pendingGuards, postRound, type PostResult } from '../engine/post.js';
+import { ALREADY_ON_HEAD, holdPost, IS_DRAFT, pendingGuards, postRound, releasePost, type HeldPost, type PostResult } from '../engine/post.js';
 import { autoOf, creditsOf, HeadMovedError, markerConfig, preparePrRound } from '../engine/pr.js';
 import { countRounds } from '../forge/count.js';
 import { getEvents, getRound, insertEvent, type RoundRow } from '../engine/records.js';
@@ -100,6 +100,11 @@ export interface PassOptions {
         afterRowClaim?: ((key: LedgerKey) => void) | undefined;
         /** Inside the transaction that inserts the round and links it to the row. */
         roundInserted?: ((roundId: number) => void) | undefined;
+        /**
+         * In a resumed post, once the reconciliation found nothing landed: under the post claim the resume holds,
+         * before its records check and its re-post.
+         */
+        afterReconcile?: ((roundId: number) => void) | undefined;
       }
     | undefined;
   log?: ((line: string) => void) | undefined;
@@ -837,7 +842,7 @@ async function work(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, rec
     ctx.o.hooks?.afterRowClaim?.(claim.key);
     if (reconcileOnly) {
       const row = getRow(db, claim.key);
-      if (row !== undefined && !ctx.o.dryRun && (row.state === 'posting' || row.records_sha !== null)) await resumePost(ctx, claim, row, true);
+      if (row !== undefined && !ctx.o.dryRun && (row.state === 'posting' || row.records_sha !== null)) resumePost(ctx, claim, row, true);
     } else await step(ctx, claim, ref, newAttempt, controller.signal, () => fenced);
   } catch (error) {
     const row = getRow(db, claim.key);
@@ -897,7 +902,7 @@ async function step(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, sig
     if (row === undefined) return;
     if (row.state === 'posting' || row.records_sha !== null) {
       if (o.dryRun) return; // a dry pass never resumes a post
-      await resumePost(ctx, claim, row);
+      resumePost(ctx, claim, row);
       return;
     }
     if (row.round_id === null) {
@@ -1127,6 +1132,13 @@ async function postStep(ctx: Ctx, claim: Claim, round: RoundRow): Promise<void> 
         beforeFinalRead: o.hooks?.beforePostRead === undefined ? undefined : () => o.hooks?.beforePostRead?.(round.id),
       },
     });
+    if (r.outcome === 'refused' && r.busy) {
+      // P8 round 2 row 1: another post of the round holds its post claim (a post by hand, or another pass), and it may
+      // land: the row stays posting with its records, and the next pass reconciles it.
+      const row = getRow(store.db, claim.key);
+      if (row !== undefined) postingNote(ctx, row, `another post of round ${round.id} holds its post claim, so nothing posted here (the next pass reconciles it): ${r.problems.join('; ')}`);
+      return;
+    }
     if (r.outcome === 'refused' && !intentRecorded(ctx, round.id)) {
       // Refused before any intent: no POST was sent, so the row may leave posting. A review that changed between the
       // render and the post (CI, a review) renders again; anything else ends the attempt.
@@ -1238,15 +1250,33 @@ function postedRow(ctx: Ctx, roundId: number): number | null {
  * Plan 9.4 resume of a posting row: first a review of the round that landed is adopted (P6's reconciliation, with its
  * guards); with none, the stored review is re-posted only while the round's records still hash to records_sha, and
  * only that review (`--expect` its review sha256); otherwise the row fails visibly.
+ *
+ * P8 round 2 row 1: the resume holds one post claim from the reconciliation to the re-post and the row's cleanup, so
+ * no other post of the round (a `post --post` by hand, another pass) can start between them. A claim another post
+ * holds, or took over, leaves the row posting with its fields intact: that post may land, and the next pass reconciles.
  */
-async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow, reconcileOnly = false): Promise<void> {
-  const { store, o } = ctx;
+function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow, reconcileOnly = false): void {
+  const { store } = ctx;
   const round = row.round_id === null ? undefined : getRound(store.db, row.round_id);
   if (round === undefined) {
     failFinal(ctx, claim, 'a posting row with no round');
     return;
   }
-  const base = { config: o.config, layout: o.layout, api: o.api, roundId: round.id, mode: 'post' as const, refuseDraft: true };
+  const held = holdPost(store.db, round.id);
+  if ('why' in held) {
+    postingNote(ctx, row, `another post of round ${round.id} holds its post claim, so the resume waits (the next pass reconciles it): ${held.why}`);
+    return;
+  }
+  try {
+    resumeHeld(ctx, claim, row, round, held, reconcileOnly);
+  } finally {
+    releasePost(store.db, held);
+  }
+}
+
+function resumeHeld(ctx: Ctx, claim: Claim, row: LedgerRow, round: RoundRow, held: HeldPost, reconcileOnly: boolean): void {
+  const { store, o } = ctx;
+  const base = { config: o.config, layout: o.layout, api: o.api, roundId: round.id, mode: 'post' as const, refuseDraft: true, held };
   if (round.event_posted !== null) {
     settle(ctx, claim, round, postRound(store, base), false);
     return;
@@ -1260,13 +1290,14 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow, reconcileOnly 
     postingNote(ctx, row, `the resume could not reconcile (the next pass tries again): ${rec.problems.join('; ')}`);
     return;
   }
+  o.hooks?.afterReconcile?.(round.id);
   if (reconcileOnly) {
     // P8 round 1 row 11: the repository left the lists, so nothing new posts there; nothing of this post landed.
     clearPost(ctx, claim);
     move(ctx, claim, { state: 'skipped', reason: 'its repository left repos_allow or is on repos_skip: reconciled, nothing of this post landed, and nothing new posts' });
     return;
   }
-  // Nothing landed (the reconciliation held P6's post claim, so no other post of the round ran): a row that fails here
+  // Nothing landed, and the post claim this resume holds keeps every other post of the round out: a row that fails here
   // for good leaves its post fields behind, since no POST can have been sent, and a ruling may release it.
   const sha = recordsSha(roundDirOf(o.layout, round.id), round.kind);
   if (row.records_sha === null || sha !== row.records_sha || row.review_sha256 === null) {
@@ -1277,6 +1308,12 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow, reconcileOnly 
   const r = postRound(store, { ...base, expect: row.review_sha256 });
   if (r.outcome === 'refused') {
     const why = r.problems.join('; ');
+    if (r.busy) {
+      // P8 round 2 row 1: another post took over the claim this resume held (it was held over an hour), and it may land:
+      // the row stays posting, its fields intact, and the next pass reconciles it.
+      postingNote(ctx, row, `another post of round ${round.id} took its post claim over, so this re-post sent nothing (the next pass reconciles it): ${why}`);
+      return;
+    }
     // The reconciliation above found nothing of this post on GitHub, and a refusal sends nothing, so the row may leave
     // posting whatever intent an earlier attempt recorded (P8 round 1 row 12): a closed PR skips it, a head that has
     // another review with this round's marker skips it (row 2), and a draft keeps it for when it is ready (row 3).

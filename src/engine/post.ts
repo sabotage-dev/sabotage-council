@@ -40,6 +40,9 @@ import { applyRulings, archivedReviews, latestRelease, latestReleaseId, sinceRel
  * P6 round 2: an interrupted post is reconciled before a moved head or a closed PR ends the call, and a review GitHub
  * bound to another commit is adopted too, with its withdrawal recorded in the same transaction as the posted state
  * (row 1).
+ *
+ * P8 round 2 row 1: a caller may hold the post claim across several calls (`holdPost`, `held`), and a refusal because
+ * another post holds or took over the claim says so (`busy`): that post may still land.
  */
 
 export interface PostOptions {
@@ -71,6 +74,19 @@ export interface PostOptions {
    * interrupted post was reconciled. A post by hand may still review a draft the user chose to.
    */
   refuseDraft?: boolean | undefined;
+  /**
+   * With `--post`: a post claim the caller already holds (`holdPost`, P8 round 2 row 1). The call works under it and
+   * leaves it held, so the daemon's resume reconciles, checks its records and re-posts under one claim, and no other
+   * post can start between those steps. A held claim that is no longer the caller's refuses the call as `busy`.
+   */
+  held?: HeldPost | undefined;
+}
+
+/** A post claim held across several `postRound` calls (P8 round 2 row 1): the owner and the release it was taken under. */
+export interface HeldPost {
+  roundId: number;
+  owner: string;
+  releaseAtClaim: number | null;
 }
 
 export type PostOutcome = 'rendered' | 'posted' | 'superseded' | 'refused' | 'already-posted';
@@ -112,6 +128,12 @@ export interface PostResult {
   ruling: boolean;
   /** A reconcile-only call found no landed review of this round (P8 resume). */
   notLanded: boolean;
+  /**
+   * Refused because another post of the round holds its post claim, or took over the claim this one held (P8 round 2
+   * row 1). That post may still land, so a caller that recorded a post of its own keeps that record for a later
+   * reconciliation instead of clearing it.
+   */
+  busy: boolean;
 }
 
 /** `owner/name` against `auto.repos_hold` patterns (`*` matches any run of characters), case-insensitively. */
@@ -161,7 +183,7 @@ export function staleChangeRequests(reviews: readonly Review[], login: string, r
 }
 
 function base(roundId: number, mode: PostOptions['mode'], commitId: string): PostResult {
-  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, reviewSha256: null, problems: [], reviewId: null, guards: [], ci: null, next: null, ruling: false, notLanded: false };
+  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, reviewSha256: null, problems: [], reviewId: null, guards: [], ci: null, next: null, ruling: false, notLanded: false, busy: false };
 }
 
 /**
@@ -207,7 +229,6 @@ function claimLive(ownerJson: string, claimedAt: string | null): boolean {
   return true;
 }
 
-/** Claims a round for posting, atomically; the owner token, or why another post holds it. */
 /** Runs `fn` inside one IMMEDIATE transaction: committed when it returns, rolled back when it throws. */
 function immediate<T>(db: DatabaseSync, fn: () => T): T {
   db.exec('BEGIN IMMEDIATE');
@@ -222,8 +243,11 @@ function immediate<T>(db: DatabaseSync, fn: () => T): T {
   return value;
 }
 
-/** Claims a round for posting, atomically; the owner token, or why another post holds it. */
-export function claimPost(db: DatabaseSync, roundId: number): { owner: string } | { why: string } {
+/**
+ * Claims a round for posting, atomically: the owner token and the latest release it was taken under (P8 round 1 row
+ * 1), or why another post holds it.
+ */
+export function claimPost(db: DatabaseSync, roundId: number): { owner: string; releaseAtClaim: number | null } | { why: string } {
   return immediate(db, () => {
     const r = db.prepare('SELECT post_owner, post_claimed_at FROM rounds WHERE id = ?').get(roundId) as { post_owner: string | null; post_claimed_at: string | null } | undefined;
     if (r === undefined) throw new ForgeError(`no round ${roundId} in the store`);
@@ -234,12 +258,25 @@ export function claimPost(db: DatabaseSync, roundId: number): { owner: string } 
     const owner = JSON.stringify({ host: hostname(), pid: process.pid, token: randomUUID() } satisfies ClaimOwner);
     db.prepare('UPDATE rounds SET post_owner = ?, post_claimed_at = ? WHERE id = ?').run(owner, now(), roundId);
     if (r.post_owner !== null) insertEvent(db, 'post-claim-taken-over', roundId, { previous_claimed_at: r.post_claimed_at });
-    return { owner };
+    return { owner, releaseAtClaim: latestReleaseId(db, roundId) };
   });
 }
 
 function releaseClaim(db: DatabaseSync, roundId: number, owner: string): void {
   db.prepare('UPDATE rounds SET post_owner = NULL, post_claimed_at = NULL WHERE id = ? AND post_owner = ?').run(roundId, owner);
+}
+
+/**
+ * Takes the round's post claim for several `postRound` calls (P8 round 2 row 1): the daemon's resume holds it from
+ * its reconciliation to its re-post. Released with `releasePost`, which leaves a claim another post took over alone.
+ */
+export function holdPost(db: DatabaseSync, roundId: number): HeldPost | { why: string } {
+  const c = claimPost(db, roundId);
+  return 'why' in c ? c : { roundId, owner: c.owner, releaseAtClaim: c.releaseAtClaim };
+}
+
+export function releasePost(db: DatabaseSync, held: HeldPost): void {
+  releaseClaim(db, held.roundId, held.owner);
 }
 
 /* ---------- the intent and the guards (rows 2, 4) ---------- */
@@ -584,17 +621,33 @@ export function postRound(store: Store, o: PostOptions): PostResult {
   if (latestRelease(db, round.id)?.decision === 'skip') return refuse(`round ${round.id} was released with skip by a ruling: nothing more posts`);
   if (o.mode === 'dry-run') return step(store, o, round, result, refuse, null);
 
-  // Row 9: one POST per round. The claim is taken before any network call; the round is read again under it.
-  const claim = claimPost(db, round.id);
-  if ('why' in claim) return refuse(claim.why);
-  // P8 round 1 row 1: the release this post was claimed under. One recorded after it means the user ruled while this
+  // Row 9: one POST per round. The claim is taken before any network call; the round is read again under it. P8 round
+  // 1 row 1: the claim records the release it was taken under. One recorded after it means the user ruled while this
   // post ran; the intent step re-checks it, and this post then sends nothing (the next post maps the release).
-  const releaseAtClaim = latestReleaseId(db, round.id);
+  let claim: { owner: string; releaseAtClaim: number | null };
+  if (o.held !== undefined) {
+    // P8 round 2 row 1: a claim the caller holds across several calls. Another post that took it over (it was held
+    // over an hour) may be posting now: this call is refused as busy and sends nothing.
+    if (o.held.roundId !== round.id) throw new ForgeError(`the post claim held for round ${o.held.roundId} is not round ${round.id}'s`);
+    const holder = db.prepare('SELECT post_owner FROM rounds WHERE id = ?').get(round.id) as { post_owner: string | null } | undefined;
+    if (holder?.post_owner !== o.held.owner) {
+      result.busy = true;
+      return refuse(`another post of round ${round.id} took over the post claim this one held (it was held over an hour): nothing posts; that post may land, and the next reconciliation adopts it`);
+    }
+    claim = o.held;
+  } else {
+    const c = claimPost(db, round.id);
+    if ('why' in c) {
+      result.busy = true;
+      return refuse(c.why);
+    }
+    claim = c;
+  }
   try {
     o.hooks?.afterClaim?.();
-    return step(store, o, getRound(db, round.id) ?? round, result, refuse, { owner: claim.owner, releaseAtClaim });
+    return step(store, o, getRound(db, round.id) ?? round, result, refuse, claim);
   } finally {
-    releaseClaim(db, round.id, claim.owner);
+    if (o.held === undefined) releaseClaim(db, round.id, claim.owner);
   }
 }
 
@@ -860,6 +913,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     return null;
   });
   if (fenced === 'claim') {
+    result.busy = true;
     return refuse(`another post of round ${round.id} took over this one's claim (it was held over an hour): this one records no intent and posts nothing; run post ${round.id} --post again once that one ends`);
   }
   if (fenced === 'release') {
