@@ -351,7 +351,9 @@ export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): Va
   // owed (refuted, follow-up, noted, nit) or keeps at a lower severity. It needs recorded proof; in auto it is a
   // ruling; interactively the user sees the proof before the storing call (`adjudicate --check`).
   const majorityOverrides: Array<{ id: string; seats: number; seatSeverity: Severity; outcome: string; severity: Severity; proof: string }> = [];
-  // No user sees the proof before the store in auto or in a headless run, so an override there is a ruling.
+  // No user sees the proof before the store in auto or in a headless run, so an override there is stored only as a
+  // ruling (outcome `ruling`): a refuted, follow-up, noted, nit or lowered row is rejected whatever needs_ruling says
+  // (P7 round 1 row 2), so it can never reach the store as settled.
   const noUser = ctx.mode === 'auto' || ctx.headless === true;
   for (const f of a.findings) {
     if (f.outcome === 'refuted' && f.proof.trim().length < 10) err('refutation', `finding ${f.id} is refuted without proof (file:line or command output)`);
@@ -365,8 +367,11 @@ export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): Va
     if (f.proof.trim().length < 10) {
       err('refutation', `finding ${f.id} overrides a majority (${seats.size} seats, up to ${seatSeverity}) as ${f.outcome} at ${f.severity} with no recorded proof`);
     }
-    if (noUser && !a.needs_ruling) {
-      err('refutation', `finding ${f.id} was raised by ${seats.size} seats (up to ${seatSeverity}) and is ${f.outcome} at ${f.severity}: ${ctx.mode === 'auto' ? 'in auto' : 'with no user in the loop (headless)'} that is a ruling (needs_ruling must be true)`);
+    if (noUser && f.outcome !== 'ruling') {
+      err(
+        'refutation',
+        `finding ${f.id} was raised by ${seats.size} seats (up to ${seatSeverity}) and is ${f.outcome} at ${f.severity}: ${ctx.mode === 'auto' ? 'in auto' : 'with no user in the loop (headless)'} that is a ruling, so its outcome must be "ruling" (with needs_ruling true), whatever its proof`,
+      );
     }
   }
   if (!noUser) {

@@ -862,6 +862,13 @@ describe('headless adjudicator: the validator rejects each class of bad output (
         placeholderDoc(s.summary, { outcome: 'refuted', verdict: 'SHIP-WITH-FIXES', approve: false }),
       'with no user in the loop (headless) that is a ruling',
     ],
+    // Round 1 row 2: needs_ruling true does not make a refuted majority row a ruling.
+    [
+      'a refuted majority override with needs_ruling true',
+      null,
+      (s) => placeholderDoc(s.summary, { outcome: 'refuted', verdict: 'SHIP-WITH-FIXES', approve: false, needsRuling: true }),
+      'its outcome must be "ruling"',
+    ],
   ];
 
   it.each(CASES)('rejects %s twice and holds the round', async (_what, variant, docOf, expected) => {
@@ -887,6 +894,12 @@ describe('headless adjudicator: the validator rejects each class of bad output (
     expect(r.outcome.ok).toBe(true);
     const h = adjudicate(s.h.store, s.h.layout, s.roundId, text, { check: true, headless: true });
     expect(h.outcome.ok).toBe(false);
+    // With needs_ruling true (round 1 row 2): still rejected headless, still accepted interactively with its proof.
+    const held = JSON.stringify(adjudicationFromSummary(s.summary, { outcome: 'refuted', verdict: 'SHIP-WITH-FIXES', approve: false, needsRuling: true }));
+    expect(adjudicate(s.h.store, s.h.layout, s.roundId, held, { check: true, headless: true }).outcome.ok).toBe(false);
+    const interactive = adjudicate(s.h.store, s.h.layout, s.roundId, held, { check: true });
+    expect(interactive.outcome.ok).toBe(true);
+    if (interactive.outcome.ok) expect(interactive.outcome.warnings.join('\n')).toContain('show the user the proof');
   });
 });
 

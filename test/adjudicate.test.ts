@@ -420,6 +420,50 @@ describe('adjudicate: plan 7.3 validator', () => {
     expect(errorsOf(a, solo)).toEqual([]);
   });
 
+  // P7 round 1 row 2: with no user in the loop, needs_ruling true does not make a refuted (or lowered) majority row a
+  // ruling; only outcome "ruling" does.
+  it('rejects a majority override with no user in the loop unless its outcome is ruling, whatever needs_ruling says', () => {
+    const refuted = (needsRuling: boolean): Adj => {
+      const a = valid();
+      f(a, 0)['outcome'] = 'refuted';
+      a['needs_ruling'] = needsRuling;
+      a['verdict'] = 'SHIP-WITH-FIXES';
+      a['leg_verdicts'] = [
+        { seat: 'a', raw: 'NEEDS-WORK', effective: 'SHIP-WITH-FIXES' },
+        { seat: 'b', raw: 'SHIP-WITH-FIXES', effective: 'SHIP-WITH-FIXES' },
+        { seat: 'c', raw: 'SHIP', effective: 'SHIP' },
+      ];
+      return a;
+    };
+    for (const noUser of [{ headless: true }, { mode: 'auto' as const }]) {
+      const r = validateAdjudication(refuted(true), ctx(noUser));
+      expect(r.ok, JSON.stringify(noUser)).toBe(false);
+      if (!r.ok) expect(r.errors.join('\n')).toContain(`finding ${F1} was raised by 2 seats (up to HIGH) and is refuted at HIGH`);
+      if (!r.ok) expect(r.errors.join('\n')).toContain('its outcome must be "ruling"');
+      // Kept owed but lowered, with needs_ruling true: rejected too.
+      const lowered = valid();
+      f(lowered, 0)['severity'] = 'MEDIUM';
+      lowered['needs_ruling'] = true;
+      const l = validateAdjudication(lowered, ctx(noUser));
+      expect(l.ok).toBe(false);
+      if (!l.ok) expect(l.errors.join('\n')).toContain('is owed at MEDIUM');
+      // The same finding as a ruling, lowered or not, is what no user in the loop may store.
+      for (const severity of ['HIGH', 'MEDIUM']) {
+        const ruling = valid();
+        f(ruling, 0)['outcome'] = 'ruling';
+        f(ruling, 0)['severity'] = severity;
+        ruling['needs_ruling'] = true;
+        ruling['verdict'] = 'SHIP-WITH-FIXES';
+        const ok = validateAdjudication(ruling, ctx(noUser));
+        expect(ok.ok, JSON.stringify(ok)).toBe(true);
+      }
+    }
+    // Interactively the same refuted row, with its proof and needs_ruling true, is accepted with a warning to show it.
+    const interactive = validateAdjudication(refuted(true), ctx());
+    expect(interactive.ok).toBe(true);
+    if (interactive.ok) expect(interactive.warnings.join('\n')).toContain('show the user the proof before storing');
+  });
+
   it('warns, in an interactive round, when a majority-raised owed-eligible finding is refuted', () => {
     const a = valid();
     f(a, 0)['outcome'] = 'refuted';
