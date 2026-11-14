@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -603,6 +603,65 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(row(w)).toMatchObject({ state: 'approved', round_no: 4 });
     expect(roundsCount(w.h)).toBe(1);
     expect(r.rounds_last_24h).toBe(0);
+    expect(posts(w)).toBe(1);
+  });
+
+  it('an identity round commits with its record and link, or not at all; a crash before identity.json is written resumes into a usable round (P8 round 2 row 4)', async () => {
+    /** reviewer-x approved PR 9 at C6, whose tree is this head's; `cr` adds the user's own change request on the head. */
+    const identityWorld = (cr: boolean) =>
+      world({
+        edit: (routes, src, d) => {
+          routes['GET search/issues'] = { json: { items: [{ number: 9 }] } };
+          routes[`GET ${API}/pulls/9/reviews`] = { json: [ghReview(9101, LOGIN, 'APPROVED', src.shas['C6']!, '2026-11-12T09:00:00Z', 'ok')] };
+          const tree = git(src.repo, ['rev-parse', `${d}^{tree}`]);
+          routes[`GET ${API}/git/commits/${src.shas['C6']!}`] = { json: { tree: { sha: tree } } };
+          routes[`GET ${API}/git/commits/${d}`] = { json: { tree: { sha: tree } } };
+          if (cr) (routes[`GET ${PULL}/reviews`] as { json: Array<Record<string, unknown>> }).json.push(ghReview(7001, LOGIN, 'CHANGES_REQUESTED', d, '2026-11-13T10:00:00Z', 'Please split this change.'));
+        },
+      });
+    // Inside the transaction that inserts it, the round already has its record, its needs-ruling event and its link; a
+    // failure there rolls all of it back.
+    const v = await identityWorld(true);
+    let inside: unknown = null;
+    await v.pass({
+      hooks: {
+        roundInserted: (roundId) => {
+          inside = { kinds: getEvents(v.h.store.db, roundId).map((e) => e.kind), linked: (v.h.store.db.prepare('SELECT round_id FROM ledger WHERE head = ?').get(v.d) as { round_id: number | null }).round_id === roundId };
+          throw new Error('the link failed');
+        },
+      },
+    });
+    expect(inside).toEqual({ kinds: expect.arrayContaining(['identity-prepared', 'needs-ruling']), linked: true });
+    expect(roundsCount(v.h)).toBe(0);
+    expect(v.h.store.db.prepare("SELECT count(*) AS n FROM events WHERE kind IN ('identity-prepared', 'needs-ruling')").get()).toMatchObject({ n: 0 });
+    expect(row(v)).toMatchObject({ state: 'failed', round_id: null, attempts: 1 });
+
+    // Committed, and the daemon died before identity.json was written: the resume rebuilds it from the stored record,
+    // byte for byte, and posts the identity approval.
+    const w = await identityWorld(false);
+    const dead = JSON.stringify({ host: hostname(), pid: deadPid(), token: 'dead' });
+    let file = '';
+    let written = '';
+    await w.pass({
+      hooks: {
+        afterPrepare: (roundId) => {
+          file = join(roundDirOf(w.h.layout, roundId), 'identity.json');
+          written = readFileSync(file, 'utf8');
+          unlinkSync(file);
+          w.h.store.db.prepare('UPDATE ledger SET claim_owner = ?, heartbeat_at = ?').run(dead, new Date().toISOString());
+          throw new Error('the daemon died before identity.json was written');
+        },
+      },
+    });
+    const roundId = row(w)['round_id'] as number;
+    expect(getRound(w.h.store.db, roundId)).toMatchObject({ kind: 'identity', status: 'identity', event_posted: null });
+    expect(existsSync(file)).toBe(false);
+    expect(posts(w)).toBe(0);
+    await w.pass();
+    expect(readFileSync(file, 'utf8')).toBe(written);
+    expect(getRound(w.h.store.db, roundId)).toMatchObject({ kind: 'identity', event_posted: 'APPROVE' });
+    expect(row(w)).toMatchObject({ state: 'approved', round_id: roundId, round_no: 4 });
+    expect(roundsCount(w.h)).toBe(1);
     expect(posts(w)).toBe(1);
   });
 

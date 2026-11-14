@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { CouncilConfig } from '../config/schema.js';
 import { autoSchema } from '../config/schema.js';
@@ -14,7 +14,7 @@ import type { Store } from '../store/open.js';
 import type { DatabaseSync } from '../store/sqlite.js';
 import type { PrDetail } from './facts.js';
 import { inTransaction, prepareRound, roundDirOf, rosterOf, type DataLayout, type PreparedRound } from './prepare.js';
-import { carriedItems, insertEvent, now, sha256, upsertTarget, type CarriedItem, type RoundNumbering } from './records.js';
+import { carriedItems, getEvents, getRound, insertEvent, now, sha256, upsertTarget, type CarriedItem, type RoundNumbering } from './records.js';
 import { safeName, type ResolvedTarget } from './target.js';
 
 /*
@@ -297,23 +297,17 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
   return { kind: 'council', prepared, count, warnings };
 }
 
-/** The identity path (plan 3.10): a round row with no seats, held when the user's own change request stands. */
+/**
+ * The identity path (plan 3.10): a round row with no seats, held when the user's own change request stands. The round,
+ * its `identity-prepared` record (and its `needs-ruling` event) and the caller's `onRound` (the daemon's ledger link)
+ * commit in one transaction (P8 round 2 row 4), so no crash leaves an identity round without the record its post
+ * reads; `identity.json` is written after the commit and rebuilt from that record when missing.
+ */
 function identityRound(store: Store, o: PrRoundOptions, pr: PrSnapshot, count: RoundCount, match: IdentityMatch, userCr: boolean, participants: string[], warnings: string[]): PrRoundResult {
   const { db } = store;
   const target = { mode: 'pr' as const, repoKey: repoKeyOf(o.ref), planPath: null, branch: null, prNumber: o.ref.number };
   const targetId = upsertTarget(db, target);
   const marker = identityMarker(o.ref, pr.headSha);
-  const roundId = inTransaction(db, o.onRound !== undefined, () => {
-    const r = db
-      .prepare(
-        `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, roster_json, started_at, status, kind, marker, dry_run, needs_ruling)
-         VALUES (?, ?, 'pr', ?, ?, ?, ?, 'identity', 'identity', ?, ?, ?)`,
-      )
-      .run(targetId, count.roundNo, pr.headSha, pr.baseSha, JSON.stringify(rosterOf(o.config)), now(), marker, o.dryRun ? 1 : 0, userCr ? 1 : 0);
-    const id = Number(r.lastInsertRowid);
-    o.onRound?.(db, id, count.roundNo, 'identity');
-    return id;
-  });
   const detail = {
     match,
     pr: { owner: o.ref.owner, repo: o.ref.repo, number: o.ref.number, author: pr.author, base_ref: pr.baseRef, default_branch: pr.defaultBranch, head_sha: pr.headSha },
@@ -322,11 +316,41 @@ function identityRound(store: Store, o: PrRoundOptions, pr: PrSnapshot, count: R
     user_change_request: userCr,
     round_count: { round_no: count.roundNo, count: count.count },
   };
-  insertEvent(db, 'identity-prepared', roundId, detail);
-  if (userCr) insertEvent(db, 'needs-ruling', roundId, { why: 'user-change-request' });
-  const dir = roundDirOf(o.layout, roundId);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(dir, 'identity.json'), `${JSON.stringify({ round_id: roundId, marker, ...detail }, null, 2)}\n`, { flag: 'wx' });
+  const roundId = inTransaction(db, true, () => {
+    const r = db
+      .prepare(
+        `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, roster_json, started_at, status, kind, marker, dry_run, needs_ruling)
+         VALUES (?, ?, 'pr', ?, ?, ?, ?, 'identity', 'identity', ?, ?, ?)`,
+      )
+      .run(targetId, count.roundNo, pr.headSha, pr.baseSha, JSON.stringify(rosterOf(o.config)), now(), marker, o.dryRun ? 1 : 0, userCr ? 1 : 0);
+    const id = Number(r.lastInsertRowid);
+    insertEvent(db, 'identity-prepared', id, detail);
+    if (userCr) insertEvent(db, 'needs-ruling', id, { why: 'user-change-request' });
+    o.onRound?.(db, id, count.roundNo, 'identity');
+    return id;
+  });
+  writeIdentityFile(o.layout, roundId, marker, detail);
   warnings.push(`identity path: this head's tree equals ${match.commitId.slice(0, 7)}, approved on #${match.number}; no seats run (plan 3.10)`);
   return { kind: 'identity', roundId, roundNo: count.roundNo, match, warnings };
+}
+
+/** `identity.json` in the round dir: a copy of the stored `identity-prepared` record (the store decides). */
+function writeIdentityFile(layout: DataLayout, roundId: number, marker: string, detail: unknown): void {
+  const dir = roundDirOf(layout, roundId);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, 'identity.json'), `${JSON.stringify({ round_id: roundId, marker, ...(detail as Record<string, unknown>) }, null, 2)}\n`, { flag: 'wx' });
+}
+
+/**
+ * P8 round 2 row 4: rebuilds an identity round's `identity.json` from its stored `identity-prepared` record when the
+ * file is missing (a crash between the commit and the write), byte for byte what the preparation writes. True when the
+ * file is there afterwards; false for a round with no such record.
+ */
+export function ensureIdentityFile(store: Store, layout: DataLayout, roundId: number): boolean {
+  if (existsSync(join(roundDirOf(layout, roundId), 'identity.json'))) return true;
+  const round = getRound(store.db, roundId);
+  const detail = getEvents(store.db, roundId).find((e) => e.kind === 'identity-prepared')?.detail;
+  if (round?.kind !== 'identity' || round.marker === null || detail === undefined || detail === null) return false;
+  writeIdentityFile(layout, roundId, round.marker, detail);
+  return true;
 }

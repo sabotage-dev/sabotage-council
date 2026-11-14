@@ -9,7 +9,7 @@ import { adjudicateHeadless, HeadlessError, type HeadlessResult } from '../adjud
 import type { CouncilConfig } from '../config/schema.js';
 import { failRound, removeRoundRoots, roundDirOf, runWorker, type DataLayout } from '../engine/index.js';
 import { ALREADY_ON_HEAD, holdPost, IS_DRAFT, pendingGuards, postRound, releasePost, type HeldPost, type PostResult } from '../engine/post.js';
-import { autoOf, creditsOf, HeadMovedError, markerConfig, preparePrRound } from '../engine/pr.js';
+import { autoOf, creditsOf, ensureIdentityFile, HeadMovedError, markerConfig, preparePrRound } from '../engine/pr.js';
 import { countRounds } from '../forge/count.js';
 import { getEvents, getRound, insertEvent, type RoundRow } from '../engine/records.js';
 import { preparedDetail } from '../engine/facts.js';
@@ -1003,6 +1003,9 @@ async function step(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, sig
       }
       case 'adjudicated':
       case 'identity':
+        // P8 round 2 row 4: an identity round whose file a crash left unwritten gets it back from its stored record
+        // first (records_sha hashes it).
+        if (round.status === 'identity') ensureIdentityFile(store, o.layout, round.id);
         await postStep(ctx, claim, round);
         return;
       case 'superseded':
