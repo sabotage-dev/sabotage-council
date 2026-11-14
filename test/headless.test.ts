@@ -457,7 +457,7 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
   it.each([
     ['an MCP server in system/init', { stream: sub(/"mcp_servers": \[\]/, '"mcp_servers": [{"name": "canary", "status": "connected"}]') }, 'mcp-servers', 'mcp_servers is not empty'],
     ['an extra root in system/init', { stream: sub(/"additional_directories": \[\]/, '"additional_directories": ["/"]') }, 'extra-roots', 'additional_directories is not empty'],
-    ['an extra root in the transcript\'s environment', { transcript: sub(/"additionalWorkingDirectories": \[\]/, '"additionalWorkingDirectories": ["/Users/someone"]') }, 'extra-roots', 'additional working directories: /Users/someone'],
+    ['an extra root in the transcript\'s environment', { transcript: sub(/"additionalWorkingDirectories": \[\]/, '"additionalWorkingDirectories": ["/opt/elsewhere"]') }, 'extra-roots', 'additional working directories: /opt/elsewhere'],
     ['a second environment attachment with an extra root', { transcript: att({ type: 'environment', snapshot: { additionalWorkingDirectories: ['/opt'] } }) }, 'extra-roots', '/opt'],
     ['an environment whose extra roots are not a list', { transcript: sub(/"additionalWorkingDirectories": \[\]/, '"additionalWorkingDirectories": "/opt"') }, 'extra-roots', 'not a list'],
     ['a loaded instruction file', { transcript: att({ type: 'instructions', files: [{ path: 'CLAUDE.md' }] }) }, 'instruction-files', 'CLAUDE.md'],

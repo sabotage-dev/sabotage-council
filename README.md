@@ -143,15 +143,21 @@ sabotage-council post <id> --post --expect <sha256>      # pr: post that review,
   and runs your unmodified `claude -p` there with `--restricted`, `--permission-mode dontAsk`, `--permission-prompts
   none`, `--tools Read,Glob,Grep,Edit`, `--allowedTools Read Glob Grep "Edit(./_mainloop/**)"`,
   `--strict-mcp-config`, `--setting-sources ""`, and settings that block reads outside the working directory and run
-  a PreToolUse hook that re-checks every path by realpath (with `ANTHROPIC_API_KEY` it runs `--bare`, which skips
-  hooks). It reads `system/init` before the first turn and kills the run there, recording `setup` and no
-  adjudication, when it was offered any tool beyond those four or is not in `dontAsk`. It ratifies the run from its
-  stream, its transcript and the hook's log: a run that read or edited outside its bounds, or changed the copy, is
-  contaminated, nothing it wrote is read, and the round is held for your ruling. Otherwise the engine replaces the
-  placeholder finding ids with stable ones and stores the document through the same validator (a majority override
-  is a ruling here, as no one saw its proof); a rejection re-prompts once with the errors, and a second one holds
-  the round (`round show` says HELD; adjudicate it yourself). The adjudicator's observed model, effort, tools,
-  permission denials, cost, duration and transcript are recorded on the round. Exit 0 adjudicated, 1 failed, 4 held.
+  a PreToolUse hook that re-checks every path by realpath, and every Glob or Grep pattern by the directories it can
+  search (a brace group holding `/`, extglob, `..` or a class that could climb is denied); with `ANTHROPIC_API_KEY`
+  it runs `--bare`, which skips hooks. It reads `system/init` before the first turn and kills the run there,
+  recording `setup` and no adjudication, when it was offered any tool beyond those four, is not in `dontAsk`, or
+  lists an MCP server or an additional directory. It ratifies the run from its stream, its transcript and the
+  hook's log: a run that read or edited outside its bounds (by its calls' paths and patterns, or by the paths its
+  tools' results report), changed the copy, had an extra working directory, loaded an instruction file or ran a
+  sub-agent is contaminated, nothing it wrote is read, and the round is held for your ruling; every tool use must
+  have exactly one allowing hook entry with its id. Otherwise the engine replaces the placeholder finding ids with
+  stable ones and stores the document through the same validator (a majority override is stored only as a
+  `ruling` here, as no one saw its proof); a rejection re-prompts once with the errors, and a second one holds the
+  round (`round show` says HELD; adjudicate it yourself). One headless run per round at a time (a dead owner's lock
+  is taken over by exactly one caller). The adjudicator's observed model, effort, tools and permission denials
+  (merged over every run), cost, duration and transcript are recorded on the round, and its cost is in the round's
+  total. Exit 0 adjudicated, 1 failed, 4 held.
 - Every command takes `--config`, `--db` and `--roots`. The store defaults to
   `~/.local/share/sabotage-council/council.db`, with round dirs in `rounds/<id>/` beside it; roots are built under
   `~/.cache/sabotage-council/roots/` as `<store tag>-<round id>-a<attempt>` and deleted, by that name only, once the
