@@ -963,6 +963,14 @@ async function step(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, sig
       case 'running': {
         const started = existsSync(join(roundDirOf(o.layout, round.id), 'runner.json'));
         const prepared = preparedHere === round.id || getEvents(db, round.id).some((e) => e.kind === 'round-prepared');
+        const preparer = !started && !prepared ? livePreparer(ctx, round) : null;
+        if (preparer !== null) {
+          // P8 round 2 row 2: its prepare may still be running (a pass held in one long git or gh process past the stale
+          // limit, whose claim was taken over): the round is never failed while that pass lives. The row is left to it,
+          // unclaimed; the pass after it finishes runs the round's legs.
+          ctx.report.candidates.push({ pr: prLabel(ref), head: row.head, source: newAttempt ? 'retry' : 'resume', action: 'busy', why: `round ${round.id} is still being prepared by ${preparer}: left alone until that pass ends` });
+          return;
+        }
         if (started || !prepared) {
           // The legs belonged to a process that is gone, or its preparation never finished: the round failed, and the
           // attempt with it.
@@ -1016,6 +1024,25 @@ async function step(ctx: Ctx, claim: Claim, ref: PrRef, newAttempt: boolean, sig
   }
 }
 
+/**
+ * P8 round 2 row 2: how long a live pid on this host is trusted as the preparer of a round that has not finished
+ * preparing. A prepare is git and gh work; one still unfinished after this long is taken as dead, its pid reused.
+ */
+export const PREPARER_TRUST_MS = 6 * 60 * 60_000;
+
+/**
+ * The pass still preparing a round, when one may be: the round's `auto-round` event names its preparer, whose pid runs
+ * on this host, and the round started less than PREPARER_TRUST_MS ago. Another host's preparer cannot be checked: its
+ * claim, stale by then, is the only sign, as for any row.
+ */
+function livePreparer(ctx: Ctx, round: RoundRow): string | null {
+  const e = getEvents(ctx.store.db, round.id).find((x) => x.kind === 'auto-round');
+  const p = (e?.detail as { preparer?: { host?: unknown; pid?: unknown } } | undefined)?.preparer;
+  if (p?.host !== hostname() || typeof p.pid !== 'number' || !pidAlive(p.pid)) return null;
+  if (!(ctx.nowMs() - Date.parse(round.started_at) < PREPARER_TRUST_MS)) return null;
+  return `pid ${p.pid} on this host`;
+}
+
 function failedWhy(ctx: Ctx, roundId: number): string {
   const e = getEvents(ctx.store.db, roundId).filter((x) => x.kind === 'round-failed' || x.kind === 'legs-settled').at(-1);
   const d = e?.detail as { error?: string; quorum?: string; stage?: string } | undefined;
@@ -1050,7 +1077,13 @@ function prepare(ctx: Ctx, claim: Claim, row: LedgerRow, ref: PrRef): boolean {
       onRound: (db, roundId, roundNo, kind) => {
         if (!linkRound(db, claim, roundId, roundNo)) throw new PassError('the claim was taken over before the round was linked: no round is created');
         if (kind === 'council') {
-          db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES (?, 'auto-round', ?, ?)").run(new Date(ctx.nowMs()).toISOString(), roundId, JSON.stringify({ row: claim.key, dry_run: o.dryRun }));
+          // P8 round 2 row 2: the event names the pass preparing the round (its claim's owner), so a pass that finds the
+          // round unfinished can tell a prepare still running from one that died.
+          db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES (?, 'auto-round', ?, ?)").run(
+            new Date(ctx.nowMs()).toISOString(),
+            roundId,
+            JSON.stringify({ row: claim.key, dry_run: o.dryRun, preparer: JSON.parse(claim.owner) as unknown }),
+          );
         }
         o.hooks?.roundInserted?.(roundId);
       },

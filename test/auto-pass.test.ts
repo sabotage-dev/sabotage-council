@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLAIM_STALE_MS, claimRow } from '../src/auto/ledger.js';
-import { BUSY_NOTIFY_AFTER, lastReport, PASS_LOCK_KEY, PASS_LOCK_STALE_MS, recordsSha, takePassLock } from '../src/auto/pass.js';
+import { BUSY_NOTIFY_AFTER, lastReport, PASS_LOCK_KEY, PASS_LOCK_STALE_MS, PREPARER_TRUST_MS, recordsSha, takePassLock } from '../src/auto/pass.js';
 import { API, FAKE_GH, type Routes } from './helpers/github.js';
 import { CLAIM_STALE_MS as POST_CLAIM_STALE_MS, claimPost, postRound, type PostOptions, type PostResult } from '../src/engine/post.js';
 import { ghApi } from '../src/forge/github.js';
@@ -895,6 +895,66 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(row(w)).toMatchObject({ state: 'approved', attempts: 1, round_id: roundId });
     expect(roundsCount(w.h)).toBe(1);
     expect(posts(w)).toBe(1);
+  });
+
+  it('a round whose prepare may still be running (its preparer\'s pid alive on this host) is never failed as daemon-died; a dead or long-gone preparer\'s is (P8 round 2 row 2)', async () => {
+    type Saved = { ts: string; detail_json: string };
+    /**
+     * A pass held in one long git process past the stale limit, as another pass finds it: the round inserted and linked,
+     * its preparation unfinished (no round-prepared yet), the row's claim stale. `edit` changes the round's record.
+     */
+    const stalled = async (v: World, edit: (roundId: number) => void = () => undefined): Promise<{ roundId: number; saved: Saved }> => {
+      let saved: Saved | null = null;
+      await v.pass({
+        hooks: {
+          afterPrepare: (roundId) => {
+            const db = v.h.store.db;
+            saved = db.prepare("SELECT ts, detail_json FROM events WHERE round_id = ? AND kind = 'round-prepared'").get(roundId) as Saved;
+            db.prepare("DELETE FROM events WHERE round_id = ? AND kind = 'round-prepared'").run(roundId);
+            edit(roundId);
+            db.prepare('UPDATE ledger SET claim_owner = ?, heartbeat_at = ?').run(JSON.stringify({ host: hostname(), pid: process.pid, token: 'stalled' }), new Date(Date.now() - CLAIM_STALE_MS - 60_000).toISOString());
+            throw new Error('the pass is still inside its prepare');
+          },
+        },
+      });
+      return { roundId: row(v)['round_id'] as number, saved: saved! };
+    };
+    const kinds = (v: World, roundId: number): string[] => getEvents(v.h.store.db, roundId).map((e) => e.kind);
+
+    // Its preparer (this process) still runs: the round is left alone, and so is the row; nothing fails, nothing posts.
+    const w = await world();
+    const { roundId, saved } = await stalled(w);
+    expect(getEvents(w.h.store.db, roundId).find((e) => e.kind === 'auto-round')?.detail).toMatchObject({ preparer: { host: hostname(), pid: process.pid } });
+    const r = await w.pass();
+    expect(r.candidates.find((c) => c.source === 'resume')).toMatchObject({ action: 'busy', why: `round ${roundId} is still being prepared by pid ${process.pid} on this host: left alone until that pass ends` });
+    expect(getRound(w.h.store.db, roundId)?.status).toBe('running');
+    expect(kinds(w, roundId)).not.toContain('round-failed');
+    expect(row(w)).toMatchObject({ state: 'running', attempts: 1, claim_owner: null });
+    expect(getLegs(w.h.store.db, roundId)).toEqual([]);
+    expect(posts(w)).toBe(0);
+    expect(w.notices).toEqual([]);
+    // Its prepare finishes: the next pass runs the legs of that round, never a second round.
+    w.h.store.db.prepare("INSERT INTO events (ts, kind, round_id, detail_json) VALUES (?, 'round-prepared', ?, ?)").run(saved.ts, roundId, saved.detail_json);
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'approved', attempts: 1, round_id: roundId });
+    expect(roundsCount(w.h)).toBe(1);
+    expect(posts(w)).toBe(1);
+
+    // Its preparer's pid is gone: the round fails as daemon-died, its attempt with it, and the same pass retries the head.
+    const v = await world();
+    const dead = await stalled(v, (id) => v.h.store.db.prepare("UPDATE events SET detail_json = json_set(detail_json, '$.preparer.pid', ?) WHERE round_id = ? AND kind = 'auto-round'").run(deadPid(), id));
+    await v.pass();
+    expect(getRound(v.h.store.db, dead.roundId)?.status).toBe('failed');
+    expect(getEvents(v.h.store.db, dead.roundId).find((e) => e.kind === 'round-failed')?.detail).toMatchObject({ stage: 'daemon-died' });
+    expect(row(v)).toMatchObject({ state: 'approved', attempts: 2 });
+    expect(roundsCount(v.h)).toBe(2);
+
+    // A live pid is trusted only so long: a round that started longer ago than that is taken as a reused pid's, and fails.
+    const u = await world();
+    const long = await stalled(u, (id) => u.h.store.db.prepare('UPDATE rounds SET started_at = ? WHERE id = ?').run(new Date(Date.now() - PREPARER_TRUST_MS - 60_000).toISOString(), id));
+    await u.pass();
+    expect(getEvents(u.h.store.db, long.roundId).find((e) => e.kind === 'round-failed')?.detail).toMatchObject({ stage: 'daemon-died' });
+    expect(row(u)).toMatchObject({ state: 'approved', attempts: 2 });
   });
 
   it('a pass whose lock was taken over claims nothing more (P8 round 1 row 6)', async () => {
