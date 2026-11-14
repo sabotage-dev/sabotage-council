@@ -66,6 +66,11 @@ export interface PostOptions {
    * and run the guards it owes; if none landed, post nothing and say so (outcome `refused`, `notLanded`).
    */
   reconcileOnly?: boolean | undefined;
+  /**
+   * The auto daemon's rule (plan 9.4, P8 round 1 row 3): the last read before the POST refuses a draft, after any
+   * interrupted post was reconciled. A post by hand may still review a draft the user chose to.
+   */
+  refuseDraft?: boolean | undefined;
 }
 
 export type PostOutcome = 'rendered' | 'posted' | 'superseded' | 'refused' | 'already-posted';
@@ -519,6 +524,9 @@ export function testsFact(db: DatabaseSync, roundId: number): EventFacts['tests'
 
 /* ---------- one review per head (P8 round 1 row 2) ---------- */
 
+/** What a refusal says when the PR is a draft (refuseDraft): the daemon keeps the row for when it is ready. */
+export const IS_DRAFT = 'is a draft';
+
 /** What a refusal says when the head already has our review with this round's marker: the daemon skips the row. */
 export const ALREADY_ON_HEAD = 'is already on this head';
 
@@ -816,6 +824,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   const last = readPull(o.api, ref);
   if (last.headSha.toLowerCase() !== head.toLowerCase()) return superseded(last.headSha);
   if (last.state === 'closed') return refuse(`${ref.owner}/${ref.repo}#${ref.number} was closed since the post began: nothing posts`);
+  if (o.refuseDraft === true && last.draft) return refuse(`${ref.owner}/${ref.repo}#${ref.number} ${IS_DRAFT}: nothing posts until it is ready for review`);
   if (identity && pr.baseRef === pr.defaultBranch && last.baseRef !== last.defaultBranch) {
     result.next = `sabotage-council post ${round.id} --dry-run`;
     return refuse(

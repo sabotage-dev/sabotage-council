@@ -7,7 +7,7 @@ import type { SeatAdapters } from '../adapters/index.js';
 import { adjudicateHeadless, HeadlessError, type HeadlessResult } from '../adjudicate/index.js';
 import type { CouncilConfig } from '../config/schema.js';
 import { failRound, removeRoundRoots, roundDirOf, runWorker, type DataLayout } from '../engine/index.js';
-import { ALREADY_ON_HEAD, pendingGuards, postRound, type PostResult } from '../engine/post.js';
+import { ALREADY_ON_HEAD, IS_DRAFT, pendingGuards, postRound, type PostResult } from '../engine/post.js';
 import { autoOf, HeadMovedError, preparePrRound } from '../engine/pr.js';
 import { getEvents, getRound, insertEvent, type RoundRow } from '../engine/records.js';
 import { preparedDetail } from '../engine/facts.js';
@@ -527,6 +527,10 @@ function supersedeOldHeads(ctx: Ctx, candidates: readonly Candidate[]): void {
 /**
  * Rows a pass of this mode picks up again: running or posting with no live claim (a daemon that died, or a ruling's
  * release), whatever the PR's search says. A posting row is never re-run from scratch.
+ *
+ * The PR is read again first (P8 round 1 row 3). A row whose post may have begun (posting, or records_sha set) is
+ * always worked, since a review that landed must be reconciled; its post then refuses a draft or a closed PR. Any
+ * other row waits while the PR is a draft, and is skipped once the PR is closed.
  */
 async function resumeRows(ctx: Ctx): Promise<void> {
   const { db } = ctx.store;
@@ -537,6 +541,30 @@ async function resumeRows(ctx: Ctx): Promise<void> {
     if (claimLive(row, ctx.nowMs())) continue;
     const ref = refOfKey(row.repo, row.num);
     if (ref === null || !inScope(ctx.auto, `${ref.owner}/${ref.repo}`)) continue;
+    const cand = (action: CandidateReport['action'], why: string): void => {
+      ctx.report.candidates.push({ pr: prLabel(ref), head: row.head, source: 'resume', action, why });
+    };
+    let pull: Candidate;
+    try {
+      pull = candidateOf(ctx.o.api, ref, 'continuation');
+      markChecked(db, row.repo, row.num, ctx.nowMs());
+    } catch (error) {
+      cand('error', `the PR could not be read before the resume: ${errText(error)}`);
+      continue;
+    }
+    if (row.state !== 'posting' && row.records_sha === null) {
+      if (pull.state === 'closed') {
+        if (row.round_id !== null) db.prepare("UPDATE rounds SET status = 'superseded' WHERE id = ? AND status IN ('running', 'awaiting-adjudication', 'adjudicated') AND event_posted IS NULL").run(row.round_id);
+        const why = 'the PR closed before its round posted';
+        if (updateUnclaimed(db, row, { state: 'skipped', reason: why }, ctx.nowMs())) rowReport(ctx, row, row.state, 'skipped', why);
+        cand('skipped', why);
+        continue;
+      }
+      if (pull.draft) {
+        cand('skipped', `a draft: the ${row.state} row resumes once it is ready for review`);
+        continue;
+      }
+    }
     const claim = claimRow(db, row, { attempt: false, dryRun: ctx.o.dryRun, nowMs: ctx.nowMs() });
     if (!claim.ok) continue;
     if (claim.takenOver) rowReport(ctx, row, row.state, claim.row.state, 'a stale claim taken over');
@@ -892,7 +920,7 @@ async function postStep(ctx: Ctx, claim: Claim, round: RoundRow): Promise<void> 
         move(ctx, claim, { state: 'rendered', reason: dry.problems.join('; ') });
         return;
       }
-      settle(ctx, claim, round, postRound(store, { config: o.config, layout: o.layout, api: o.api, roundId: round.id, mode: 'post' }), false);
+      settle(ctx, claim, round, postRound(store, { config: o.config, layout: o.layout, api: o.api, roundId: round.id, mode: 'post', refuseDraft: true }), false);
       return;
     }
     if (dry.outcome !== 'rendered' || dry.body === null || dry.event === null || dry.reviewSha256 === null) {
@@ -921,6 +949,7 @@ async function postStep(ctx: Ctx, claim: Claim, round: RoundRow): Promise<void> 
       roundId: round.id,
       mode: 'post',
       expect: dry.reviewSha256,
+      refuseDraft: true,
       hooks: {
         afterPost: o.hooks?.afterPost === undefined ? undefined : () => o.hooks?.afterPost?.(round.id),
         afterClaim: o.hooks?.afterPostClaim === undefined ? undefined : () => o.hooks?.afterPostClaim?.(round.id),
@@ -951,9 +980,15 @@ function clearPost(ctx: Ctx, claim: Claim): void {
 
 /**
  * A post that cannot go ahead and sent nothing: a closed PR is skipped, and so is a head that already has our review
- * with this round's marker (P8 round 1 row 2: one review per head); anything else is a failed attempt.
+ * with this round's marker (P8 round 1 row 2: one review per head); a draft keeps the row `running`, unclaimed, for
+ * the pass that finds it ready (row 3); anything else is a failed attempt.
  */
 function abandon(ctx: Ctx, claim: Claim, why: string): void {
+  if (why.includes(` ${IS_DRAFT}: nothing posts`)) {
+    move(ctx, claim, { reason: `the PR is a draft: the review posts once it is ready (${why})` });
+    rowReport(ctx, { ...claim.key, round_id: getRow(ctx.store.db, claim.key)?.round_id ?? null }, 'posting', 'running', 'the PR is a draft: nothing posts until it is ready');
+    return;
+  }
   if (/ is closed: nothing posts| was closed since the post began/.test(why)) {
     move(ctx, claim, { state: 'skipped', reason: `the PR closed before the post: ${why}` });
     return;
@@ -1040,7 +1075,7 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void>
     failFinal(ctx, claim, 'a posting row with no round');
     return;
   }
-  const base = { config: o.config, layout: o.layout, api: o.api, roundId: round.id, mode: 'post' as const };
+  const base = { config: o.config, layout: o.layout, api: o.api, roundId: round.id, mode: 'post' as const, refuseDraft: true };
   if (round.event_posted !== null) {
     settle(ctx, claim, round, postRound(store, base), false);
     return;
@@ -1069,8 +1104,9 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void>
       abandon(ctx, claim, r.problems.join('; '));
       return;
     }
-    if (r.problems.join('; ').includes(ALREADY_ON_HEAD)) {
-      // Nothing of ours landed, and the head has another review with this round's marker: never a second one.
+    if (r.problems.join('; ').includes(ALREADY_ON_HEAD) || r.problems.join('; ').includes(` ${IS_DRAFT}: nothing posts`)) {
+      // Nothing of ours landed, and the head has another review with this round's marker (never a second one), or the
+      // PR is a draft now (the row waits for it to be ready).
       clearPost(ctx, claim);
       abandon(ctx, claim, r.problems.join('; '));
       return;

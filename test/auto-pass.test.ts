@@ -229,6 +229,52 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(getEvents(same.h.store.db, roundId).filter((e) => e.kind === 'guard').map((e) => (e.detail as { outcome: string }).outcome)).toEqual(['kept: no review landed meanwhile and the head held']);
   });
 
+  it('a PR made a draft after the claim posts nothing and waits; a resumed row reads the PR first (P8 round 1 row 3)', async () => {
+    const w = await world();
+    const draft = (on: boolean): void => {
+      Object.assign(json(w.routes, `GET ${PULL}`), { draft: on });
+      w.sync();
+    };
+    // Made a draft right before the POST: nothing posts, and the row waits for it (not a failed attempt).
+    await w.pass({ hooks: { beforePostRead: () => draft(true) } });
+    expect(posts(w)).toBe(0);
+    expect(row(w)).toMatchObject({ state: 'running', attempts: 1, records_sha: null, claim_owner: null });
+    expect(String(row(w)['reason'])).toMatch(/^the PR is a draft: the review posts once it is ready/);
+    // Still a draft: the resume reads the PR first and leaves the row alone.
+    const waiting = await w.pass();
+    expect(waiting.candidates.filter((c) => c.source === 'resume')).toEqual([{ pr: 'sabotage-dev/sabotage-council#2', head: w.d, source: 'resume', action: 'skipped', why: 'a draft: the running row resumes once it is ready for review' }]);
+    expect(row(w)).toMatchObject({ state: 'running', attempts: 1 });
+    expect(posts(w)).toBe(0);
+    // Ready again: the round's review posts, on the same attempt and round.
+    draft(false);
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'approved', attempts: 1 });
+    expect(posts(w)).toBe(1);
+    expect(roundsCount(w.h)).toBe(1);
+  });
+
+  it('a draft on resume: a posting row is reconciled first, then its re-post refuses the draft and the row waits (P8 round 1 row 3)', async () => {
+    const w = await world();
+    const draft = (on: boolean): void => {
+      Object.assign(json(w.routes, `GET ${PULL}`), { draft: on });
+      w.sync();
+    };
+    let crash = true;
+    await w.pass({ hooks: { afterPostClaim: () => (crash ? ((crash = false), (() => { throw new Error('died before the POST'); })()) : undefined) } });
+    expect(row(w)).toMatchObject({ state: 'posting' });
+    draft(true);
+    await w.pass();
+    expect(posts(w)).toBe(0);
+    expect(row(w)).toMatchObject({ state: 'running', records_sha: null, attempts: 1 });
+    const kinds = getEvents(w.h.store.db, row(w)['round_id'] as number).map((e) => e.kind);
+    expect(kinds.indexOf('post-reconcile')).toBeGreaterThan(-1);
+    expect(kinds.lastIndexOf('post-refused')).toBeGreaterThan(kinds.indexOf('post-reconcile'));
+    draft(false);
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'approved', attempts: 1 });
+    expect(posts(w)).toBe(1);
+  });
+
   it('the head moves mid-round: the round is superseded and nothing posts; the next pass reviews the new head', async () => {
     const w = await world();
     let e = '';
