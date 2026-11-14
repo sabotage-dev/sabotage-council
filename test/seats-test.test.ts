@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { createClaudeAdapter } from '../src/adapters/claude/index.js';
 import type { SeatAdapters } from '../src/adapters/index.js';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
+import type { LegHandle, Occupant, Preflight, Ratification, RoundCtx, SeatAdapter } from '../src/adapters/types.js';
 import { buildPlantedRepo, DEFAULT_FIXTURE_DIR, loadFixture, matchDefects, matchDefectsInText } from '../src/seats/fixture.js';
+import { runSeatTest } from '../src/seats/run.js';
 import { loadStats } from '../src/stats/data.js';
 import { buildReport, thresholdsOf } from '../src/stats/report.js';
 import { openStore } from '../src/store/index.js';
@@ -305,5 +307,93 @@ describe('seats test: one leg end to end with the fake claude', () => {
     // Nothing launched: the fake never ran a leg, and no store was created.
     expect(existsSync(join(fake.home, 'claude-argv.json'))).toBe(false);
     expect(existsSync(p.db)).toBe(false);
+  });
+});
+
+/**
+ * An in-process adapter for the runner's own lines of defence, behind the adapter's: its poll never ends a leg by
+ * itself (no supervisor cap), and its ratification passes whatever happened to the root.
+ */
+function stubAdapter(opts: { hang?: boolean; writeIntoRoot?: string }): { adapter: SeatAdapter; cancelled: () => number } {
+  let cancels = 0;
+  const pre: Preflight = { ok: true, backend: 'claude', cliVersion: '0.0.0', enforcement: 'strong', checks: [], userOwned: [], failureClass: null, reason: null, data: {} };
+  const adapter: SeatAdapter = {
+    id: 'claude',
+    transport: 'headless',
+    testedVersions: { floor: '0.0.0', tested: [] },
+    enforcement: () => 'strong',
+    listModels: async () => [{ id: 'stub', family: 'anthropic' }],
+    preflight: async () => pre,
+    launch: async (o: Occupant, ctx: RoundCtx): Promise<LegHandle> => {
+      if (opts.writeIntoRoot !== undefined) writeFileSync(join(ctx.root, opts.writeIntoRoot), 'written by a leg\n');
+      return { backend: 'claude', occupant: o, legDir: ctx.legDir, root: ctx.root, nonce: ctx.nonce, startedAt: new Date(), process: null, exit: null, files: {}, data: { nonce: ctx.nonce } };
+    },
+    poll: async () => (opts.hang === true && cancels === 0 ? { status: 'running' } : { status: 'done', doneBy: 'record', exit: null }),
+    collect: async (h: LegHandle) => ({ text: `NONCE: ${String(h.data['nonce'])}\n\n\`\`\`findings\nnone\n\`\`\`\n\nVERDICT: SHIP`, fromNonce: true, source: 'stub' }),
+    ratify: async (): Promise<Ratification> => ({
+      status: opts.hang === true ? 'FAIL' : 'PASS',
+      ok: opts.hang !== true,
+      failureClass: opts.hang === true ? 'timeout' : null,
+      checks: [{ name: 'stub', ok: opts.hang !== true, detail: 'stub' }],
+      enforcement: 'strong',
+      recordPath: null,
+      sessionId: null,
+      cliVersion: '0.0.0',
+      modelObserved: 'stub',
+      effortObserved: null,
+      cwdObserved: null,
+      cwdOk: true,
+      toolsOffered: [],
+      toolsUsed: [],
+      tokensIn: null,
+      tokensOut: null,
+      costUsd: null,
+      credits: null,
+      quotaUsedPct: null,
+      quotaNote: null,
+      durationMs: 1,
+      nonceSeen: true,
+      rootMutated: null,
+      detail: {},
+    }),
+    classify: () => null,
+    cancel: async () => {
+      cancels += 1;
+    },
+  };
+  return { adapter, cancelled: () => cancels };
+}
+
+describe('seats test: the runner behind the adapter', () => {
+  it('cancels a leg the adapter never ends, once its cap and grace pass', async () => {
+    const p = places();
+    const stub = stubAdapter({ hang: true });
+    const r = await runSeatTest({ backend: 'claude', model: 'stub' }, { seat: null, role: null }, {
+      adapters: () => stub.adapter,
+      rootsDir: p.roots,
+      dataDir: join(p.dir, 'data'),
+      timeoutMs: 200,
+      capGraceMs: 100,
+      pollMs: 20,
+    });
+    expect(stub.cancelled()).toBeGreaterThanOrEqual(1);
+    expect(r).toMatchObject({ ratified: false, status: 'FAIL', failure_class: 'timeout' });
+  }, 10_000);
+
+  it('fails a leg whose root changed even when the adapter ratified it (the residue sweep)', async () => {
+    const p = places();
+    const stub = stubAdapter({ writeIntoRoot: 'planted/calc/extra.py' });
+    const r = await runSeatTest({ backend: 'claude', model: 'stub' }, { seat: null, role: null }, {
+      adapters: () => stub.adapter,
+      rootsDir: p.roots,
+      dataDir: join(p.dir, 'data'),
+      timeoutMs: 5_000,
+      pollMs: 20,
+    });
+    expect(r).toMatchObject({ ratified: false, status: 'CONTAMINATED', failure_class: 'contaminated', root_unchanged: false });
+    expect(r.failed_checks.at(-1)).toMatch(/^residue: /);
+    // The same stub with an untouched root ratifies: the sweep alone failed it.
+    const clean = await runSeatTest({ backend: 'claude', model: 'stub' }, { seat: null, role: null }, { adapters: () => stubAdapter({}).adapter, rootsDir: p.roots, dataDir: join(p.dir, 'data'), timeoutMs: 5_000, pollMs: 20 });
+    expect(clean).toMatchObject({ ratified: true, status: 'PASS', verdict: 'SHIP' });
   });
 });
