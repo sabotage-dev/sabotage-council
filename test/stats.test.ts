@@ -58,6 +58,8 @@ describe('stats: the window (--since)', () => {
     expect(recent.window.rounds.council).toBe(1);
     expect(seatCard(recent, 'a')).toMatchObject({ rounds_seated: 1, verdicts: { SHIP: 1, 'NEEDS-WORK': 0 } });
     expect(recent.message).toBeNull();
+    // A round started exactly at the cutoff is in the window.
+    expect(report(w, { since: '2026-11-10T00:00:00.000Z' }).window.rounds.council).toBe(1);
     const empty = report(w, { since: '2026-11-12T00:00:00.000Z' });
     expect(empty.message).toBe('no rounds since 2026-11-12T00:00:00.000Z: nothing to score');
     expect(empty.seats).toEqual([]);
@@ -84,12 +86,15 @@ describe('stats: which rounds count', () => {
     w.round({ kind: 'identity' });
     w.round({ status: 'running', legs: three() });
     w.round({ status: 'superseded', legs: [{ seat: 'a', occ: OCC.a, status: 'RUNNING' }, { seat: 'b', occ: OCC.b }] });
+    // Superseded after its adjudication (the head moved before the post): its findings count.
+    w.round({ status: 'superseded', verdict: 'NEEDS-WORK', legs: [{ seat: 'c', occ: OCC.c, verdict: 'NEEDS-WORK' }, { seat: 'b', occ: OCC.b }], findings: [{ outcome: 'owed', by: ['c'] }] });
     const r = report(w);
-    expect(r.window.rounds).toEqual({ total: 7, identity: 1, council: 6, running: 1, settled: 5, adjudicated: 2, failed: 1, awaitingAdjudication: 1, dryRun: 1 });
+    expect(r.window.rounds).toEqual({ total: 8, identity: 1, council: 7, running: 1, settled: 6, adjudicated: 3, failed: 1, awaitingAdjudication: 1, dryRun: 1 });
+    expect(seatCard(r, 'c')).toMatchObject({ rounds_seated: 3, adjudicated_ratified: 2, findings: { raised: 1, adopted: 1 } });
     // a: seated in the dry run, the failed round, the solo round and the awaiting round; its RUNNING leg is left out.
     expect(seatCard(r, 'a')).toMatchObject({ rounds_seated: 4, rounds_ratified: 3, ratified_rate: 0.75, adjudicated_ratified: 2 });
-    // b: the dry run, failed, solo (failed leg), awaiting, superseded (ratified, not adjudicated).
-    expect(seatCard(r, 'b')).toMatchObject({ rounds_seated: 5, rounds_ratified: 3, ratified_rate: 0.6, adjudicated_ratified: 1 });
+    // b: the dry run, failed, solo (failed leg), awaiting, both superseded rounds (one adjudicated).
+    expect(seatCard(r, 'b')).toMatchObject({ rounds_seated: 6, rounds_ratified: 4, ratified_rate: 4 / 6, adjudicated_ratified: 2 });
     w.close();
   });
 });

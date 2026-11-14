@@ -368,7 +368,7 @@ function expectedSeats(seats: readonly Doc[], op: SeatEdit): Doc[] {
 }
 
 /** Refuses an edit whose result parses differently from what the op means anywhere in the file. */
-function verify(before: string, after: string, op: SeatEdit): void {
+export function verifySeatEdit(before: string, after: string, op: SeatEdit): void {
   const a = parseDoc(before, 'the config');
   const b = parseDoc(after, 'the edited config');
   const restA = { ...a };
@@ -382,7 +382,7 @@ function verify(before: string, after: string, op: SeatEdit): void {
 export const preservingEditor: SeatEditor = {
   edit(text: string, op: SeatEdit): string {
     const after = editLines(text, op);
-    verify(text, after, op);
+    verifySeatEdit(text, after, op);
     return after;
   },
 };

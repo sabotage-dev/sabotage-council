@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import { applySeatEdit, SeatApplyError } from '../src/seats/apply.js';
 import { unifiedDiff } from '../src/seats/diff.js';
-import { preservingEditor, SeatEditError, tomlString, type SeatEdit, type SeatEditor } from '../src/seats/edit.js';
+import { preservingEditor, SeatEditError, tomlString, verifySeatEdit, type SeatEdit, type SeatEditor } from '../src/seats/edit.js';
 import { fakeRegistry } from './fake-registry.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 import { fakeAdapters, fakeHome } from './helpers/round.js';
@@ -132,6 +132,16 @@ describe('seats: the block-preserving editor', () => {
     const tricky = CONFIG.replace('[auto]\nrepos_allow = ["org/*"]\n', '[notify]\ncommand = """\n[[seats]]\nid = "x"\nbackend = "codex"\n"""\n');
     const out = preservingEditor.edit(tricky, swap('c', 'grok', 'grok-4.7', 'low'));
     expect(out).toBe(tricky.replace('  effort = "high"\n\n# auto settings', '  effort = "low"\n\n# auto settings'));
+  });
+
+  it('checks every edit by parsing both texts: only the target seat may change, and only as the op says', () => {
+    const op = swap('c', 'antigravity', 'gemini-3.8-pro');
+    const good = preservingEditor.edit(CONFIG, op);
+    expect(() => verifySeatEdit(CONFIG, good, op)).not.toThrow();
+    expect(() => verifySeatEdit(CONFIG, `${good}\n[pr]\ninteractive_adjudication = "untrusted-too"\n`, op)).toThrow(/the rest of the file parses differently/);
+    expect(() => verifySeatEdit(CONFIG, good.replace('model = "claude-sonnet-5-5"', 'model = "claude-opus-5-5"'), op)).toThrow(/do not parse as intended/);
+    expect(() => verifySeatEdit(CONFIG, good.replace('model = "gemini-3.8-pro"', 'model = "gemini-3.8-pro"\neffort = "high"'), op)).toThrow(/do not parse as intended/);
+    expect(() => verifySeatEdit(CONFIG, CONFIG, { kind: 'remove', seat: 'c' })).toThrow(/do not parse as intended/);
   });
 
   it('writes TOML basic strings that round-trip', () => {

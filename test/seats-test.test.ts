@@ -142,13 +142,16 @@ describe('seats test: the shipped planted-defect fixture', () => {
       finding('F4', 'calc/other.py', 11, 'off-by-one'),
       finding('F5', null, null, 'off-by-one somewhere'),
       finding('F6', 'calc/rangesum.py', 15, 'a tidy-up'),
+      finding('F7', 'calc/rangesum.py', 12, 'the loop'),
+      finding('F8', 'calc/rangesum.py', 13, 'after the loop'),
     ]);
     expect(r.matches).toEqual([
       { defect: 'D1', finding: 'F1', by: 'line' },
       { defect: 'D2', finding: 'F2', by: 'keyword' },
       { defect: 'D3', finding: 'F3', by: 'keyword' },
+      { defect: 'D1', finding: 'F7', by: 'line' },
     ]);
-    expect(r.other).toEqual(['F4', 'F5', 'F6']);
+    expect(r.other).toEqual(['F4', 'F5', 'F6', 'F8']);
     expect(matchDefectsInText(f, 'see planted/calc/rangesum.py:11 and calc/rangesum.py:19, not calc/rangesum.py:2').map((m) => m.defect)).toEqual(['D1', 'D3']);
   });
 });
@@ -218,6 +221,16 @@ describe('seats test: one leg end to end with the fake claude', () => {
     expect(r.lines.at(-1)).toBe('not qualified: the leg did not ratify (recorded as a seat test; it never counts in stats)');
     expect(running(fake.bin)).toEqual([]);
     expect(storeRows(p.db).tests).toEqual([expect.objectContaining({ ratified: false, status: 'CONTAMINATED', failure_class: 'contaminated' })]);
+  });
+
+  it('a leg that writes into the root does not ratify', async () => {
+    const fake = fakeClaude({ answer: ALL_DEFECTS, writeIntoRoot: 'planted/calc/extra.py' });
+    const p = places();
+    const r = await run(['seats', 'test', 'claude:claude-haiku-5-5:low', '--json'], fake, p);
+    expect(r.code).toBe(1);
+    const json = JSON.parse(r.text.slice(r.text.indexOf('{'))) as Record<string, unknown>;
+    expect(json).toMatchObject({ ratified: false, status: 'CONTAMINATED', failure_class: 'contaminated', root_unchanged: false });
+    expect(running(fake.bin)).toEqual([]);
   });
 
   it('kills a leg that hangs past its cap', async () => {
