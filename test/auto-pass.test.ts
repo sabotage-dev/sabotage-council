@@ -1032,6 +1032,13 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(row(v)).toMatchObject({ state: 'approved', attempts: 2 });
     expect(roundsCount(v.h)).toBe(2);
 
+    // Another host's preparer cannot be checked: its claim, stale by then, is the only sign, and the round fails.
+    const x = await world();
+    const elsewhere = await stalled(x, (id) => x.h.store.db.prepare("UPDATE events SET detail_json = json_set(detail_json, '$.preparer.host', 'another-host.local') WHERE round_id = ? AND kind = 'auto-round'").run(id));
+    await x.pass();
+    expect(getEvents(x.h.store.db, elsewhere.roundId).find((e) => e.kind === 'round-failed')?.detail).toMatchObject({ stage: 'daemon-died' });
+    expect(row(x)).toMatchObject({ state: 'approved', attempts: 2 });
+
     // A live pid is trusted only so long: a round that started longer ago than that is taken as a reused pid's, and fails.
     const u = await world();
     const long = await stalled(u, (id) => u.h.store.db.prepare('UPDATE rounds SET started_at = ? WHERE id = ?').run(new Date(Date.now() - PREPARER_TRUST_MS - 60_000).toISOString(), id));
