@@ -10,6 +10,8 @@ import type { PrRef } from '../forge/pr.js';
 import { creditCommand, postCommand, roundStartPr } from './pr.js';
 import { autoInstall, autoPause, autoRun, autoRunOnce, autoStatus, rulingCommand, type AutoIo } from './auto.js';
 import { adjudicateCommand, adjudicateHeadlessCommand, defaultStartWorker, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
+import { statsCommand } from './stats.js';
+import { parseSince, WindowError } from '../stats/window.js';
 
 export interface ProgramIo {
   /** Command output, one line per call. */
@@ -35,6 +37,8 @@ export interface ProgramIo {
   claudeBin?: string | undefined;
   /** `adjudicate --headless`: how often the run is polled (tests). Default 25 ms. */
   headlessPollMs?: number | undefined;
+  /** `stats`: tests pin the report's clock. Default: the current time. */
+  now?: (() => string) | undefined;
   /** `auto`: tests set pass options the command line does not (the adjudication step, the notifier, caffeinate). */
   auto?: Pick<AutoIo, 'passOverrides' | 'servicePlatform' | 'serviceLoader' | 'plutil'> | undefined;
 }
@@ -331,6 +335,42 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
   ).action(async (id: number, what: string, result: string | undefined, opts: { config?: string; db?: string; roots?: string; note?: string }) => {
     await rulingCommand(autoIo, pathsOf(opts), id, what, result, opts.note);
   });
+
+  // ---------- stats (plan 8.2, 8.3) ----------
+  const since = (value: string): string => {
+    try {
+      return parseSince(value);
+    } catch (error) {
+      if (error instanceof WindowError) throw new InvalidArgumentError(error.message);
+      throw error;
+    }
+  };
+  const occupantSpec = (value: string): string => {
+    if (!/^[a-z]+:[^:\s]/.test(value)) throw new InvalidArgumentError('an occupant is backend:model[:effort], e.g. codex:gpt-6.1-sol:high');
+    return value;
+  };
+  program
+    .command('stats')
+    .description('the seat scorecard (plan 8.2): per seat and per occupant, with swap candidates (8.3); reads the run store, changes nothing')
+    .option('--config <path>', `config file, for the [stats] thresholds (default: $${CONFIG_ENV}, else ~/.config/sabotage-council/config.toml)`)
+    .option('--db <path>', `run store (default: $${DB_ENV}, else ~/.local/share/sabotage-council/council.db)`)
+    .option('--since <dur|date>', 'only rounds started since: 30d, 12h, 2w, 90m, a date (2026-11-01, UTC) or an ISO timestamp; default all history', since)
+    .option('--seat <id>', 'show only this seat (and the occupants that sat in it)')
+    .option('--occupant <backend:model[:effort]>', 'show only this occupant (no effort: every effort of that model)', occupantSpec)
+    .option('--json', 'print the report as JSON (versioned: schema sabotage-council.stats, version 1)')
+    .option('--html <file>', 'also write the report as one self-contained HTML file (mode 0600)')
+    .action(async (opts: { config?: string; db?: string; since?: string; seat?: string; occupant?: string; json?: boolean; html?: string }) => {
+      const cwd = io.cwd ?? process.cwd();
+      await statsCommand(io, {
+        configPath: resolve(cwd, resolveConfigPath(opts.config, io.env)),
+        dbPath: resolve(cwd, resolveDbPath(opts.db, io.env)),
+        since: opts.since ?? null,
+        filters: { seat: opts.seat ?? null, occupant: opts.occupant ?? null },
+        json: opts.json === true,
+        html: opts.html === undefined ? null : resolve(cwd, opts.html),
+        generatedAt: io.now?.(),
+      });
+    });
 
   return program;
 }
