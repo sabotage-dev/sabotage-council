@@ -37,6 +37,9 @@ export const UNTRUSTED_SEAT_POLICIES = ['fallback', 'skip', 'allow'] as const;
 /** `auto.ci_gate` (plan 5.2). */
 export const CI_GATES = ['required-checks', 'all', 'off'] as const;
 
+/** `auto.ci_red_event` (plan 3.7 row 7, P6): what a red CI posts when nothing is owed. */
+export const CI_RED_EVENTS = ['REQUEST_CHANGES', 'COMMENT'] as const;
+
 /** `pr.interactive_adjudication` (plan 5.2, 6.3). */
 export const INTERACTIVE_ADJUDICATION = ['trusted-only', 'untrusted-too'] as const;
 

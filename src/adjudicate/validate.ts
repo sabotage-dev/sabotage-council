@@ -75,6 +75,11 @@ export interface AdjudicationContext {
   humanAsks: readonly string[];
   /** Finding ids of the target's earlier rounds, for `same_as`. */
   knownFindingIds: ReadonlySet<string>;
+  /**
+   * pr rounds (P6): the user's own change request stands on this head (plan 3.8), so the round needs a ruling,
+   * whatever the seats found. The review id, or null.
+   */
+  userHold?: number | null | undefined;
 }
 
 export interface ExtractedLegFinding {
@@ -326,6 +331,9 @@ export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): Va
     if (h.status === 'closed' && fix.outcome === 'owed') err('human-asks', `ask ${h.id} is closed, but its row ${fix.id} is owed`);
   }
   for (const id of askIds) if (!askRows.has(id)) err('human-asks', `ask ${id} has no human_asks row`);
+  if (ctx.userHold !== null && ctx.userHold !== undefined && !a.needs_ruling) {
+    err('human-asks', `your own change request (review ${ctx.userHold}) stands on this head, so needs_ruling must be true (plan 3.8)`);
+  }
   const askFindings = a.findings.filter((f) => f.kind === 'human_ask').map((f) => f.id);
   const linked = [...askRows.values()];
   for (const id of askFindings) {

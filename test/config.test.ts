@@ -65,6 +65,7 @@ describe('config: valid documents', () => {
       include_assigned: false,
       approve: true,
       ci_gate: 'required-checks',
+      ci_red_event: 'REQUEST_CHANGES',
       max_rounds_per_day: 30,
       identity_approval: true,
       tests: { 'your-org/api': { setup: 'npm ci', command: 'npm test', timeout_minutes: 15 } },

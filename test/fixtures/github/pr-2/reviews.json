@@ -1,0 +1,32 @@
+[
+  {
+    "id": 5879591293,
+    "user": {
+      "login": "repo-owner"
+    },
+    "state": "COMMENTED",
+    "commit_id": "__C4__",
+    "submitted_at": "2026-11-12T18:06:52Z",
+    "body": "sabotage-council round 1 on sabotage-dev/sabotage-council#2 at __C4_7__\n\n**VERDICT: SHIP-WITH-FIXES** (5 owed rows, all folded on this branch in __C5_7__ and __C6_7__; round 2 reviews only\nthat fold).\n\n**Legs.** Each leg was ratified from its CLI's own record:\n\n| Seat | Model | Verdict | Findings | Ratification |\n|---|---|---|---|---|\n| codex | gpt-6.1-sol, effort high | SHIP-WITH-FIXES | 1 MEDIUM | rollout: read-only, cwd = root, 8 exec reads |\n| claude | claude-sonnet-5-5, effort high | SHIP | 2 LOW | Read/Glob/Grep only, cwd = root |\n| grok | grok-4.7 (served as grok-4.7-build), effort high | SHIP-WITH-FIXES | 2 MEDIUM | read_file/list_dir/grep only, cwd = root; no outside paths |\n\n**Summary.** All three seats confirmed three things:\n- The schema accepts the plan's 5.2 TOML and enforces D10.\n- Migration 001 holds every 8.1 column, with `findings` keyed by `(round_id, id)` and the attribution tables\n  pointing at it.\n- The runner is atomic and idempotent.\n\nThe findings are gaps between the schema and the plan, plus one missing negative test. The main loop verified\neach against the code before folding it, and ran a mutation for each fold.\n\n## Fix table\n\n| # | file:line (__C4_7__) | The change | Raised by | Owed? |\n|---|---|---|---|---|\n| 1 | test/store.test.ts:308 | Negative tests: `leg_findings` and `finding_sources` rows that point at a finding id from another round are rejected. The mutation that drops the composite FK now fails a test. | codex, claude | yes |\n| 2 | src/config/schema.ts:52 | Seats take an optional `sandbox = \"read-only\" \\| \"off\"` (plan 4.2), valid only on grok seats; elsewhere it is an error. | grok | yes |\n| 3 | src/config/schema.ts:49 | `fallback.on` accepts only `usage_limit` and `auth` (plan 3.1 step 6, 4.4). | grok | yes |\n| 4 | src/config/rules.ts:65 | An unset effort matches any effort when deciding whether a fallback is the same occupant, so a fallback cannot silently re-run the capped seat. | claude | yes (LOW) |\n| 5 | .github/workflows/ci.yml:27 | CI builds and runs `dist/cli/index.js --version`. | claude | yes (LOW) |\n\nVerified after the folds:\n- lint and typecheck are clean;\n- 71 of 71 tests pass;\n- the build runs;\n- each new rule fails a test when mutated.\n\n## Not verified\n\n- CI has not run yet; this PR's first run will be the first Linux run.\n- `node:sqlite` on Linux.\n\n## Blocker call\n\nNothing is left owed after the folds. Round 2 reviews only the fold delta.\n"
+  },
+  {
+    "id": 5880077789,
+    "user": {
+      "login": "repo-owner"
+    },
+    "state": "COMMENTED",
+    "commit_id": "__C6__",
+    "submitted_at": "2026-11-12T18:41:53Z",
+    "body": "sabotage-council round 2 on sabotage-dev/sabotage-council#2 at __C6_7__\n\n**VERDICT: SHIP, nothing owed.** This delta round reviewed only round 1's fold (`__C4_7__..__C6_7__`), under the\nround 2-3 rule (serious issues only). All five round 1 rows are closed in all three seats' reading, and there are\nno new serious findings.\n\n**Legs.** Each leg was ratified from its CLI's own record:\n\n| Seat | Model | Verdict | Ratification |\n|---|---|---|---|\n| codex | gpt-6.1-sol, effort high | SHIP | rollout: read-only, cwd = root, 7 exec reads |\n| claude | claude-sonnet-5-5, effort high | SHIP | Read/Glob/Grep only, cwd = root |\n| grok | grok-4.7 (served as grok-4.7-build), effort high | SHIP | read_file/list_dir/grep only, cwd = root |\n\nCI: all 8 jobs green (ubuntu and macOS, Node 22 and 24), including the new build and `dist` run. That was the first\nLinux run.\n\n## Follow-ups (non-blocking, for later phases)\n\n- A grok **fallback** cannot set `sandbox` yet (claude). Needed before P4/P5 on Docker-symlink Macs.\n- Which rule wins for a primary that fails **preflight** (plan 3.1 step 4) when `fallback.on` names only\n  `usage_limit`/`auth` (claude). P5 decides.\n- `doctor` should print a seat's `sandbox` (grok).\n- Duplicate entries in `fallback.on` are accepted (claude).\n- A symmetric test with the primary effort unset and the fallback effort set (codex).\n- The fallback-differs message wording when the primary omits effort (grok).\n\n## Next\n\nPer the owner's rulings on the P0 open points, __C7_7__ adds two rules:\n- two seats with an identical occupant are an error;\n- fallbacks count toward the family warnings.\n\nA scoped round 3 reviews that commit.\n"
+  },
+  {
+    "id": 5880199419,
+    "user": {
+      "login": "repo-owner"
+    },
+    "state": "COMMENTED",
+    "commit_id": "__C7__",
+    "submitted_at": "2026-11-12T18:50:22Z",
+    "body": "sabotage-council round 3 on sabotage-dev/sabotage-council#2 at __C7_7__\n\n**VERDICT: SHIP, nothing owed.** This scoped round reviewed only __C7_7__, which implements the owner's two rulings\non P0's open points:\n- two seats with an identical occupant are a config error;\n- fallbacks count toward the family warnings.\n\nAll three seats found no serious issue. CI: 8/8 green on this head.\n\n**Legs.** Each leg was ratified from its CLI's own record:\n\n| Seat | Model | Verdict | Ratification |\n|---|---|---|---|\n| codex | gpt-6.1-sol, effort high | SHIP | rollout: read-only, cwd = root, 6 exec reads |\n| claude | claude-sonnet-5-5, effort high | SHIP | Read/Glob/Grep only, cwd = root |\n| grok | grok-4.7 (served as grok-4.7-build), effort high | SHIP | read_file/list_dir/grep only, cwd = root |\n\n## Follow-ups (non-blocking)\n\n- The distinct-occupant message describes only the later seat. When an unset effort matches an explicit one, the\n  text should show both efforts (grok, claude).\n- Plan 5.2's validation and warning lists should name the two rulings (grok, claude).\n- `doctor` has no test for the new fallback-family warning path; the config tests cover it (claude).\n\n## State of this PR\n\nP0 has converged:\n- round 1: SHIP-WITH-FIXES, 5 owed, all folded;\n- round 2: SHIP x3;\n- round 3: SHIP x3 on the rulings.\n\nIt is ready to merge on the owner's go.\n"
+  }
+]

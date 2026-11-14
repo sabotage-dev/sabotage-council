@@ -20,6 +20,9 @@ import { CLAUDE_ENV_ALLOW } from '../src/adapters/claude/launch.js';
 import type { Occupant, RoundCtx } from '../src/adapters/types.js';
 import { runCommand } from '../src/transport/headless.js';
 import { cleanScratchAfterAll, fixtureDir, materialize, readJsonl, scratch, writeJsonl } from './helpers/fixtures.js';
+import { claudeAnswer } from '../src/adapters/claude/ratify.js';
+import { readClaudeStream } from '../src/adapters/claude/index.js';
+import { nonceOnFirstLine } from '../src/adapters/types.js';
 
 cleanScratchAfterAll();
 
@@ -183,6 +186,15 @@ describe('claude ratification details', () => {
     const r = ratifyClaudeLeg(
       inputFor('success', (dir) => {
         edit(join(dir, 'stream.jsonl'), (row) => row['type'] === 'result', (row) => (row['result'] = text));
+        // The answer is the whole reply (every text block), so the stream's one text block carries the same text.
+        edit(
+          join(dir, 'stream.jsonl'),
+          (row) => row['type'] === 'assistant',
+          (row) => {
+            const content = (row['message'] as { content?: Array<Record<string, unknown>> }).content ?? [];
+            for (const block of content) if (block['type'] === 'text') block['text'] = text;
+          },
+        );
         // Keep the transcript covering the final request (its id), so only the nonce differs.
       }).input,
     );
@@ -315,6 +327,8 @@ describe('claude launch', () => {
     expect(CLAUDE_DECLARED['2.1.322']).toMatchObject({ settingSources: '', dropsPluginTools: true, enforcement: 'strong' });
     // 2.1.323: the same measured flags and built-in list, and its own canary passed (round 1 row 11).
     expect(CLAUDE_DECLARED['2.1.323']).toEqual(CLAUDE_DECLARED['2.1.322']);
+    // 2.1.325: the same measured flags and built-in list, and its own canary passed (P6, after a live round refused it).
+    expect(CLAUDE_DECLARED['2.1.325']).toEqual(CLAUDE_DECLARED['2.1.322']);
     expect(createClaudeAdapter().enforcement('2.1.322')).toBe('strong');
     expect(createClaudeAdapter().enforcement('2.2.0')).toBe('pending');
   });
@@ -454,5 +468,57 @@ describe('claude end to end, through a fake CLI', () => {
     expect(JSON.parse(readFileSync(handle.files['settings'] ?? '', 'utf8'))).toEqual({
       permissions: { allow: ['Read(//**)'], blockReadsOutsideWorkingDirectories: true },
     });
+  });
+});
+
+describe('the answer: the final turn, with a NONCE line written first (P6 sandbox round)', () => {
+  const nonce = '0123456789ab';
+  const text = (t: string, parent: string | null = null): unknown => ({
+    type: 'assistant',
+    parent_tool_use_id: parent,
+    message: { id: `msg_${t.length}`, role: 'assistant', content: [{ type: 'text', text: t }] },
+  });
+  const tool = (): unknown => ({
+    type: 'assistant',
+    parent_tool_use_id: null,
+    message: { id: 'msg_tool', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: 'a.txt' } }] },
+  });
+  const result = (t: string): unknown => ({ type: 'result', subtype: 'success', is_error: false, result: t });
+  const answerOf = (rows: unknown[]): string | null => {
+    const path = join(scratch('sc-claude-answer-'), 'stream.jsonl');
+    writeJsonl(path, rows);
+    return claudeAnswer(readClaudeStream(path));
+  };
+  const review = 'F1 is a real defect.\n\nVERDICT: NEEDS-WORK';
+
+  it('puts a NONCE line the leg wrote as its first message before the final turn', () => {
+    const answer = answerOf([text(`NONCE: ${nonce}\n\nReading the files.`), tool(), text(review), result(review)]);
+    expect(answer).toBe(`NONCE: ${nonce}\n\n${review}`);
+    expect(nonceOnFirstLine(answer, nonce).ok).toBe(true);
+  });
+
+  it('takes the final turn as it is when it starts with the NONCE line, after narration in an earlier turn', () => {
+    const final = `NONCE: ${nonce}\n\n${review}`;
+    const answer = answerOf([text('Checking the diff first.'), tool(), text(final), result(final)]);
+    expect(answer).toBe(final);
+    expect(nonceOnFirstLine(answer, nonce).ok).toBe(true);
+  });
+
+  it('never takes text from earlier turns: a draft verdict and a quoted findings fence stay out', () => {
+    const draft = 'Draft:\n```findings\nF9 | LOW | x.ts:1 | draft\n```\nVERDICT: SHIP';
+    const answer = answerOf([text(`NONCE: ${nonce}`), tool(), text(draft), tool(), text(review), result(review)]);
+    expect(answer).toBe(`NONCE: ${nonce}\n\n${review}`);
+    expect(answer).not.toContain('draft');
+  });
+
+  it('fails the nonce when neither the first message nor the final turn starts with it', () => {
+    const answer = answerOf([text('Reading.'), tool(), text(`My review for ${nonce}.\n\nVERDICT: SHIP`), result(`My review for ${nonce}.\n\nVERDICT: SHIP`)]);
+    expect(nonceOnFirstLine(answer, nonce).ok).toBe(false);
+  });
+
+  it('takes no NONCE line from a sub-agent row, and uses the result line', () => {
+    const answer = answerOf([text(`NONCE: ${nonce}`, 'toolu_sub'), tool(), text(review), result(review)]);
+    expect(answer).toBe(review);
+    expect(nonceOnFirstLine(answer, nonce).ok).toBe(false);
   });
 });

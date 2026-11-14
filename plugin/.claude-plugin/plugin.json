@@ -1,10 +1,10 @@
 {
   "name": "sabotage-council",
   "version": "0.0.0",
-  "description": "A three-seat review council for plans and diffs: three coding agents from different model families review a frozen snapshot read-only, and your session adjudicates.",
+  "description": "A three-seat review council for plans, diffs and pull requests: three coding agents from different model families review a frozen snapshot read-only, and your session adjudicates.",
   "author": { "name": "Sabotage Development LLC" },
   "homepage": "https://github.com/sabotage-dev/sabotage-council",
   "repository": "https://github.com/sabotage-dev/sabotage-council",
   "license": "MIT",
-  "keywords": ["code-review", "council", "review", "plan-review"]
+  "keywords": ["code-review", "council", "review", "plan-review", "pull-request"]
 }

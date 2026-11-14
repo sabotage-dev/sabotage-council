@@ -4,6 +4,8 @@ Runs a sabotage-council review round from Claude Code and adjudicates it in your
 
 - `/sabotage-council:council plan <file>`: the council reviews a written plan.
 - `/sabotage-council:council diff [<base>..<head>]`: the council reviews a branch diff (uncommitted work included).
+- `/sabotage-council:council pr <owner/repo#num> [--dry-run]`: the council reviews a GitHub pull request; the
+  session shows the review it would post, and posts it only on your go.
 - `/sabotage-council:council status <round-id>`: a round's summary.
 - The `sabotage-council` skill holds the procedure; `ADJUDICATE.md` holds the adjudication rules, shared with the
   headless adjudicator.

@@ -62,6 +62,19 @@ if (args[0] === '--version') {
     const result = JSON.parse(lines[at]);
     result.result = config.answer.split('${NONCE}').join(nonce);
     lines[at] = JSON.stringify(result);
+    // The stream carries the same text as an assistant text block, as Claude Code writes it.
+    for (let i = 0; i < lines.length; i += 1) {
+      const row = JSON.parse(lines[i]);
+      if (row.type !== 'assistant' || !Array.isArray(row.message?.content)) continue;
+      let changed = false;
+      for (const block of row.message.content) {
+        if (block.type === 'text') {
+          block.text = result.result;
+          changed = true;
+        }
+      }
+      if (changed) lines[i] = JSON.stringify(row);
+    }
   }
   if (config.initTools || config.initVersion) {
     const init = JSON.parse(lines[0]);

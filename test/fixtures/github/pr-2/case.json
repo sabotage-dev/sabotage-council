@@ -1,0 +1,16 @@
+{
+  "source": "sabotage-dev/sabotage-council#2 (merged), read-only with gh api on 2026-11-13",
+  "reads": [
+    "pull",
+    "reviews",
+    "review comments",
+    "issue comments",
+    "commits",
+    "changed files",
+    "the CI GraphQL rollup",
+    "the base branch",
+    "its rules",
+    "the author's permission"
+  ],
+  "note": "Sanitized: only the fields the engine reads; the author's login replaced by repo-owner; every commit sha replaced by a placeholder (__C1__ to __C7__, __BASE__, and __Cn_7__ for a short sha in a body) that the test fills with a synthetic repository's commits; the session link dropped; a changed file keeps only its name and status. The review bodies are the main loop's council reviews, verbatim otherwise."
+}

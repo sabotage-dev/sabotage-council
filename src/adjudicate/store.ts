@@ -69,6 +69,7 @@ export function adjudicationContext(store: Store, layout: DataLayout, roundId: n
     earlierItems: facts.detail.earlier_items.map((i) => ({ id: i.id, severity: i.severity, kind: i.kind, origin: i.origin ?? 'owed', closedContext: i.closedContext })),
     humanAsks: facts.detail.human_asks,
     knownFindingIds: new Set(known.map((k) => k.id)),
+    userHold: facts.detail.pr?.user_change_request?.on_head === true ? facts.detail.pr.user_change_request.review_id : null,
   };
   return { ctx, facts, legs };
 }

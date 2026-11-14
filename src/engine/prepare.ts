@@ -4,11 +4,12 @@ import { renderBrief, type Brief, type ReviewScope } from '../brief/render.js';
 import type { RoundRule } from '../brief/rules.js';
 import type { CouncilConfig } from '../config/schema.js';
 import type { RootInputs } from '../root/build.js';
-import type { EarlierItem } from '../root/data-files.js';
+import type { EarlierItem, PrData } from '../root/data-files.js';
+import type { DatabaseSync } from '../store/sqlite.js';
 import { prepareRoot } from '../root/seal.js';
 import type { Store } from '../store/open.js';
-import type { PreparedDetail } from './facts.js';
-import { insertEvent, now, numberRound, upsertTarget, type CarriedItem, type RosterSnapshot } from './records.js';
+import type { PrDetail, PreparedDetail } from './facts.js';
+import { insertEvent, now, numberRound, upsertTarget, type CarriedItem, type RosterSnapshot, type RoundNumbering } from './records.js';
 import { createRootDir, removeOwnedRoot } from './roots.js';
 import { baselineIsSnapshot, type ResolvedTarget, type RoundMode } from './target.js';
 
@@ -60,6 +61,22 @@ export interface RoundInputs {
   configPath: string;
 }
 
+/** What a pr round (P6) adds to the preparation: GitHub's numbering, PR.md, the asks and the record. */
+export interface PrPrepare {
+  /** Plan 3.6 from the PR's review history and the store's credits, with the earlier items (3.5). */
+  numbering: (db: DatabaseSync, targetId: number) => RoundNumbering;
+  /** PR.md (plan 5.3), as data. */
+  prData: PrData;
+  /** The user's own open change request on an earlier head, as asks H1, H2, ... (plan 3.9). */
+  humanAsks: string[];
+  /** The marker line for the round's number (plan 3.6). */
+  marker: (roundNo: number) => string;
+  /** The record of the read, for `post` and the audit. */
+  detail: (numbering: RoundNumbering) => PrDetail;
+  /** `round start pr --dry-run`: the round can render its post but never post. */
+  dryRun: boolean;
+}
+
 export interface PrepareOptions {
   config: CouncilConfig;
   configPath: string;
@@ -69,6 +86,8 @@ export interface PrepareOptions {
   questions?: readonly string[] | undefined;
   /** Tests pin the nonce; a real round draws a fresh one (P1). */
   nonce?: string | undefined;
+  /** pr rounds only. */
+  pr?: PrPrepare | undefined;
 }
 
 export interface PreparedRound {
@@ -98,15 +117,17 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
   const { db } = store;
   const t = options.target;
   const targetId = upsertTarget(db, t);
-  const numbering = numberRound(db, targetId, t.head, t.revision);
+  const pr = options.pr;
+  const numbering = pr ? pr.numbering(db, targetId) : numberRound(db, targetId, t.head, t.revision);
+  const asks = pr?.humanAsks ?? [];
   const roster = rosterOf(options.config);
   const startedAt = now();
   const insert = db
     .prepare(
-      `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, baseline_sha, nonce, roster_json, started_at, status)
-       VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, 'running')`,
+      `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, baseline_sha, nonce, roster_json, started_at, status, kind, marker, dry_run)
+       VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, 'running', 'council', ?, ?)`,
     )
-    .run(targetId, numbering.roundNo, t.mode, t.head, numbering.baseline, JSON.stringify(roster), startedAt);
+    .run(targetId, numbering.roundNo, t.mode, t.head, numbering.baseline, JSON.stringify(roster), startedAt, pr ? pr.marker(numbering.roundNo) : null, pr?.dryRun === true ? 1 : 0);
   const roundId = Number(insert.lastInsertRowid);
   const roundDir = roundDirOf(options.layout, roundId);
   let rootDir: string | null = null;
@@ -117,7 +138,7 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
     rootDir = createRootDir(options.layout, roundId, 1);
     // The seal creates `<root>.git`; one that is already there is not this call's to delete.
     gitDirOwned = !existsSync(`${rootDir}.git`);
-    const previous: EarlierItem[] = numbering.items.map((i) => ({ id: i.id, text: i.text, closedContext: i.closedContext, from: `round ${i.fromRound}` }));
+    const previous: EarlierItem[] = numbering.items.map((i) => ({ id: i.id, text: i.text, closedContext: i.closedContext, from: i.from ?? `round ${i.fromRound}` }));
     const inputs: RootInputs = {
       repo: t.repoTop,
       name: t.repoName,
@@ -125,9 +146,12 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
       base: t.base ?? undefined,
       baseline: numbering.baseline ?? undefined,
       foldPaths: t.foldPaths ?? undefined,
-      baselineSnapshot: baselineIsSnapshot(t.repoTop, numbering.baseline, t.head),
+      // A pr round's baseline is a GitHub head, never an engine snapshot: a PR commit forged with the snapshot identity
+      // and message must not skip the not-ancestor check (P6 round 1 row 15).
+      baselineSnapshot: t.mode === 'pr' ? false : baselineIsSnapshot(t.repoTop, numbering.baseline, t.head),
       previousReviews: previous,
       context: t.context,
+      pr: pr?.prData,
     };
     const prepared = prepareRoot(rootDir, inputs, (layout) =>
       renderBrief({
@@ -140,6 +164,7 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
         nonce: options.nonce,
         facts: options.facts,
         questions: options.questions,
+        humanAsks: asks,
       }),
     );
     const brief = prepared.brief;
@@ -170,7 +195,7 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
       root: prepared.sealed.root,
       briefFile,
       earlierItems: numbering.items,
-      humanAsks: [],
+      humanAsks: asks,
       roster,
       legTimeoutMs: roster.council.leg_timeout_minutes * 60_000,
       configPath: options.configPath,
@@ -195,8 +220,9 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
       brief_text: brief.text,
       brief_promises: [...brief.promises],
       earlier_items: numbering.items,
-      human_asks: [],
+      human_asks: asks,
       root_inputs: inputs,
+      pr: pr?.detail(numbering),
     };
     insertEvent(db, 'round-prepared', roundId, detail);
     return { inputs: roundInputs, roundDir, brief };

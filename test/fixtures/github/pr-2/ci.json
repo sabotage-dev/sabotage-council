@@ -1,0 +1,86 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "headRefOid": "__C7__",
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "__C7__",
+                "statusCheckRollup": {
+                  "state": "SUCCESS",
+                  "contexts": {
+                    "totalCount": 8,
+                    "pageInfo": {
+                      "hasNextPage": false,
+                      "endCursor": "OA"
+                    },
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "ubuntu-latest / Node 22",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "ubuntu-latest / Node 22",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "ubuntu-latest / Node 24",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "ubuntu-latest / Node 24",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "macos-latest / Node 22",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "macos-latest / Node 22",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "macos-latest / Node 24",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "macos-latest / Node 24",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "isRequired": false
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

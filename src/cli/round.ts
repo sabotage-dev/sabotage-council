@@ -65,7 +65,7 @@ function formatIssue(issue: ConfigIssue): string {
 
 const CLI_ENTRY = fileURLToPath(new URL('./index.js', import.meta.url));
 
-function defaultStartWorker(env: NodeJS.ProcessEnv) {
+export function defaultStartWorker(env: NodeJS.ProcessEnv) {
   return (roundId: number, paths: StorePaths): void => {
     const layout = layoutOf(paths);
     spawnWorker(CLI_ENTRY, ['round', 'run', String(roundId), '--db', paths.dbPath, '--roots', paths.rootsPath], join(layout.roundsDir, String(roundId)), env);
@@ -253,6 +253,11 @@ export function renderSummary(s: RoundSummary): string[] {
   if (s.earlier_items.length > 0) {
     out.push('earlier items:');
     for (const i of s.earlier_items) out.push(`  ${i.id} ${i.severity}${i.closed_context ? ' (closed context)' : ''}`);
+  }
+  if (s.pr !== undefined) {
+    const p = s.pr;
+    out.push(`pr: ${p.kind} round${p.dry_run ? ', dry run (never posts)' : ''}; marker "${String(p.marker)}"`);
+    out.push(`posted: ${p.event_posted === null ? 'nothing yet' : `${p.event_posted}, review ${String(p.review_id)} at ${String(p.posted_at)}`}; next: ${p.next}`);
   }
   if (s.adjudication !== null) {
     const a = s.adjudication;

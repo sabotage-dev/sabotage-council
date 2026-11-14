@@ -1,0 +1,28 @@
+{
+  "number": 2,
+  "state": "closed",
+  "merged": true,
+  "draft": false,
+  "title": "build: P0 scaffold (config schema, run store, doctor)",
+  "body": "Phase P0 of the [v1 build plan](docs/PLAN.md) (section 10). It sets up the scaffold: config, the run store and a `doctor` skeleton. It adds no adapters, rounds, forge or daemon logic.\n\n## What's in it\n\n- **Package.** `sabotage-council` (ESM, Node >= 22.13, MIT), with bin `sabotage-council`. Strict TypeScript, ESLint flat config and vitest.\n- **CI.** Runs ubuntu-latest and macos-latest against Node 22 and 24 (lint, typecheck, test). Actions are pinned by commit SHA, with `contents: read`.\n- **`src/config`.**\n  - A zod schema for the plan's 5.2 TOML: `[council]`, exactly three `[[seats]]` with optional fallbacks, and `[adjudicator]`, `[github]`, `[auto]`, `[pr]`, `[followups]`, `[notify]`.\n  - A smol-toml loader that returns typed config or key-path errors.\n  - These are errors: exactly three seats, unique ids, fallback different from its primary, and no `quorum` key (D10).\n  - Model ids are checked through an adapter-registry interface (a fake registry for now). Same-family seats raise warnings.\n- **`src/store`.**\n  - Built on `node:sqlite`, with no native modules. It loads without a flag on 22.13+ and the one-off experimental warning is filtered.\n  - Numbered, idempotent migrations with a `schema_version` table.\n  - Migration 001 creates the twelve tables of plan 8.1, with `findings` keyed by `(round_id, id)` and foreign keys on.\n- **`src/cli`.** `--version`, plus `doctor`, which checks the Node version, config load, and store open/migrate, and lists the seats.\n\n## Tests\n\n71 passing after council round 1 (config, store, doctor/cli). The suite also passes on Node 22.13.0, 23.11 and 24.x.\n\nThe acceptance cases from the P0 row are covered:\n- 2 or 4 seats, an unknown backend, duplicate ids, a same-occupant fallback and a `quorum` key are all rejected;\n- the store migration round-trips every table, re-running is a no-op, and the composite key rejects duplicates.\n\n28 mutants were run against the rules and the store. Every brief rule's mutant is killed. The two survivors remove the foreign-keys pragma, which `node:sqlite` already enables; the pragma stays as a safety net.\n\n## Open points for the owner (non-blocking)\n\n- Should two seats with an identical occupant be an error? It is currently allowed (D10 allows the same backend with different models).\n- Should fallbacks count toward the same-family warnings?\n",
+  "user": {
+    "login": "repo-owner"
+  },
+  "head": {
+    "sha": "__C7__",
+    "ref": "build/p0-scaffold",
+    "repo": {
+      "full_name": "sabotage-dev/sabotage-council"
+    }
+  },
+  "base": {
+    "sha": "__BASE__",
+    "ref": "main",
+    "repo": {
+      "full_name": "sabotage-dev/sabotage-council",
+      "default_branch": "main"
+    }
+  },
+  "requested_reviewers": [],
+  "assignees": []
+}

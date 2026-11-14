@@ -19,7 +19,7 @@ export interface ClaudeStream {
   init: Json | null;
   result: Json | null;
   toolUses: ToolUse[];
-  /** Assistant text blocks, in order. */
+  /** Main-thread assistant text blocks, in order: the whole reply. */
   texts: string[];
   /** `message.id` of each assistant line, in order: one id per API request. */
   messageIds: string[];
@@ -60,7 +60,9 @@ export function readClaudeStream(path: string): ClaudeStream {
       const message = row['message'];
       const id = isObject(message) ? str(message['id']) : null;
       if (id !== null) out.messageIds.push(id);
-      if (isObject(message) && Array.isArray(message['content'])) {
+      // The reply's text comes from the main thread only: a row with a `parent_tool_use_id` belongs to a sub-agent.
+      const mainThread = row['parent_tool_use_id'] === undefined || row['parent_tool_use_id'] === null;
+      if (mainThread && isObject(message) && Array.isArray(message['content'])) {
         for (const block of message['content']) {
           if (isObject(block) && str(block['type']) === 'text') out.texts.push(str(block['text']) ?? '');
         }

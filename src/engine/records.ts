@@ -11,7 +11,8 @@ import type { ResolvedTarget } from './target.js';
  * sees a running round's progress.
  */
 
-export const ROUND_STATUSES = ['running', 'awaiting-adjudication', 'failed', 'adjudicated'] as const;
+/** `identity`: an identity round (plan 3.10, no seats) ready to post; `superseded`: the head moved before the post (3.7). */
+export const ROUND_STATUSES = ['running', 'awaiting-adjudication', 'failed', 'adjudicated', 'identity', 'superseded'] as const;
 export type RoundStatus = (typeof ROUND_STATUSES)[number];
 
 /** Leg statuses (plan 8.1), plus `RUNNING` while a leg is out. */
@@ -40,16 +41,18 @@ function all(db: DatabaseSync, sql: string, ...params: Array<string | number | n
   return db.prepare(sql).all(...params) as Row[];
 }
 
-/** One row per target (plan 3.6): plan by repo + path, diff by repo + branch. */
-export function upsertTarget(db: DatabaseSync, t: Pick<ResolvedTarget, 'mode' | 'repoKey' | 'planPath' | 'branch'>): number {
+/** One row per target (plan 3.6): plan by repo + path, diff by repo + branch, pr by repo + number. */
+export function upsertTarget(db: DatabaseSync, t: Pick<ResolvedTarget, 'mode' | 'repoKey' | 'planPath' | 'branch' | 'prNumber'>): number {
   const found =
     t.mode === 'plan'
       ? get(db, "SELECT id FROM targets WHERE kind = 'plan' AND coalesce(repo, '') = ? AND path = ?", t.repoKey, t.planPath ?? '')
-      : get(db, "SELECT id FROM targets WHERE kind = 'diff' AND repo = ? AND branch = ?", t.repoKey, t.branch ?? '');
+      : t.mode === 'pr'
+        ? get(db, "SELECT id FROM targets WHERE kind = 'pr' AND repo = ? AND number = ?", t.repoKey, t.prNumber ?? 0)
+        : get(db, "SELECT id FROM targets WHERE kind = 'diff' AND repo = ? AND branch = ?", t.repoKey, t.branch ?? '');
   if (found) return Number(found['id']);
   const r = db
-    .prepare('INSERT INTO targets (kind, repo, path, branch) VALUES (?, ?, ?, ?)')
-    .run(t.mode, t.repoKey, t.mode === 'plan' ? t.planPath : null, t.mode === 'diff' ? t.branch : null);
+    .prepare('INSERT INTO targets (kind, repo, number, path, branch) VALUES (?, ?, ?, ?, ?)')
+    .run(t.mode, t.repoKey, t.mode === 'pr' ? t.prNumber : null, t.mode === 'plan' ? t.planPath : null, t.mode === 'diff' ? t.branch : null);
   return Number(r.lastInsertRowid);
 }
 
@@ -85,7 +88,19 @@ export interface RoundRow {
   owed_count: number | null;
   approve: number | null;
   needs_ruling: number;
+  event_posted: string | null;
+  review_id: number | null;
   status: string;
+  /** Migration 002 (P6). */
+  kind: 'council' | 'identity';
+  marker: string | null;
+  dry_run: number;
+  posted_commit_id: string | null;
+  posted_at: string | null;
+  posted_body_sha256: string | null;
+  /** Migration 003 (P6 round 1): the post claim. */
+  post_owner: string | null;
+  post_claimed_at: string | null;
 }
 
 export function getRound(db: DatabaseSync, id: number): RoundRow | undefined {
@@ -169,6 +184,8 @@ export interface CarriedItem {
   closedContext: boolean;
   /** The round the text comes from. */
   fromRound: number;
+  /** Who raised it, for PREVIOUS-REVIEWS.md (a PR round's earlier review: "review by <login>"). Default: the round. */
+  from?: string | undefined;
 }
 
 /** What plan 3.6 decides for a plan or diff target, from the store. */

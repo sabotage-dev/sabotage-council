@@ -29,13 +29,13 @@ Planned modes:
 
 ## Status
 
-Building (P5). Built so far: the config schema and loader, the run store, the review root and brief, the reply
+Building (P6). Built so far: the config schema and loader, the run store, the review root and brief, the reply
 parsers, the headless transport with the codex, claude, grok, cursor and muse seats, the ACP transport with the
-antigravity, kiro and opencode seats, and the round runner with the `plan` and `diff` modes, the `adjudicate`
-validator and the Claude Code plugin. `pr` and `auto` come later. The v1 build plan is
+antigravity, kiro and opencode seats, the round runner with the `plan`, `diff` and `pr` modes, the `adjudicate`
+validator, the GitHub post step, and the Claude Code plugin. `auto` comes later. The v1 build plan is
 [docs/PLAN.md](docs/PLAN.md).
 
-Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322 and 2.1.323, the
+Each seat shows an enforcement label in `doctor` (plan 5.2). claude is `strong` (on 2.1.322, 2.1.323 and 2.1.325, the
 versions its canary ran on) and codex is `sandboxed-exec`. antigravity, kiro and opencode are `pending`: their
 promotion canaries ran and did not prove every action was refused before it ran (plan 14). grok is `weak` with
 `--sandbox off` (it would be `pending` with its sandbox running, a label no recorded run backs: no sandbox-on leg
@@ -51,7 +51,7 @@ that the dump lists nothing from the root. It proves only what that dump covers 
 sources, not instruction files, which ratification checks per leg) and nothing about a model turn. A seat whose
 backend has no load dump gets an "unproven by --deep" line (`unproven`, or `refused` when its preflight refused
 the planted root by a filename scan), except claude on a version whose label is `strong` from its own recorded
-promotion canary (2.1.322 and 2.1.323): its line says isolation is proven by that canary instead. Exit codes:
+promotion canary (2.1.322, 2.1.323 and 2.1.325): its line says isolation is proven by that canary instead. Exit codes:
 `0` every seat proven (by its load dump or its canary), `1` some seat loaded a planted file (or another doctor
 check failed), `2` nothing loaded but some seat is unproven by `--deep`.
 
@@ -61,9 +61,12 @@ From a git repository:
 
 ```sh
 sabotage-council round start plan docs/PLAN.md --json   # or: round start diff [<base>..<head>] --json
+                                                         # or: round start pr owner/repo#12 [--dry-run] --json
 sabotage-council round wait <id>                         # blocks until the legs settle; prints JSON
 sabotage-council round show <id>                         # a readable summary, any time
 sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, print the effective verdict
+sabotage-council post <id> --dry-run                     # pr: the exact review that would post, and its review sha256
+sabotage-council post <id> --post --expect <sha256>      # pr: post that review, one review on the reviewed head
 ```
 
 - `round start plan <file>` reviews a written plan. `--context <path|repo@ref>` adds other paths or repositories
@@ -88,6 +91,43 @@ sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, prin
   round has time, rebuilds the root first if it changed, ratifies every leg, sweeps the root for residue, and
   settles quorum over distinct occupants: 2 or more ratified legs is a council round, 1 is a labelled solo review
   that never approves, 0 fails the round.
+- `round start pr <owner/repo#num | url> [--dry-run] [--no-identity]` reviews a GitHub pull request. It reads the
+  PR through your `gh` login, which must be the `github.login` account (it refuses otherwise), fetches its head and
+  base into the engine's own bare mirror beside the store (with `gh auth git-credential` as git's credential helper,
+  in the same environment, so a `GH_TOKEN`-only setup can fetch a private repository; the engine never reads, stores
+  or logs the token), and numbers the round from the PR's review history: every review by `github.login`
+  or a `council_logins` login whose first line is a council marker counts its `commit_id` as a reviewed head, so a
+  PR another council already reviewed continues at its round (plan 3.6). GitHub's changed-file list must match what
+  the fetched base and head change, or the round stops. The root holds the PR head, the merge base,
+  `PR.md` and the earlier reviews as data; your own change request on an earlier head becomes asks the seats must
+  answer, and one on this head holds the round for your ruling (a later council review of yours replaces it, as it
+  does on GitHub). Other reviewers' standing change requests, `council_logins` reviewers' unmarked ones included,
+  are earlier items. Repository names are matched case-insensitively. Any GitHub read that fails stops the round. A PR
+  from an author without write access is refused unless `pr.interactive_adjudication = "untrusted-too"` (then
+  `council.untrusted_seat_policy` applies to every seat below `strong`). A head whose tree you already approved on
+  another PR takes the identity path: no seats (`--no-identity` runs a council round instead). It needs a
+  `[github]` table with your `login`.
+- `post <id> --dry-run | --post [--expect <review sha256>]` (pr rounds, after `adjudicate`): maps the round to
+  APPROVE, REQUEST_CHANGES or COMMENT by plan 3.7's table (your own PR always gets a COMMENT; CI, with each required
+  check bound to its app, the hold list, `auto.approve` and any human change request the round never adjudicated gate
+  an approval), renders the body (the marker line first; every value from the adjudication, the PR or CI neutralized,
+  paths and names as one escaped line), and validates it: no nonce, no mention of anyone outside the PR, no
+  auto-close phrase, no credential shape, the body's own sections in order, at most 60,000 bytes. `--dry-run`
+  prints the event, the body, the body's sha256 and the review sha256 (one hash of the event and the body), and
+  posts nothing. `--post` sends only the review a dry run showed: the one whose review sha256 `--expect` names (so
+  a go for one event never sends another with the same body), or else the latest; if anything changed since (CI
+  turned green, a review landed), it refuses and prints the new one. It claims the round so two posts never both
+  send (a post whose claim was taken over after an hour posts nothing), re-checks the pull request right before
+  posting (head moved: the round is superseded; closed, or an identity round's base moved off the default branch:
+  nothing posts, and a new dry run shows what applies now), posts one review bound to the reviewed head, and then
+  runs its guards: it withdraws an approval if a review other than a council's landed meanwhile, withdraws any
+  review GitHub bound to another commit, and after a comment that owes nothing dismisses the council's own earlier
+  change request (never a human's). A guard that fails stays pending and `post` exits 1; run the same `--post` again
+  to resume it. After a crash, the next `--post` first adopts the review that landed (even when the head moved or
+  the PR closed since) and runs its guards. A round started with `--dry-run` never posts.
+- `credit <owner/repo#num> <review-id> [--note <text>]` counts an unmarked review you vouch for as a council round
+  at its own head and time (plan 3.6 step 4). A review that starts with a council or identity marker is refused:
+  the marker rules decide those.
 - `round wait <id> [--timeout <minutes>]` exits 0 when the legs settle, 1 when the round failed (or its worker
   died), and 3 when the timeout ran out first.
 - `adjudicate <id> <file> [--check]` checks `ADJUDICATION.json` (plan 7.3) against the round as the store
@@ -100,9 +140,12 @@ sabotage-council adjudicate <id> ADJUDICATION.json       # validate, store, prin
   round is adjudicated. A round dir's `round.json` is a display copy: the store decides.
 
 The Claude Code plugin in [plugin/](plugin/) runs this loop from a session: `/sabotage-council:council plan
-<file>` or `diff`, then the session adjudicates by [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md). The plugin
-pre-approves only the read-only commands and `adjudicate`: Claude Code asks you to approve every `round start`,
-since a round costs money and the session reads the legs' untrusted answers.
+<file>`, `diff` or `pr <owner/repo#num>`, then the session adjudicates by
+[plugin/ADJUDICATE.md](plugin/ADJUDICATE.md). For a PR it then shows you the review `post --dry-run` renders, and
+posts only when you say so in your next message, with `--expect` set to that review's hash (its event and its
+body): a review that changed since waits for a new go. The plugin pre-approves only the read-only commands and
+`adjudicate`: Claude Code asks you to approve every `round start` and every `post`, since a round costs money, a
+review is public, and the session reads the legs' untrusted answers.
 
 ### Backend notes
 
