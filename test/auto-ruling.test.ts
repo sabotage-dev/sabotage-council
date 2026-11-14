@@ -1,8 +1,10 @@
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
-import { claimRow } from '../src/auto/ledger.js';
+import { CLAIM_STALE_MS, claimRow } from '../src/auto/ledger.js';
 import { getEvents, getRound, roundSummary } from '../src/engine/index.js';
 import { releaseRound, ruleFinding } from '../src/engine/ruling.js';
 import { postRound } from '../src/engine/post.js';
@@ -162,6 +164,124 @@ describe('rulings under the daemon (plan 3.8): a held row is released only by a 
   });
 });
 
+/** A pid no process has: a child that already exited. */
+function deadPid(): number {
+  return Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
+}
+
+/** A held round with its ruling finding overturned and released with `approve`: the next pass posts the APPROVE. */
+async function releasedApprove(): Promise<{ w: World; id: number }> {
+  const w = await world();
+  w.adj.kind = 'ruling';
+  await w.pass();
+  const id = roundOf(w);
+  const fid = (w.h.store.db.prepare("SELECT id FROM findings WHERE round_id = ? AND outcome = 'ruling'").get(id) as { id: string }).id;
+  ruleFinding(w.h.store, id, fid, 'overturn', LOGIN, null);
+  releaseRound(w.h.store, id, 'approve', LOGIN, null);
+  w.addReview(landed(w));
+  w.routes[`POST ${PULL}/reviews`] = { echoReview: { id: 990002, login: LOGIN } };
+  w.sync();
+  return { w, id };
+}
+
+describe('a release waits for a post that may be on GitHub (P8 round 1 row 1)', { timeout: 120_000 }, () => {
+  it('a landed approval with a stale claim: no release while the row is posting; the next pass adopts it, and then none is needed', async () => {
+    const { w, id } = await releasedApprove();
+    const stale = JSON.stringify({ host: hostname(), pid: deadPid(), token: 'dead' });
+    await w.pass({
+      hooks: {
+        afterPost: () => {
+          // The daemon dies right after GitHub took the APPROVE: its claim is left behind, stale.
+          w.h.store.db.prepare('UPDATE ledger SET claim_owner = ?, heartbeat_at = ?').run(stale, new Date(Date.now() - CLAIM_STALE_MS - 60_000).toISOString());
+          throw new Error('the daemon died right after the POST');
+        },
+      },
+    });
+    expect(row(w)).toMatchObject({ state: 'posting', event: 'APPROVE', claim_owner: stale });
+    expect(sent(w)).toHaveLength(2);
+    w.addReview(landed(w, 990002, '2026-11-13T12:05:00Z'));
+    for (const d of ['skip', 'post', 'approve'] as const) {
+      expect(() => releaseRound(w.h.store, id, d, LOGIN, null)).toThrow(/ledger row is posting: its review may be on GitHub, and the next pass of the auto daemon .* reconciles it/);
+    }
+    expect(row(w)).toMatchObject({ state: 'posting', records_sha: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'approved', review_id: 990002 });
+    expect(sent(w)).toHaveLength(2);
+    expect(getEvents(w.h.store.db, id).map((e) => e.kind)).toContain('post-adopted');
+    expect(() => releaseRound(w.h.store, id, 'skip', LOGIN, null)).toThrow(/was released \(approve\) and its review is posted/);
+  });
+
+  it('records_sha of a post never recorded, or an intent never reconciled, refuses a release; a reconciliation that found nothing lets it go', async () => {
+    const { w, id } = await releasedApprove();
+    await w.pass({
+      hooks: {
+        afterPost: () => {
+          throw new Error('the daemon died right after the POST');
+        },
+      },
+    });
+    expect(row(w)).toMatchObject({ state: 'posting' });
+    // A row that holds records_sha with nothing recorded posted, whatever its state says.
+    w.h.store.db.prepare("UPDATE ledger SET state = 'running'").run();
+    expect(() => releaseRound(w.h.store, id, 'skip', LOGIN, null)).toThrow(/holds the records of a post that was never recorded/);
+    // The same post seen from outside the ledger (a post by hand): its intent alone refuses.
+    w.h.store.db.prepare('DELETE FROM ledger').run();
+    expect(() => releaseRound(w.h.store, id, 'skip', LOGIN, null)).toThrow(/a post of round \d+ recorded its intent and was never reconciled: .*post \d+ --post reconciles it/);
+    // Reconciled: nothing of it landed on GitHub, so the release may replace it.
+    const rec = postRound(w.h.store, { config: w.config, layout: w.h.layout, api: ghApi({ bin: FAKE_GH, env: w.gh.env }), roundId: id, mode: 'post', reconcileOnly: true });
+    expect(rec).toMatchObject({ outcome: 'refused', notLanded: true });
+    expect(releaseRound(w.h.store, id, 'skip', LOGIN, null)).toMatchObject({ decision: 'skip' });
+  });
+
+  it('a dry round is never released, and says why', async () => {
+    const w = await world();
+    w.adj.kind = 'ruling';
+    await w.pass({ dryRun: true });
+    expect(row(w)).toMatchObject({ state: 'needs-ruling', dry_run: 1 });
+    expect(w.notices.map((n) => n.message).join(' ')).toMatch(/would hold for your ruling \(dry run: nothing posted/);
+    for (const d of ['approve', 'post', 'skip'] as const) {
+      expect(() => releaseRound(w.h.store, roundOf(w), d, LOGIN, null)).toThrow(/is a dry run .* it renders its review and never posts, so a release has nothing to post/);
+    }
+    expect(getEvents(w.h.store.db, roundOf(w)).filter((e) => e.kind === 'ruling-release')).toEqual([]);
+  });
+
+  it('an in-flight post re-checks for a release at its intent: one recorded after its claim means nothing posts', async () => {
+    const w = await world();
+    w.adj.kind = 'ruling';
+    await w.pass({
+      hooks: {
+        afterPostClaim: () => {
+          throw new Error('died before the POST');
+        },
+      },
+    });
+    // The round as a post by hand sees it: held, nothing posted, no ledger row.
+    w.h.store.db.prepare('DELETE FROM ledger').run();
+    const id = (w.h.store.db.prepare('SELECT id FROM rounds').get() as { id: number }).id;
+    const fid = (w.h.store.db.prepare("SELECT id FROM findings WHERE round_id = ? AND outcome = 'ruling'").get(id) as { id: string }).id;
+    ruleFinding(w.h.store, id, fid, 'overturn', LOGIN, null);
+    const api = ghApi({ bin: FAKE_GH, env: w.gh.env });
+    const opts = { config: w.config, layout: w.h.layout, api, roundId: id };
+    const dry = postRound(w.h.store, { ...opts, mode: 'dry-run' });
+    expect(dry).toMatchObject({ outcome: 'rendered', event: 'COMMENT', ruling: true });
+    const r = postRound(w.h.store, {
+      ...opts,
+      mode: 'post',
+      expect: dry.reviewSha256!,
+      hooks: { beforeFinalRead: () => void releaseRound(w.h.store, id, 'approve', LOGIN, 'ruled while the post ran') },
+    });
+    expect(r.outcome).toBe('refused');
+    expect(r.problems.join(' ')).toMatch(/a ruling released round \d+ after this post began: this one records no intent and posts nothing/);
+    expect(sent(w)).toEqual([]);
+    expect(getEvents(w.h.store.db, id).filter((e) => e.kind === 'posting')).toEqual([]);
+    // The next post maps the release: an APPROVE that names it.
+    const again = postRound(w.h.store, { ...opts, mode: 'dry-run' });
+    expect(again).toMatchObject({ outcome: 'rendered', event: 'APPROVE' });
+    expect(postRound(w.h.store, { ...opts, mode: 'post', expect: again.reviewSha256! }).outcome).toBe('posted');
+    expect((sent(w)[0]?.body as { event: string; body: string }).body).toContain('Released by a ruling (approve) of reviewer-x');
+  });
+});
+
 describe('opt-in tests in a pass (plan 6.6, D12)', { timeout: 120_000 }, () => {
   const TESTS = (cmd: string) => `\n[auto.tests."sabotage-dev/sabotage-council"]\ncommand = "${cmd}"\ntimeout_minutes = 1\n`;
 
@@ -308,7 +428,9 @@ describe('the auto and ruling commands', { timeout: 120_000 }, () => {
     expect(inst.lines.some((l) => l.startsWith('to load it: launchctl bootstrap gui/'))).toBe(true);
     const un = await run('auto', 'uninstall', '--no-load', '--dir', serviceDir);
     expect(un.lines[0]).toMatch(/^removed /);
-    expect((await run('ruling', '1', 'approve')).lines).toEqual(['error: round 1 does not hold for a ruling: there is nothing to release']);
+    expect((await run('ruling', '1', 'approve')).lines).toEqual([
+      'error: round 1 is a dry run (auto --dry-run, or round start --dry-run): it renders its review and never posts, so a release has nothing to post; a real pass reviews the head afresh',
+    ]);
     expect((await run('ruling', '1', 'f_x', 'maybe')).lines).toEqual(['error: a finding takes uphold or overturn']);
   });
 });

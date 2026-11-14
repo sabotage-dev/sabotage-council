@@ -209,7 +209,9 @@ export function statusOf(store: Store, platform: ServicePlatform, serviceDir?: s
       claimed: claimLive(r),
       next:
         r.state === 'needs-ruling'
-          ? `sabotage-council ruling ${String(r.round_id)} <finding-id> uphold|overturn, then ruling ${String(r.round_id)} approve|post|skip`
+          ? r.dry_run === 1
+            ? 'none: a dry run is never released; a real pass reviews this head afresh'
+            : `sabotage-council ruling ${String(r.round_id)} <finding-id> uphold|overturn, then ruling ${String(r.round_id)} approve|post|skip`
           : r.state === 'failed'
             ? r.attempts >= MAX_ATTEMPTS
               ? `final: see round ${String(r.round_id)} (sabotage-council round show ${String(r.round_id)})`

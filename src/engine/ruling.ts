@@ -77,6 +77,29 @@ export function sinceRelease<T extends { kind: string }>(events: readonly T[]): 
   return events.slice(cut + 1);
 }
 
+/** The id of the round's latest `ruling-release` event, or null: an in-flight post compares it at its intent. */
+export function latestReleaseId(db: DatabaseSync, roundId: number): number | null {
+  const r = db.prepare("SELECT max(id) AS id FROM events WHERE round_id = ? AND kind = 'ruling-release'").get(roundId) as { id: number | null } | undefined;
+  return r?.id ?? null;
+}
+
+/**
+ * Whether a post of the round recorded its intent (since the latest release) and nothing has reconciled it since: no
+ * review was recorded posted or adopted, and no reconciliation found that nothing landed. Until then the review may
+ * be on GitHub (P8 round 1 row 1).
+ */
+export function unreconciledIntent(db: DatabaseSync, roundId: number): boolean {
+  const events = sinceRelease(getEvents(db, roundId));
+  let last = -1;
+  events.forEach((e, i) => {
+    if (e.kind === 'posting') last = i;
+  });
+  if (last < 0) return false;
+  return !events
+    .slice(last + 1)
+    .some((e) => e.kind === 'posted' || e.kind === 'post-adopted' || (e.kind === 'post-reconcile' && (e.detail as { landed?: unknown } | null)?.landed === false));
+}
+
 /** Review ids the round posted before a release (its ruling COMMENT): never adopted for the release's post. */
 export function archivedReviews(db: DatabaseSync, roundId: number): Set<number> {
   const ids = getEvents(db, roundId)
@@ -125,11 +148,26 @@ export function releaseRound(store: Store, roundId: number, decision: ReleaseDec
   return immediate(db, () => {
     const round = getRound(db, roundId);
     if (!round) throw new RulingError(`no round ${roundId} in the store`);
+    const row = rowOfRound(db, roundId);
+    if (round.dry_run === 1 || row?.dry_run === 1) {
+      throw new RulingError(`round ${roundId} is a dry run (auto --dry-run, or round start --dry-run): it renders its review and never posts, so a release has nothing to post; a real pass reviews the head afresh`);
+    }
     if (!roundHeld(db, round)) throw new RulingError(`round ${roundId} does not hold for a ruling: there is nothing to release`);
     const prior = latestRelease(db, roundId);
     if (prior !== null && round.event_posted !== null) throw new RulingError(`round ${roundId} was released (${prior.decision}) and its review is posted: a new head starts a new round`);
-    const row = rowOfRound(db, roundId);
     if (row !== undefined && claimLive(row, nowMs)) throw new RulingError(`the auto daemon is working on round ${roundId} right now: rule again once its pass ends`);
+    // P8 round 1 row 1: a post that may have reached GitHub is reconciled before any release, whatever its claim's age.
+    // A release now would clear the post's records, and a review that landed would never be adopted or guarded.
+    const reconcileFirst = 'the next pass of the auto daemon (sabotage-council auto run-once) reconciles it; rule again after that';
+    if (row?.state === 'posting') throw new RulingError(`round ${roundId}'s ledger row is posting: its review may be on GitHub, and ${reconcileFirst}`);
+    if (row !== undefined && row.records_sha !== null && round.event_posted === null) {
+      throw new RulingError(`round ${roundId}'s ledger row holds the records of a post that was never recorded (records_sha ${row.records_sha.slice(0, 12)}): its review may be on GitHub, and ${reconcileFirst}`);
+    }
+    if (unreconciledIntent(db, roundId)) {
+      throw new RulingError(
+        `a post of round ${roundId} recorded its intent and was never reconciled: its review may be on GitHub. ${row !== undefined ? reconcileFirst : `sabotage-council post ${roundId} --post reconciles it (it adopts a review that landed); rule again after that`}`,
+      );
+    }
     if (decision !== 'skip') {
       if (round.status !== 'adjudicated' && round.status !== 'identity') {
         throw new RulingError(

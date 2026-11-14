@@ -900,8 +900,9 @@ async function postStep(ctx: Ctx, claim: Claim, round: RoundRow): Promise<void> 
     }
     if (o.dryRun) {
       if (dry.ruling && latestRelease(store.db, round.id) === null) {
-        move(ctx, claim, { state: 'needs-ruling', event: dry.event, review_sha256: dry.reviewSha256, reason: 'the review needs your ruling (dry run: nothing posted)' });
-        notifyRow(ctx, 'needs-ruling', { ...claim.key, round_id: round.id }, `held for your ruling (dry run, nothing posted; sabotage-council ruling ${round.id} ...)`);
+        // A dry round is never released (P8 round 1 row 1): the notice says what a real pass would hold for.
+        move(ctx, claim, { state: 'needs-ruling', event: dry.event, review_sha256: dry.reviewSha256, reason: 'the review would need your ruling (dry run: nothing posted)' });
+        notifyRow(ctx, 'needs-ruling', { ...claim.key, round_id: round.id }, `would hold for your ruling (dry run: nothing posted; round ${round.id} shows why, and a real pass reviews the head afresh)`);
         return;
       }
       move(ctx, claim, { state: 'rendered', event: dry.event, review_sha256: dry.reviewSha256, reason: `dry run: would post ${dry.event} (row ${String(dry.row)})` });
@@ -1043,8 +1044,11 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void>
     postingNote(ctx, row, `the resume could not reconcile (the next pass tries again): ${rec.problems.join('; ')}`);
     return;
   }
+  // Nothing landed (the reconciliation held P6's post claim, so no other post of the round ran): a row that fails here
+  // for good leaves its post fields behind, since no POST can have been sent, and a ruling may release it.
   const sha = recordsSha(roundDirOf(o.layout, round.id), round.kind);
   if (row.records_sha === null || sha !== row.records_sha || row.review_sha256 === null) {
+    clearPost(ctx, claim);
     failFinal(ctx, claim, `the round's records changed since the post began (records_sha ${String(row.records_sha).slice(0, 12)}, now ${sha.slice(0, 12)}): nothing posts; post it by hand after a dry run (sabotage-council post ${round.id} --dry-run)`);
     return;
   }
@@ -1055,6 +1059,7 @@ async function resumePost(ctx: Ctx, claim: Claim, row: LedgerRow): Promise<void>
       abandon(ctx, claim, r.problems.join('; '));
       return;
     }
+    clearPost(ctx, claim);
     failFinal(ctx, claim, `the stored review no longer renders the same (${r.problems.join('; ')}): nothing posts; post it by hand after a dry run (sabotage-council post ${round.id} --dry-run)`);
     return;
   }

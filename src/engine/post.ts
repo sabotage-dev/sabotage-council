@@ -18,7 +18,7 @@ import { preparedDetail } from './facts.js';
 import { autoOf, markerConfig, participantsOf } from './pr.js';
 import { roundDirOf, type DataLayout } from './prepare.js';
 import { getEvents, getLegs, getRound, insertEvent, now, sha256, type RoundRow } from './records.js';
-import { applyRulings, archivedReviews, latestRelease, sinceRelease } from './ruling.js';
+import { applyRulings, archivedReviews, latestRelease, latestReleaseId, sinceRelease } from './ruling.js';
 
 /*
  * `sabotage-council post <round> --dry-run | --post` (plan 7.1 step 5, 3.7, 3.10): the post step after adjudication.
@@ -56,10 +56,11 @@ export interface PostOptions {
   expect?: string | undefined;
   /**
    * Tests only: stand-ins for another process or a crash at a fixed point of a post. `afterClaim` runs once the
-   * claim is taken (a second `post` at that moment); `afterPost` runs once the POST returned and before the store
-   * records it (a crash there, when it throws).
+   * claim is taken (a second `post` at that moment); `beforeFinalRead` runs after the render and before the last read
+   * of the pull request that precedes the intent (a release or a review landing then); `afterPost` runs once the POST
+   * returned and before the store records it (a crash there, when it throws).
    */
-  hooks?: { afterClaim?: (() => void) | undefined; afterPost?: (() => void) | undefined } | undefined;
+  hooks?: { afterClaim?: (() => void) | undefined; beforeFinalRead?: (() => void) | undefined; afterPost?: (() => void) | undefined } | undefined;
   /**
    * With `--post`: only reconcile an interrupted post (plan 9.4 resume, P8): adopt a review of this round that landed,
    * and run the guards it owes; if none landed, post nothing and say so (outcome `refused`, `notLanded`).
@@ -542,17 +543,21 @@ export function postRound(store: Store, o: PostOptions): PostResult {
   // Row 9: one POST per round. The claim is taken before any network call; the round is read again under it.
   const claim = claimPost(db, round.id);
   if ('why' in claim) return refuse(claim.why);
+  // P8 round 1 row 1: the release this post was claimed under. One recorded after it means the user ruled while this
+  // post ran; the intent step re-checks it, and this post then sends nothing (the next post maps the release).
+  const releaseAtClaim = latestReleaseId(db, round.id);
   try {
     o.hooks?.afterClaim?.();
-    return step(store, o, getRound(db, round.id) ?? round, result, refuse, claim.owner);
+    return step(store, o, getRound(db, round.id) ?? round, result, refuse, { owner: claim.owner, releaseAtClaim });
   } finally {
     releaseClaim(db, round.id, claim.owner);
   }
 }
 
-/** `owner` is the claim `--post` took (null for a dry run, which takes none). */
-function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult, refuse: Refuse, owner: string | null): PostResult {
+/** `claim` is the claim `--post` took and the release it was taken under (null for a dry run, which takes none). */
+function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult, refuse: Refuse, claim: { owner: string; releaseAtClaim: number | null } | null): PostResult {
   const { db } = store;
+  const owner = claim?.owner ?? null;
   const marker = round.marker ?? '';
   const ref = refOf(store, round);
   const cfg = markerConfig(o.config);
@@ -771,6 +776,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   // Row 5: the CI and identity reads take time; read the pull request once more right before the POST, and keep all
   // of it (P6 round 2 row 2): a moved head supersedes the round, a close posts nothing, and an identity round whose
   // base left the default branch since its render posts nothing (its approval was re-checked on the old base).
+  o.hooks?.beforeFinalRead?.();
   const last = readPull(o.api, ref);
   if (last.headSha.toLowerCase() !== head.toLowerCase()) return superseded(last.headSha);
   if (last.state === 'closed') return refuse(`${ref.owner}/${ref.repo}#${ref.number} was closed since the post began: nothing posts`);
@@ -784,10 +790,12 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   // The intent and the guards it owes, in one transaction before the POST (plan 9.4, row 2). A re-post after an
   // interrupted POST that did not land replaces the guards that never ran. The same transaction checks that this
   // process still holds the claim (P6 round 2 row 4): a claim taken over while it ran (it was held over an hour, so
-  // another post found it stale) fences it, and it posts nothing.
-  const holds = immediate(db, () => {
+  // another post found it stale) fences it, and it posts nothing. It also checks that no ruling release was recorded
+  // since the claim (P8 round 1 row 1): this render predates that ruling, so it posts nothing.
+  const fenced = immediate(db, (): 'claim' | 'release' | null => {
     const holder = db.prepare('SELECT post_owner FROM rounds WHERE id = ?').get(round.id) as { post_owner: string | null } | undefined;
-    if (owner === null || holder?.post_owner !== owner) return false;
+    if (owner === null || holder?.post_owner !== owner) return 'claim';
+    if (latestReleaseId(db, round.id) !== (claim?.releaseAtClaim ?? null)) return 'release';
     db.prepare("DELETE FROM post_guards WHERE round_id = ? AND status = 'pending'").run(round.id);
     insertEvent(db, 'posting', round.id, {
       event: decision.event,
@@ -799,10 +807,13 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     } satisfies Intent);
     if (decision.event === 'APPROVE') addGuard(db, round.id, 'approval-race', null);
     for (const r of stale) addGuard(db, round.id, 'dismiss-stale', r.id);
-    return true;
+    return null;
   });
-  if (!holds) {
+  if (fenced === 'claim') {
     return refuse(`another post of round ${round.id} took over this one's claim (it was held over an hour): this one records no intent and posts nothing; run post ${round.id} --post again once that one ends`);
+  }
+  if (fenced === 'release') {
+    return refuse(`a ruling released round ${round.id} after this post began: this one records no intent and posts nothing, since its render predates that ruling; the next post maps the release (post ${round.id} --dry-run)`);
   }
   const posted = normalizeReview(o.api.send('POST', `${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number)}/reviews`, { commit_id: head, event: decision.event, body }));
   o.hooks?.afterPost?.();
