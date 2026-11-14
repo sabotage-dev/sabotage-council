@@ -238,6 +238,19 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(w.notices).toEqual([]);
   });
 
+  it('a resumed post whose review now renders differently fails for good, with its post fields cleared (nothing landed)', async () => {
+    const w = await world();
+    let crash = true;
+    await w.pass({ hooks: { afterPostClaim: () => (crash ? ((crash = false), (() => { throw new Error('died before the POST'); })()) : undefined) } });
+    expect(row(w)).toMatchObject({ state: 'posting', event: 'APPROVE' });
+    // A change request the round never adjudicated lands: the review now holds its approval, so it differs.
+    w.addReview(ghReview(8002, 'alice', 'CHANGES_REQUESTED', w.d, '2026-11-13T12:00:01Z', 'Not yet.'));
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'failed', attempts: 2, records_sha: null, event: null, review_sha256: null });
+    expect(String(row(w)['reason'])).toMatch(/the stored review no longer renders the same/);
+    expect(posts(w)).toBe(0);
+  });
+
   it('the PR closes between the render and the POST: nothing posts and the row is skipped, not left posting', async () => {
     const w = await world();
     await w.pass({
