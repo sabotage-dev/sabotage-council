@@ -10,7 +10,7 @@ import type { PrRef } from '../forge/pr.js';
 import { creditCommand, postCommand, roundStartPr } from './pr.js';
 import { autoInstall, autoPause, autoRun, autoRunOnce, autoStatus, rulingCommand, type AutoIo } from './auto.js';
 import { adjudicateCommand, adjudicateHeadlessCommand, defaultStartWorker, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
-import { seatsEdit, seatsList } from './seats.js';
+import { seatsEdit, seatsList, seatsTest } from './seats.js';
 import { statsCommand } from './stats.js';
 import { parseSince, WindowError } from '../stats/window.js';
 
@@ -40,6 +40,8 @@ export interface ProgramIo {
   headlessPollMs?: number | undefined;
   /** `stats` and `seats`: tests pin the clock (the report's time, a backup's name). Default: the current time. */
   now?: (() => string) | undefined;
+  /** `seats test`: how often the leg is polled (tests). Default 1000 ms. */
+  seatTestPollMs?: number | undefined;
   /** `auto`: tests set pass options the command line does not (the adjudication step, the notifier, caffeinate). */
   auto?: Pick<AutoIo, 'passOverrides' | 'servicePlatform' | 'serviceLoader' | 'plutil'> | undefined;
 }
@@ -374,8 +376,8 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     });
 
   // ---------- seats (plan 8.4) ----------
-  const seatsIo = { write: io.write, env: io.env, setExitCode: io.setExitCode, adapters: io.adapters, registry: io.registry };
-  const seats = program.command('seats').description('list, add, remove and swap the three seats (plan 8.4); nothing ever swaps a seat by itself');
+  const seatsIo = { write: io.write, env: io.env, setExitCode: io.setExitCode, adapters: io.adapters, registry: io.registry, pollMs: io.seatTestPollMs };
+  const seats = program.command('seats').description('list, add, remove, swap and test the three seats (plan 8.4); nothing ever swaps a seat by itself');
   storeOptions(
     seats
       .command('list')
@@ -433,5 +435,38 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
   ).action(async (seat: string, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean }) => {
     await seatsEdit(seatsIo, pathsOf(opts), { kind: 'remove', seat }, { dryRun: opts.dryRun === true, now: editNow() });
   });
+  storeOptions(
+    seats
+      .command('test')
+      .argument('<seat|occupant>', 'a seat id from the config, or a candidate as backend:model[:effort]')
+      .description(
+        'run ONE PAID LEG on the built-in planted-defect fixture and report the defects found, ratification, verdict, cost and duration; recorded as a seat test, never counted in stats; exit 0 qualified, 2 ratified but missed a defect, 1 not ratified',
+      )
+      .option('--fallback', "test the seat's fallback instead of its primary")
+      .option('--auth-home <dir>', 'kiro and grok candidates: the login home to run on (absolute)')
+      .option('--sandbox <mode>', 'grok candidates: read-only or off', sandboxMode)
+      .option('--timeout <minutes>', 'the leg cap (default: council.leg_timeout_minutes, else 25)', minutes)
+      .option('--json', 'print the result as JSON'),
+  ).action(async (target: string, opts: { config?: string; db?: string; roots?: string; fallback?: boolean; authHome?: string; sandbox?: 'read-only' | 'off'; timeout?: number; json?: boolean }) => {
+    // Ctrl-C or a TERM cancels the leg: nothing it started is left running.
+    const abort = new AbortController();
+    const stop = (): void => abort.abort();
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+    try {
+      await seatsTest(seatsIo, pathsOf(opts), target, {
+        fallback: opts.fallback === true,
+        authHome: opts.authHome,
+        sandbox: opts.sandbox,
+        timeoutMinutes: opts.timeout,
+        json: opts.json === true,
+        signal: abort.signal,
+      });
+    } finally {
+      process.removeListener('SIGINT', stop);
+      process.removeListener('SIGTERM', stop);
+    }
+  });
+
   return program;
 }

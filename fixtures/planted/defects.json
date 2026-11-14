@@ -1,0 +1,34 @@
+{
+  "repo": "planted",
+  "branch": "feature",
+  "commits": {
+    "base": "calc: range sum and mean",
+    "head": "calc: tidy the range loop, the bounds check and the mean"
+  },
+  "defects": [
+    {
+      "id": "D1",
+      "severity": "HIGH",
+      "title": "range_sum drops the end element: range(start, end) excludes the inclusive end (off-by-one)",
+      "path": "calc/rangesum.py",
+      "lines": [10, 12],
+      "keywords": ["off-by-one", "off by one", "end + 1", "last element", "end element", "drops the end", "range(start, end)"]
+    },
+    {
+      "id": "D2",
+      "severity": "MEDIUM",
+      "title": "the bounds check lets end == len(values) through (> instead of >=), so an out-of-range end is summed instead of raising IndexError",
+      "path": "calc/rangesum.py",
+      "lines": [6, 7],
+      "keywords": ["bounds", "out of range", "out-of-range", ">= len", "> len", "indexerror"]
+    },
+    {
+      "id": "D3",
+      "severity": "MEDIUM",
+      "title": "mean uses floor division (//), so the mean of [1, 2] is 1, not 1.5",
+      "path": "calc/rangesum.py",
+      "lines": [18, 20],
+      "keywords": ["floor division", "integer division", "//", "truncat"]
+    }
+  ]
+}

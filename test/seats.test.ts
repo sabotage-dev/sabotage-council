@@ -298,6 +298,7 @@ describe('seats CLI', () => {
     expect(wet.lines).toContain(`backup: ${join(dir, 'config.toml.bak-20261114T080910Z')}`);
     expect(wet.lines).toContain(`wrote ${path}`);
     expect(wet.text).toContain('seat c keeps its id: its history stays under seat c, and antigravity / gemini-3.8-pro opens its own occupant row at its first leg');
+    expect(wet.text).toContain('`sabotage-council seats test antigravity:gemini-3.8-pro`');
   });
 
   it('remove on three seats refuses and names swap; add on three refuses', async () => {

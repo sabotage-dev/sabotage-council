@@ -1,20 +1,22 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { SeatAdapters } from '../adapters/index.js';
 import type { Occupant, Preflight } from '../adapters/types.js';
-import { loadConfig, type AdapterRegistry, type BackendId, type ConfigIssue, type SeatConfig } from '../config/index.js';
+import { BACKENDS, loadConfig, type AdapterRegistry, type BackendId, type ConfigIssue, type SeatConfig } from '../config/index.js';
 import { applySeatEdit, SeatApplyError } from '../seats/apply.js';
 import type { SeatEdit } from '../seats/edit.js';
+import { loadFixture } from '../seats/fixture.js';
+import { recordSeatTest, runSeatTest, type SeatTestResult } from '../seats/run.js';
 import { loadStats } from '../stats/data.js';
 import { buildReport, thresholdsOf, type SeatCard, type Recommendation } from '../stats/report.js';
-import { pctText } from '../stats/text.js';
+import { durationText, money, pctText } from '../stats/text.js';
 import { openStore } from '../store/index.js';
 import type { StorePaths } from './round.js';
 
 /*
- * `sabotage-council seats list | add | remove | swap` (plan 8.4). The editing commands change the user's config file
- * through src/seats (one seam, one block).
+ * `sabotage-council seats list | add | remove | swap | test` (plan 8.4). The editing commands change the user's config
+ * file through src/seats (one seam, one block); `test` runs one paid leg on the shipped planted-defect fixture.
  */
 
 export interface SeatsIo {
@@ -23,6 +25,8 @@ export interface SeatsIo {
   setExitCode: (code: number) => void;
   adapters?: SeatAdapters | undefined;
   registry?: AdapterRegistry | undefined;
+  /** `seats test`: how often the leg is polled (tests). Default 1000 ms. */
+  pollMs?: number | undefined;
 }
 
 function registryOf(io: SeatsIo): AdapterRegistry | undefined {
@@ -195,7 +199,7 @@ export async function seatsEdit(io: SeatsIo, paths: StorePaths, op: SeatEdit, ar
       io.write(`wrote ${r.path}`);
       if (op.kind !== 'remove') {
         io.write(
-          `seat ${op.seat} keeps its id: its history stays under seat ${op.seat}, and ${describe(op.occupant)} opens its own occupant row at its first leg.`,
+          `seat ${op.seat} keeps its id: its history stays under seat ${op.seat}, and ${describe(op.occupant)} opens its own occupant row at its first leg. Qualify a candidate first with \`sabotage-council seats test ${op.occupant.backend}:${op.occupant.model}${op.occupant.effort !== undefined ? `:${op.occupant.effort}` : ''}\`.`,
         );
       }
     }
@@ -206,4 +210,125 @@ export async function seatsEdit(io: SeatsIo, paths: StorePaths, op: SeatEdit, ar
     for (const d of error.details) io.write(`  ${d}`);
     io.setExitCode(1);
   }
+}
+
+// ---------- test ----------
+
+export interface TestArgs {
+  /** Use the seat's fallback instead of its primary (a seat id only). */
+  fallback: boolean;
+  authHome?: string | undefined;
+  sandbox?: 'read-only' | 'off' | undefined;
+  /** Minutes; default the config's leg_timeout_minutes, else 25. */
+  timeoutMinutes?: number | undefined;
+  json: boolean;
+  signal?: AbortSignal | undefined;
+}
+
+/** `backend:model[:effort]`; the effort is the last `:` segment when there are three or more. */
+export function parseOccupantSpec(spec: string): { backend: string; model: string; effort: string | undefined } | null {
+  const at = spec.indexOf(':');
+  if (at <= 0) return null;
+  const backend = spec.slice(0, at);
+  const rest = spec.slice(at + 1);
+  const last = rest.lastIndexOf(':');
+  const model = last > 0 ? rest.slice(0, last) : rest;
+  const effort = last > 0 ? rest.slice(last + 1) : undefined;
+  if (model === '' || effort === '') return null;
+  return { backend, model, effort };
+}
+
+export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, args: TestArgs): Promise<void> {
+  const fail = (message: string): void => {
+    io.write(message);
+    io.setExitCode(1);
+  };
+  const config = existsSync(paths.configPath) ? await loadConfig(paths.configPath) : null;
+  let occupant: Occupant;
+  let who: { seat: string | null; role: 'primary' | 'fallback' | null };
+  if (target.includes(':')) {
+    const spec = parseOccupantSpec(target);
+    if (spec === null) return fail(`"${target}" is not backend:model[:effort]`);
+    if (!(BACKENDS as readonly string[]).includes(spec.backend)) return fail(`unknown backend "${spec.backend}"; expected one of: ${BACKENDS.join(', ')}`);
+    if (args.fallback) return fail('--fallback takes a seat id, not an occupant');
+    const lister = registryOf(io)?.lister(spec.backend as BackendId);
+    if (!lister) return fail(`no adapter is registered for backend "${spec.backend}"`);
+    let models;
+    try {
+      models = await lister.listModels();
+    } catch (error) {
+      return fail(`could not list the models of backend "${spec.backend}": ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!models.some((m) => m.id === spec.model)) return fail(`backend "${spec.backend}" does not offer model "${spec.model}"`);
+    if (args.authHome !== undefined && spec.backend !== 'kiro' && spec.backend !== 'grok') return fail('--auth-home applies only to kiro and grok');
+    if (args.sandbox !== undefined && spec.backend !== 'grok') return fail('--sandbox applies only to grok');
+    occupant = occupantOf({ backend: spec.backend as BackendId, model: spec.model, effort: spec.effort, auth_home: args.authHome, sandbox: args.sandbox });
+    who = { seat: null, role: null };
+  } else {
+    if (config === null) return fail(`no config file at ${paths.configPath}: name the candidate as backend:model[:effort] instead`);
+    if (!config.ok) {
+      io.write(`config ${paths.configPath} has ${config.errors.length} error(s):`);
+      for (const e of config.errors) io.write(`  ${formatIssue(e)}`);
+      io.setExitCode(1);
+      return;
+    }
+    if (args.authHome !== undefined || args.sandbox !== undefined) return fail('--auth-home and --sandbox go with backend:model[:effort]; a seat id uses its own config');
+    const seat = config.config.seats.find((s) => s.id === target);
+    if (!seat) return fail(`no seat "${target}" in ${paths.configPath} (seats: ${config.config.seats.map((s) => s.id).join(', ')})`);
+    if (args.fallback && !seat.fallback) return fail(`seat "${target}" has no fallback`);
+    occupant = args.fallback && seat.fallback ? occupantOf(seat.fallback) : occupantOf(seat);
+    who = { seat: seat.id, role: args.fallback ? 'fallback' : 'primary' };
+  }
+  if (!io.adapters) return fail('no seat adapters in this build');
+
+  const minutes = args.timeoutMinutes ?? (config?.ok === true ? config.config.council.leg_timeout_minutes : 25);
+  const fixture = loadFixture();
+  // It spends money: say exactly what runs before anything launches.
+  io.write(
+    `seats test: about to run one paid leg: backend ${occupant.backend}, model ${occupant.model}, effort ${occupant.effort ?? '(the CLI default)'}${who.seat !== null ? ` (seat ${who.seat}, ${who.role})` : ' (a candidate, not in the config)'}; capped at ${minutes} min, on the planted-defect fixture (${fixture.defects.length} defects)`,
+  );
+  const result = await runSeatTest(occupant, who, {
+    adapters: io.adapters,
+    rootsDir: join(paths.rootsPath, 'seat-tests'),
+    dataDir: dirname(paths.dbPath),
+    timeoutMs: Math.round(minutes * 60_000),
+    env: io.env,
+    pollMs: io.pollMs,
+    signal: args.signal,
+    fixture,
+  });
+  const store = openStore(paths.dbPath);
+  let code: number;
+  try {
+    code = recordSeatTest(store, result);
+  } finally {
+    store.close();
+  }
+  if (args.json) io.write(JSON.stringify({ ...result, exit_code: code }, null, 2));
+  else for (const line of resultLines(result, fixture.defects.map((d) => ({ id: d.id, severity: d.severity, title: d.title })))) io.write(line);
+  io.setExitCode(code);
+}
+
+export function resultLines(r: SeatTestResult, defects: ReadonlyArray<{ id: string; severity: string; title: string }>): string[] {
+  const out: string[] = [];
+  out.push(`ratification  ${r.ratified ? 'PASS' : `${r.status}${r.failure_class !== null ? ` (${r.failure_class})` : ''}`}${r.enforcement !== null ? `; enforcement ${r.enforcement}` : ''}${r.cli_version !== null ? `; ${r.occupant.backend} ${r.cli_version}` : ''}`);
+  for (const c of r.failed_checks) out.push(`  failed  ${c}`);
+  if (r.reason !== null) out.push(`  ${r.reason}`);
+  out.push(`verdict       ${r.verdict ?? 'none'}${r.findings_extracted_by === 'adjudicator-needed' ? ' (its findings block did not parse: defects read from the answer text)' : ''}`);
+  out.push(`defects       found ${r.defects.found.length} of ${r.defects.total}${r.defects.other_findings.length > 0 ? `; ${r.defects.other_findings.length} other finding(s) (the base is correct, so these are noise)` : ''}`);
+  for (const d of defects) {
+    const m = r.defects.matches.find((x) => x.defect === d.id);
+    out.push(`  ${r.defects.found.includes(d.id) ? 'found ' : 'missed'}  ${d.id} ${d.severity} ${d.title}${m ? ` (${m.finding}, by ${m.by})` : ''}`);
+  }
+  const cost = [r.cost_usd !== null ? money(r.cost_usd) : null, r.credits !== null ? `${r.credits} credits` : null, r.quota_used_pct !== null ? `quota ${r.quota_used_pct}%` : null].filter((x) => x !== null);
+  out.push(`cost          ${cost.join(', ') || 'none recorded'}; duration ${durationText(r.duration_ms)}`);
+  out.push(`records       ${r.leg_dir}`);
+  out.push(
+    r.ratified && r.defects.missed.length === 0
+      ? 'qualified: it ratified and found every planted defect (recorded as a seat test; it never counts in stats)'
+      : r.ratified
+        ? `not qualified: it ratified but missed ${r.defects.missed.join(', ')} (recorded as a seat test; it never counts in stats)`
+        : 'not qualified: the leg did not ratify (recorded as a seat test; it never counts in stats)',
+  );
+  return out;
 }
