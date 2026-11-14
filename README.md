@@ -202,25 +202,33 @@ daemon's log dir (`auto/` beside the store, mode 0700) before it writes and load
   adds `assignee:@me`), narrowed to the owners `repos_allow` names. Your own PRs, drafts and `repos_skip` are
   skipped. After your review clears the request, a PR stays in scope while your latest review of it is a change
   request, a comment, or a dismissed approval, so later pushes get delta rounds (at most 20 such PRs read per pass,
-  in turn). A head you already reviewed (by any store, or by hand with a marker) is not reviewed again.
+  in turn). A head you already reviewed (by any store, or by hand with a marker) is not reviewed again, and the last
+  read before each POST checks once more: a review of yours with the round's marker already on the head is adopted
+  when it is the very review the post would send, else nothing posts. Two stores on one account are serialized only
+  by that read. A PR made a draft while its round ran gets no review until it is ready again.
 - **One row per head.** Each head is claimed (owner, heartbeat; a dead daemon's claim is taken over), numbered once
-  at its first claim, and gets two attempts: a failed round is retried with a new round, a failed adjudication by
-  re-running only the adjudicator. Before a review posts, the row records a hash of the round's records and the
-  review it means to post; after a crash, the next pass adopts the review that landed, or posts that same review
-  only while the records still hash the same, or fails visibly.
+  by its first claim from the reviews read before it, and gets two attempts: a failed round is retried with a new
+  round, a failed adjudication by re-running only the adjudicator. A round is linked to its row as it is created, so
+  a crash never leaves a second round for the head. Before a review posts, the row records a hash of the round's
+  records and the review it means to post; after a crash, the next pass adopts the review that landed, or posts that
+  same review only while the records still hash the same, or fails visibly. A row whose repository left
+  `repos_allow` is still reconciled that way, and nothing new posts there.
 - **Holds and rulings.** `repos_hold` posts but never approves; your own change request on the head, a ruling the
-  adjudicator asks for, or an adjudicator run that went out of bounds holds the row for `ruling`. The CI gate and
-  the post's guards are `post`'s (above).
+  adjudicator asks for, or an adjudicator run that went out of bounds holds the row for `ruling`. A release waits
+  while a post of the round may be on GitHub (the next pass reconciles it first), and a dry run's round is never
+  released. The CI gate and the post's guards are `post`'s (above).
 - **Opt-in tests.** `[auto.tests."owner/repo"]` (`setup`, `command`, `timeout_minutes`) runs only for PRs whose
   author has write access and whose head is in the same repository, never a fork, on a copy of the head outside the
-  review root, with only PATH, LANG, LC_ALL and TZ from your environment. The result goes to the adjudicator; only
-  a PASS lets the round approve.
-- **Notifications** on a needed ruling, a final failure, an approval held, and an approval withdrawn: to
-  `notify.command` (an executable that gets the event as JSON on stdin) or the desktop, once per PR head and kind
-  per 24 hours.
-- **Limits.** `max_rounds_per_day` (30) council rounds in any 24 hours; on macOS each round runs under
-  `caffeinate -i`. Round dirs older than 90 days and failed rounds' roots older than 2 days are pruned; rows of
-  closed PRs retire.
+  review root, with only PATH, LANG, LC_ALL and TZ from your environment. The result, with the tails of its output
+  and its errors, goes to the adjudicator; only a PASS lets the round approve.
+- **Notifications** on a needed ruling, a final failure, an approval held, an approval withdrawn, and a pass lock
+  another pass keeps holding: to `notify.command` (an executable that gets the event as JSON on stdin) or the
+  desktop, once per PR head and kind per 24 hours, a dry run's apart from the real ones.
+- **One pass at a time.** A pass holds `auto/pass.lock` with a heartbeat; a lock whose heartbeat is 10 minutes old is
+  taken over, whatever its pid or host. `auto pause` stops a running pass at its next round.
+- **Limits.** `max_rounds_per_day` (30) council rounds in any 24 hours, resumed rows included; on macOS each round
+  runs under `caffeinate -i`. Round dirs older than 90 days and failed rounds' roots older than 2 days are pruned;
+  rows of closed PRs retire.
 
 Heavy `auto` use on a consumer Claude plan is not "ordinary, individual usage"; use `ANTHROPIC_API_KEY` or a
 Team/Enterprise plan for the seats and the adjudicator (plan 6.5).

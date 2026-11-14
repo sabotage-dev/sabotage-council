@@ -482,6 +482,15 @@ As built (P8):
 - The release sets the round's ledger row back to `running` (or `skipped`) with its post fields cleared, so the
   daemon's next pass posts it through the same guarded post step (or the user runs `post <id> --dry-run` and
   `--post` for a round outside the ledger). A release while the daemon holds the row's claim is refused.
+- A release is also refused while a post of the round may be on GitHub, whatever the claim's age (P8 round 1 row 1):
+  the ledger row is `posting`, holds `records_sha` of a post never recorded, or the round has a post intent nothing
+  reconciled (no review recorded posted or adopted since, and no reconciliation that found nothing landed). The
+  daemon's next pass (or `post <id> --post` for a round outside the ledger) reconciles it first; a resume that finds
+  nothing landed and fails the row for good clears its post fields, so a ruling can release it then. A dry round is
+  never released, and says why: it renders and never posts, and a real pass reviews its head afresh.
+- A post in flight records the release it was claimed under and checks it again in the transaction that records its
+  intent: a release recorded after its claim means its render predates that ruling, so it records no intent and posts
+  nothing (the next post maps the release).
 
 ### 3.10 Identity approval
 
@@ -1317,8 +1326,9 @@ The head is extracted from the engine's mirror into `rounds/<id>/tests/work/` (n
 and command run there through `/bin/sh -c`, each in its own process group, with PATH, LANG, LC_ALL and TZ from the
 engine's environment and nothing else but a HOME and TMPDIR of their own and `CI=true`, under the repository's one
 wall-clock cap for both. They run beside the legs. The result (`PASS`, `FAIL`, `SETUPFAIL`, `TIMEOUT`, `CANTRUN`; or
-why none ran) is an `auto-tests` event on the round and `_council/TESTS.md` for the headless adjudicator, with the
-log's last 80 lines as `DATA:`. Only a PASS allows an approval (3.7). `NOTESTS` is in the vocabulary but has no host
+why none ran) is an `auto-tests` event on the round and `_council/TESTS.md` for the headless adjudicator, with
+labelled tails of the command's standard output and standard error as `DATA:` (the last 80 lines and at most 16,000
+characters of each; P8 round 1 row 10). Only a PASS allows an approval (3.7). `NOTESTS` is in the vocabulary but has no host
 signal yet, so P8 never reports it; container mode (Q12) is not built.
 
 ### 6.7 Supply chain
@@ -1576,12 +1586,22 @@ Pruning:
 As built (P8), `src/auto/`:
 - **Commands.** `auto run-once [--dry-run] [--json]` is one pass (exit 0 done or paused, 1 failed, 3 another pass
   is running); `auto run [--dry-run]` loops passes every `interval_minutes`, re-reading the config each pass, until
-  SIGTERM; `auto status [--json]`, `auto pause [--reason]`, `auto resume`; `auto install [--dry-run] [--dir]
-  [--no-load]` and `auto uninstall [--dir] [--no-load]`; `ruling` (3.8). `--dry-run` runs everything but the POST and
-  the dismissals: its rounds are prepared dry (P6: they render and never post), its rows end `rendered`, and a dry
-  pass never touches a real row (a real pass starts a dry row's head over, since a dry round can never post).
-- **One pass.** Refused without `[github]`, `[auto]` or `[adjudicator] model`. Paused: nothing at all. One pass per
-  store at a time (`auto/pass.lock` beside the store). The account check first (`github.login`; a GitHub App token is
+  SIGTERM; `auto status [--json]`, `auto pause [--reason]`, `auto resume`; `auto install [--shadow] [--dry-run]
+  [--dir] [--no-load]` and `auto uninstall [--dir] [--no-load]`; `ruling` (3.8). On `run-once` and `run`,
+  `--dry-run` runs everything but the POST and the dismissals: its rounds are prepared dry (P6: they render and never
+  post), its rows end `rendered`, and a dry pass never touches a real row (a real pass starts a dry row's head over,
+  since a dry round can never post). On `install`, `--shadow` installs that mode (the service runs
+  `auto run --dry-run`) and `--dry-run` only previews: it prints the service file, the log dir it would create and the
+  commands, and writes, creates and loads nothing (P8 round 1 row 13).
+- **One pass.** Refused without `[github]`, `[auto]` or `[adjudicator] model`. Paused: nothing at all; a pause made
+  while a pass runs stops it at its next round, since the paused state is read before every claim, of a resumed row or
+  a new head (P8 round 1 row 8). One pass per store at a time (`auto/pass.lock` beside the store, P8 round 1 row 6):
+  it records pid, host and a token, and its mtime is the heartbeat, refreshed on a timer and before every claim. It is
+  held while fresh and, on this host, while its pid runs; a dead pid frees it at once, and one older than the stale
+  limit (10 minutes, the ledger's) is free whatever its pid or host. A stale lock is renamed aside atomically, so of two
+  takers only one wins, and a taker whose rename caught a fresh lock puts it back and is busy; a pass whose heartbeat
+  finds the lock no longer its own claims nothing more. A busy pass is saved as the last pass, and three busy passes in
+  a row notify. The account check first (`github.login`; a GitHub App token is
   named through GraphQL's `viewer` when `GET user` is refused, else the pass refuses plainly). Then: the searches;
   the continuation reads; older heads of each PR read are superseded; rows of this mode left `running` or `posting`
   with no live claim are resumed (a dead daemon, or a ruling's release); then each new head, one at a time:
@@ -1606,7 +1626,12 @@ As built (P8), `src/auto/`:
   legs and adjudicator. Attempts: a claim of a new head or of a failed row is an attempt; a failed attempt leaves the
   row `failed`, which the next pass retries while attempts are under 2 (a failed round gets a new round with the
   number fixed at the first claim; a failed adjudication re-runs only the adjudicator; a failed render re-renders).
-  The second failure is final and notifies. A resume of a dead pass's row is not a new attempt.
+  The second failure is final and notifies. A resume of a dead pass's row is not a new attempt. The round number
+  is computed from the reviews the pass read before the claim and stored by the claim's transaction (P8 round 1 row
+  5); a row that has one keeps it on every later claim, only a reset recomputes it, and preparation takes it. A round
+  is linked to its row in the transaction that inserts it (and counted for the daily cap there), fenced by the claim
+  token: a claim taken over rolls the round back, so no crash leaves a round no row knows (row 4). A linked round whose
+  legs never started (its pass died after the prepare) runs its legs on resume, never a second round.
 - **The post.** A `postRound` dry run renders the event and body; the body goes to `AUTO-POST.md` in the round dir;
   `records_sha` is the sha256 over `ADJUDICATION.json` (`identity.json` for an identity round), `AUTO-POST.md` and every
   leg's `answer.md`, `ratification.json` and `reply.json`; the row moves to `posting` with it, the event and the
@@ -1614,12 +1639,29 @@ As built (P8), `src/auto/`:
   that changed before any intent was recorded is rendered again (three renders at most). The row settles as
   `approved` (an APPROVE kept), `posted` (a REQUEST_CHANGES or COMMENT, or an approval the race withdrew),
   `needs-ruling` (the "Ruling needed" COMMENT), or `superseded`; a guard still pending keeps it `posting`.
+- **One review per head** (P8 round 1 row 2). The last read before the POST lists the reviews: one by `github.login`
+  with this round's marker bound to this head (held by no other round of this store, and not the round's archived
+  ruling COMMENT) is adopted when it is exactly the review the post would send, event and body, with its intent and
+  guards; any other refuses the post, and the daemon skips the row. Two stores on one account are serialized only by
+  this read (N116): there is no GitHub-side reservation, so two posts that both read before either lands can both
+  send. A post by hand gets the same check.
+- **Drafts** (P8 round 1 row 3). The daemon's posts refuse a draft at that last read, after any interrupted post was
+  reconciled (`post --post` by hand may still review a draft the user chose to); the row stays `running`, unclaimed,
+  not a failed attempt, and posts once the PR is ready.
 - **Resume.** A `posting` row is never re-run: a round already recorded posted resumes its guards; else P6's
   reconciliation alone runs first (`reconcileOnly`: a review of ours with this round's marker, body and event, stored
   on no other round, is adopted with its guards, wherever GitHub bound it); with none landed, the records must still
   hash to `records_sha` and the fresh render must equal the stored review sha256, or the row fails for good and
   notifies. An exception while posting leaves the row `posting` for that resume. The adoption is P6's, which needs
-  the intent's body and event, stricter than "a marker review at this head" (P6 round 1 row 4).
+  the intent's body and event, stricter than "a marker review at this head" (P6 round 1 row 4). A resumed row reads
+  the PR first (P8 round 1 row 3): a row whose post may have begun (`posting`, or `records_sha` set) is always worked,
+  so a landed review is reconciled; any other row waits while the PR is a draft and is skipped once it is closed. A
+  re-post refused after the reconciliation found nothing landed sends nothing, so the row may leave `posting` whatever
+  intent an earlier attempt recorded: a closed PR skips it (row 12), as does a head with our review already (row 2),
+  and a draft keeps it. A posting row whose repository left `repos_allow` (or joined `repos_skip`) is still
+  reconciled, read-and-guards only: a post already recorded resumes its guards, a landed review is adopted with its
+  guards, and with nothing landed the row is skipped; nothing new posts there (row 11). A resumed row that would
+  prepare a round checks `max_rounds_per_day` first and waits at the cap (row 4).
 - **Holds.** `repos_hold`, the user's own change request on the head, and the CI gate, all through P6's event
   mapping. A round held for a ruling (the adjudicator, a contaminated or twice-invalid headless run, the user's own
   change request) makes the row `needs-ruling`; passes leave it until a `ruling` releases it or a new head supersedes
@@ -1627,20 +1669,25 @@ As built (P8), `src/auto/`:
 - **Caps (Q8).** `max_rounds_per_day` counts the council rounds the daemon started in the trailing 24 hours (an
   `auto-round` event per round, dry runs included; identity rounds run no seats and are not counted). At the cap a
   new head is deferred: no row, no round, and the next pass looks again.
-- **Notifications.** Key `<kind>:<repo>#<num>@<head>`; delivered to `notify.command` (an executable run without a
+- **Notifications.** Key `<kind>:<repo>#<num>@<head>` (a dry pass's: `<kind>:dry:<repo>#<num>@<head>`, so a shadow
+  pass never suppresses the real notice, P8 round 1 row 7); delivered to `notify.command` (an executable run without a
   shell, `~/` expanded, the notice as JSON on stdin) or the built-in desktop notifier (macOS `osascript` with the text
   as arguments, Linux `notify-send`); one delivery per key per 24 hours, recorded as a `notify` event, a failed
   delivery recorded as `notify-failed` and not counted. Sent on: needs-ruling, a final failure (and an account check
-  that fails), approval held (rows 4, 7, 8), approval withdrawn by the race.
+  that fails, and a pass lock busy for three passes in a row), approval held (rows 4, 7, 8), approval withdrawn by the
+  race.
 - **Service.** macOS: `~/Library/LaunchAgents/dev.sabotage-council.auto.plist` (RunAtLoad, KeepAlive, throttled,
   output to `auto/daemon.log` beside the store), checked with `plutil -lint`, loaded with `launchctl bootstrap
   gui/<uid>`. Linux: `~/.config/systemd/user/sabotage-council-auto.service` (Restart=on-failure), checked by the
   engine and with `systemd-analyze --user verify` when present, loaded with `systemctl --user enable --now`. Both run
-  `auto run` with the config, store and roots they were installed with, PATH and HOME only; no token is written.
+  `auto run` (with `--shadow`, `auto run --dry-run`) with the config, store and roots they were installed with, PATH
+  and HOME only; no token is written. Install creates the log file's dir (0700) before it writes and loads the
+  service, since launchd does not create it (P8 round 1 row 9).
   Loading a file rendered outside the default directory needs an explicit loader. While a round runs, macOS keeps
   the machine awake with `caffeinate -i -w <daemon pid>`, stopped when the round ends.
 - **Prune.** Rows of a closed PR this pass read retire (a `running` or `posting` row never does); round dirs and
-  roots as in 5.4.
+  roots as in 5.4. A running round the daemon started (an `auto-round` event) that no ledger row references fails and
+  its roots go (P8 round 1 row 4); rounds of `round start` are never touched.
 
 ## 10. Build phases
 
