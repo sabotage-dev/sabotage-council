@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import { CLAIM_STALE_MS, claimRow } from '../src/auto/ledger.js';
 import { serviceInstalled } from '../src/auto/service.js';
-import { getEvents, getRound, roundSummary } from '../src/engine/index.js';
+import { getEvents, getLegs, getRound, roundSummary } from '../src/engine/index.js';
 import { releaseRound, ruleFinding } from '../src/engine/ruling.js';
 import { postRound } from '../src/engine/post.js';
 import { ghApi } from '../src/forge/github.js';
@@ -232,6 +232,24 @@ describe('a release waits for a post that may be on GitHub (P8 round 1 row 1)', 
     const rec = postRound(w.h.store, { config: w.config, layout: w.h.layout, api: ghApi({ bin: FAKE_GH, env: w.gh.env }), roundId: id, mode: 'post', reconcileOnly: true });
     expect(rec).toMatchObject({ outcome: 'refused', notLanded: true });
     expect(releaseRound(w.h.store, id, 'skip', LOGIN, null)).toMatchObject({ decision: 'skip' });
+  });
+
+  it('a resume that found nothing landed and fails the row for good clears its post fields, so a ruling can release it', async () => {
+    const w = await world();
+    w.adj.kind = 'ruling';
+    let crash = true;
+    await w.pass({ hooks: { afterPostClaim: () => (crash ? ((crash = false), (() => { throw new Error('died before the POST'); })()) : undefined) } });
+    expect(row(w)).toMatchObject({ state: 'posting', reason: 'posting the ruling COMMENT' });
+    const id = roundOf(w);
+    const leg = getLegs(w.h.store.db, id).find((l) => l.status === 'PASS')!;
+    const answer = join(w.h.layout.roundsDir, String(id), 'legs', `${leg.seat_id}-${leg.role}-${leg.attempt}`, 'answer.md');
+    writeFileSync(answer, `${readFileSync(answer, 'utf8')}\nedited after the post began\n`);
+    await w.pass();
+    expect(row(w)).toMatchObject({ state: 'failed', attempts: 2, records_sha: null, event: null, review_sha256: null });
+    expect(sent(w)).toEqual([]);
+    const fid = (w.h.store.db.prepare("SELECT id FROM findings WHERE round_id = ? AND outcome = 'ruling'").get(id) as { id: string }).id;
+    ruleFinding(w.h.store, id, fid, 'overturn', LOGIN, null);
+    expect(releaseRound(w.h.store, id, 'post', LOGIN, null)).toMatchObject({ decision: 'post', ledger: 'running' });
   });
 
   it('a dry round is never released, and says why', async () => {

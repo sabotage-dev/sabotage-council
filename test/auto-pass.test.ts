@@ -311,6 +311,30 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     expect(roundsCount(w.h)).toBe(1);
   });
 
+  it('a resumed row reads the PR first: a closed PR skips a row whose post never began, without working it again (P8 round 1 row 3)', async () => {
+    const w = await world();
+    const dead = JSON.stringify({ host: hostname(), pid: deadPid(), token: 'dead' });
+    await w.pass({
+      hooks: {
+        afterLegs: () => {
+          w.h.store.db.prepare('UPDATE ledger SET claim_owner = ?, heartbeat_at = ?').run(dead, new Date().toISOString());
+          throw new Error('the daemon died after the legs');
+        },
+      },
+    });
+    expect(row(w)).toMatchObject({ state: 'running', claim_owner: dead });
+    const roundId = row(w)['round_id'] as number;
+    w.routes[SEARCH] = searchOf();
+    Object.assign(json(w.routes, `GET ${PULL}`), { state: 'closed', merged: false });
+    w.sync();
+    const calls = w.adj.calls;
+    const r = await w.pass();
+    expect(r.candidates.find((c) => c.source === 'resume')).toMatchObject({ action: 'skipped', why: 'the PR closed before its round posted' });
+    expect(w.adj.calls).toBe(calls);
+    expect(getRound(w.h.store.db, roundId)?.status).toBe('superseded');
+    expect(posts(w)).toBe(0);
+  });
+
   it('a draft on resume: a posting row is reconciled first, then its re-post refuses the draft and the row waits (P8 round 1 row 3)', async () => {
     const w = await world();
     const draft = (on: boolean): void => {
@@ -657,6 +681,8 @@ describe('auto pass: queue, round, adjudication, one review (plan 9.4)', { timeo
     unlinkSync(file);
     expect((await w.pass()).outcome).toBe('done');
     expect(row(w)).toMatchObject({ state: 'approved' });
+    // Taking the lock clears the streak.
+    expect(JSON.parse((w.h.store.db.prepare("SELECT value FROM auto_state WHERE key = 'busy'").get() as { value: string }).value)).toEqual({ count: 0, since: null });
   });
 
   it('a pass whose lock was taken over claims nothing more (P8 round 1 row 6)', async () => {
