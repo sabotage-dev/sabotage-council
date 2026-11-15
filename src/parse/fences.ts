@@ -4,6 +4,8 @@ export interface Fence {
   info: string;
   body: string[];
   closed: boolean;
+  /** The index of the first line after the fence: after its closing line, or the line count for an unclosed fence. */
+  end: number;
 }
 
 export interface FenceScan {
@@ -26,13 +28,13 @@ export function scanFences(lines: readonly string[]): FenceScan {
   const fences: Fence[] = [];
   const inFence: boolean[] = [];
   let open: { char: string; len: number; fence: Fence } | null = null;
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     if (open === null) {
       const m = OPEN.exec(line);
       const char = m?.[1]?.[0];
       const info = m?.[2] ?? '';
       if (m?.[1] !== undefined && char !== undefined && !(char === '`' && info.includes('`'))) {
-        const fence: Fence = { info: info.trim(), body: [], closed: false };
+        const fence: Fence = { info: info.trim(), body: [], closed: false, end: lines.length };
         fences.push(fence);
         open = { char, len: m[1].length, fence };
         inFence.push(true);
@@ -45,6 +47,7 @@ export function scanFences(lines: readonly string[]): FenceScan {
     const close = CLOSE.exec(line);
     if (close?.[1] !== undefined && close[1][0] === open.char && close[1].length >= open.len) {
       open.fence.closed = true;
+      open.fence.end = i + 1;
       open = null;
       continue;
     }

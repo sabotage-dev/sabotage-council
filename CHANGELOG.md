@@ -17,8 +17,9 @@ The first release.
 - **Eight seat backends**: codex and claude (headless), grok, cursor and muse (headless), antigravity, kiro and
   opencode (ACP). See [docs/backends/](docs/backends/README.md).
 - **Findings blocks** in the three shapes seats write (the `F1 | HIGH | path:line | title` lines, JSON, YAML), tagged
-  `findings` on the opening fence or, as a live seat wrote it, on the first non-blank line inside an untagged fence;
-  anything looser, or two blocks that differ, goes to the adjudicator.
+  `findings` on the opening fence or, as a live seat wrote it, on the first non-blank line inside an untagged fence
+  that only blank lines and the verdict line follow; anything looser, such a block midway through the answer (it may
+  be quoted), or two blocks that differ, goes to the adjudicator.
 - **Adjudication**: `adjudicate` validates and stores your session's `ADJUDICATION.json`; `adjudicate --headless`
   runs a restricted Claude Code to adjudicate with no user in the loop (what `auto` uses). `adjudicate --check`
   names the stable id each finding must have, even when its `id` is a placeholder the schema rejects, so any `f_` id

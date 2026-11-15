@@ -2,7 +2,7 @@ import { scanFences, type Fence } from './fences.js';
 import { parseLocation } from './location.js';
 import { normalizeSeverity, type Severity, type SeverityFlag } from './severity.js';
 import { oneOf, stripRuns } from './trim.js';
-import { splitLines } from './verdict.js';
+import { parseVerdict, splitLines } from './verdict.js';
 import { parseYamlList, YamlListError, type YamlRecord } from './yaml-list.js';
 
 /** One finding as a leg wrote it in its findings block (plan 3.9). Field names follow the run store. */
@@ -43,11 +43,6 @@ function bounded(value: string, field: string, which: string): string {
 }
 const EMPTY_BLOCK = /^(?:none|\(none\)|n\/a|-|no findings\.?|\[\])$/i;
 
-/** Every fenced block in the reply, with its info string (the scan the verdict parser uses too). */
-function fences(text: string): Fence[] {
-  return scanFences(splitLines(text)).fences;
-}
-
 /** A line of only spaces and tabs (CommonMark's blank line: U+00A0 and the other Unicode spaces are text). */
 const BLANK = /^[ \t]*$/;
 /** The tag written on the line after an untagged opening fence: exactly `findings`, any case, spaces and tabs around. */
@@ -58,32 +53,55 @@ const TAG_LINE = /^[ \t]*findings[ \t]*$/i;
  * (the info string's first word), or an untagged fence whose first non-blank line is exactly `findings` (seen live:
  * a seat wrote the fence, then the tag on its own line); that tag line and the blank lines before it are not body.
  * Nothing looser is a block: the word on the first line of a fence tagged otherwise, a first line holding more than
- * the word, or the word after any other line.
+ * the word, or the word after any other line. `nextLine` marks the second shape, which stands as the findings only at
+ * the reply's end (`onlyVerdictAfter`).
  */
-function findingsBody(f: Fence): string[] | null {
-  if ((f.info.split(/\s+/)[0] ?? '').toLowerCase() === 'findings') return f.body;
+function findingsBody(f: Fence): { body: string[]; nextLine: boolean } | null {
+  if ((f.info.split(/\s+/)[0] ?? '').toLowerCase() === 'findings') return { body: f.body, nextLine: false };
   if (f.info !== '') return null;
   const first = f.body.findIndex((line) => !BLANK.test(line));
   if (first === -1 || !TAG_LINE.test(f.body[first] ?? '')) return null;
-  return f.body.slice(first + 1);
+  return { body: f.body.slice(first + 1), nextLine: true };
+}
+
+/**
+ * True when the lines after a fence hold nothing but blank lines and, at most, one verdict line (plan 3.2's grammar,
+ * a split verdict included): the fence is the last thing the leg wrote before its verdict, as in the live reply.
+ */
+function onlyVerdictAfter(tail: readonly string[]): boolean {
+  if (tail.every((line) => BLANK.test(line))) return true;
+  const { matches } = parseVerdict(tail.join('\n'));
+  const m = matches[0];
+  // Every other line is blank or the verdict's own (a second verdict line is neither).
+  if (m === undefined) return false;
+  return tail.every((line, i) => BLANK.test(line) || i + 1 === m.line || i + 1 === m.endLine);
 }
 
 /**
  * Parses the leg's fenced `findings` block (plan 3.9). Three shapes are accepted, all seen from real seats:
  * the line grammar `F1 | HIGH | path:line | title`, a JSON array of objects, and a YAML list of the same objects
  * (id, severity, path or file, line, title). The tag is the fence's info string, or the first non-blank line of an
- * untagged fence when that line is exactly `findings` (findingsBody). A missing or broken block never throws: it
- * returns `{findings: [], extracted_by: 'adjudicator-needed'}` with the reason, so the adjudicator extracts the
- * findings. Several `findings` blocks are accepted only when they all parse to the same findings: a block the leg
- * quoted (from the PR, a test, an earlier review) must never stand in for its own, so blocks that differ go to the
- * adjudicator, never "take the last".
+ * untagged fence when that line is exactly `findings` (findingsBody). That second shape stands as the findings only
+ * when nothing but blank lines and the verdict line follow its fence: one midway through the answer may be a block the
+ * leg quoted, so with no other block the leg goes to the adjudicator (council round 1 of PR #13). A missing or broken
+ * block never throws: it returns `{findings: [], extracted_by: 'adjudicator-needed'}` with the reason, so the
+ * adjudicator extracts the findings. Several `findings` blocks are accepted only when they all parse to the same
+ * findings: a block the leg quoted (from the PR, a test, an earlier review) must never stand in for its own, so blocks
+ * that differ go to the adjudicator, never "take the last".
  */
 export function parseFindings(text: string): FindingsResult {
-  const blocks = fences(text).flatMap((f) => {
-    const body = findingsBody(f);
-    return body === null ? [] : [{ body, closed: f.closed }];
+  const lines = splitLines(text);
+  const blocks = scanFences(lines).fences.flatMap((f) => {
+    const found = findingsBody(f);
+    return found === null ? [] : [{ body: found.body, closed: f.closed, own: !found.nextLine || onlyVerdictAfter(lines.slice(f.end)) }];
   });
   if (blocks.length === 0) return needed('no fenced findings block');
+  // A next-line block midway never stands as the findings; beside another block it is still held to agree with it.
+  if (!blocks.some((b) => b.own)) {
+    return needed(
+      'an untagged fence with "findings" on its first line counts only when nothing but blank lines and the verdict line follow it; one midway through the answer may be a block the leg quoted',
+    );
+  }
   if (blocks.some((b) => !b.closed)) return needed('the findings block is not closed');
   const results = blocks.map((b) => parseOne(b.body.join('\n')));
   const first = results[0] as FindingsResult;
