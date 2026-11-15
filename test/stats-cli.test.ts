@@ -199,7 +199,7 @@ describe('stats reads the store read-only', () => {
     const r = await run(['stats', '--db', db, '--config', join(dir, 'none.toml')]);
     expect(r.code).toBe(1);
     expect(r.lines).toEqual([
-      `error: the run store at ${db} is at schema version 3; this build reads version ${latest}, and this command never writes the store: run \`sabotage-council doctor --db ${db}\` once to upgrade it (doctor applies the pending migrations), then run this again`,
+      `error: the run store at ${db} is at schema version 3; this build reads version ${latest}, and this command never migrates the store: run \`sabotage-council doctor --db ${db}\` once to upgrade it (doctor applies the pending migrations), then run this again`,
     ]);
     expect(readFileSync(db).equals(before)).toBe(true);
     expect(readdirSync(join(dir, 'data')).sort()).toEqual(afterRead(files));

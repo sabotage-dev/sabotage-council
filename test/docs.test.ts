@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import type { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
+import { buildProgram } from '../src/cli/program.js';
 import { parseConfigText } from '../src/config/index.js';
 
 /*
@@ -125,5 +127,26 @@ describe('docs', () => {
     const two = '\n[[seats]]\nid = "b"\nbackend = "claude"\nmodel = "claude-sonnet-5-5"\neffort = "high"\n\n[[seats]]\nid = "c"\nbackend = "grok"\nmodel = "grok-4.7"\neffort = "high"\nsandbox = "off"\n';
     const r = await parseConfigText(reference! + two);
     expect(r.ok ? [] : r.errors).toEqual([]);
+  });
+
+  it('says which commands take --config, --db and --roots as the CLI declares them', () => {
+    const program = buildProgram({ write: () => undefined, env: {}, setExitCode: () => undefined });
+    const leaves: Array<{ name: string; options: string[] }> = [];
+    const walk = (cmd: Command, path: string[]): void => {
+      if (cmd.commands.length === 0) leaves.push({ name: path.join(' '), options: cmd.options.map((o) => o.long ?? o.flags) });
+      for (const sub of cmd.commands) walk(sub, [...path, sub.name()]);
+    };
+    for (const cmd of program.commands) walk(cmd, [cmd.name()]);
+    expect(leaves.length).toBeGreaterThan(20);
+    for (const l of leaves) expect(l.options, l.name).toEqual(expect.arrayContaining(['--config', '--db']));
+    const withoutRoots = leaves.filter((l) => !l.options.includes('--roots'));
+    expect(withoutRoots.map((l) => l.name).sort()).toEqual(['doctor', 'stats']);
+    const list = (xs: string[]): string => (xs.length === 1 ? xs[0]! : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)!}`);
+    const code = (xs: string[]): string[] => xs.map((x) => `\`${x}\``);
+    const optionsOf = (name: string): string => list(code(withoutRoots.find((l) => l.name === name)!.options));
+    const others = [...new Set(leaves.filter((l) => l.options.includes('--roots')).map((l) => l.name.split(' ')[0]!))];
+    const readme = read('README.md').replace(/\s+/g, ' ');
+    expect(readme).toContain(`\`doctor\` takes ${optionsOf('doctor')}, and \`stats\` takes ${optionsOf('stats')}.`);
+    expect(readme).toContain(`Every other command (${list(code(others))}) takes \`--config\`, \`--db\` and \`--roots\``);
   });
 });

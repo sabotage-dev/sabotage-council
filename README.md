@@ -174,8 +174,9 @@ sabotage-council seats test codex:gpt-6.1-sol:high                     # ONE pai
 sabotage-council seats swap c --backend antigravity --model gemini-3.8-flash --effort high --dry-run
 ```
 
-`stats` never changes anything, and nothing ever swaps a seat by itself. [Migration](docs/migration.md) explains why
-a swap starts the seat's evidence over.
+`stats` and `seats list` never change the run store's contents or schema (on Node 22.13 and 22.14 SQLite leaves its
+`-wal` and `-shm` files beside a closed store), and nothing ever swaps a seat by itself. [Migration](docs/migration.md)
+explains why a swap starts the seat's evidence over.
 
 ## Status: 0.1.0, what is measured and what is not
 
@@ -273,7 +274,9 @@ fallback. It warns when two seats share a model family, or a seat shares the adj
 
 ## Reference
 
-Every command takes `--config`, `--db` and `--roots`. The store defaults to
+`doctor` takes `--config`, `--db` and `--deep`, and `stats` takes `--config`, `--db`, `--since`, `--seat`,
+`--occupant`, `--json` and `--html`. Every other command (`round`, `adjudicate`, `post`, `credit`, `auto`, `ruling`
+and `seats`) takes `--config`, `--db` and `--roots`, beside its own options. The store defaults to
 `~/.local/share/sabotage-council/council.db` (or `SABOTAGE_COUNCIL_DB`), with round dirs in `rounds/<id>/` beside
 it; roots are built under `~/.cache/sabotage-council/roots/` (or `SABOTAGE_COUNCIL_ROOTS`) as
 `<store tag>-<round id>-a<attempt>` and deleted, by that name only, once the round is adjudicated. A round dir's
@@ -468,12 +471,13 @@ sabotage-council seats add <seat> --backend X --model Y [--effort E] [--dry-run]
 sabotage-council seats remove <seat> [--dry-run]
 ```
 
-`stats` reads the run store and changes nothing: it opens the store read-only and never migrates it. A store whose
-schema is behind this build is refused with the command that upgrades it (`sabotage-council doctor --db <path>`), and
-one written by a newer build is refused too. It scores every seat and every occupant (a backend, model and effort)
-over a window: all history by default; `--since` takes `30d`, `12h`, `2w`, `90m`, a UTC date or an ISO timestamp.
-`--seat` and `--occupant` choose which rows are shown; every metric still reads every seat's legs. With no store or an
-empty window it says so and exits 0.
+`stats` reads the run store and never changes its contents or schema: it opens the store read-only and never migrates
+it (on Node 22.13 and 22.14 SQLite leaves its `-wal` and `-shm` files beside a closed store; see `seats list` below).
+A store whose schema is behind this build is refused with the command that upgrades it
+(`sabotage-council doctor --db <path>`), and one written by a newer build is refused too. It scores every seat and
+every occupant (a backend, model and effort) over a window: all history by default; `--since` takes `30d`, `12h`,
+`2w`, `90m`, a UTC date or an ISO timestamp. `--seat` and `--occupant` choose which rows are shown; every metric still
+reads every seat's legs. With no store or an empty window it says so and exits 0.
 
 Which rounds count:
 

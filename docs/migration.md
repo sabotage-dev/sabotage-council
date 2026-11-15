@@ -14,7 +14,7 @@ its schema version. A new release may add migrations (the numbered SQL files in 
   store read-only and never migrate it. A store at an older schema is refused with the command that upgrades it:
 
   ```text
-  error: the run store at <path> is at schema version 3; this build reads version 5, and this command never writes the store: run `sabotage-council doctor --db <path>` once to upgrade it (doctor applies the pending migrations), then run this again
+  error: the run store at <path> is at schema version 3; this build reads version 5, and this command never migrates the store: run `sabotage-council doctor --db <path>` once to upgrade it (doctor applies the pending migrations), then run this again
   ```
 
 - **No downgrade.** Migrations only go forward. An older build refuses a store that a newer build migrated ("the
