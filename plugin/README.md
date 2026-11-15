@@ -12,6 +12,7 @@ Runs a sabotage-council review round from Claude Code and adjudicates it in your
 - The `sabotage-council` skill holds the procedure; `ADJUDICATE.md` holds the adjudication rules, shared with the
   headless adjudicator.
 
-The plugin calls the `sabotage-council` engine on your PATH (the npm package in this repository) and holds no
-engine logic. Install the plugin with `/plugin marketplace add sabotage-dev/sabotage-council`, then
-`/plugin install sabotage-council@sabotage-council`. MIT, copyright Sabotage Development LLC.
+The plugin calls the `sabotage-council` engine on your PATH (the npm package in this repository; install it with
+`npm install -g sabotage-council@0.1.0`) and holds no engine logic. Install the plugin with
+`/plugin marketplace add sabotage-dev/sabotage-council`, then `/plugin install sabotage-council@sabotage-council`.
+MIT, copyright Sabotage Development LLC.

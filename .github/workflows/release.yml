@@ -1,0 +1,76 @@
+name: Release
+
+# Publishes the npm package when a version tag (v0.1.0, ...) is pushed, and at no other time. The owner's one-time
+# setup (the trusted publisher on npmjs.com, the first release) is in docs/releasing.md.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # npm trusted publishing (OIDC) and the provenance statement both need the job's ID token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Trusted publishing needs Node 22.14.0 or later and npm 11.5.1 or later; Node 24 bundles npm 11.
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Check the tag, the package and the plugin agree
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const plugin = JSON.parse(fs.readFileSync("plugin/.claude-plugin/plugin.json", "utf8"));
+            const skill = fs.readFileSync("plugin/skills/sabotage-council/SKILL.md", "utf8");
+            const problems = [];
+            if (process.env.TAG !== `v${pkg.version}`) problems.push(`tag ${process.env.TAG} is not v${pkg.version} (package.json)`);
+            if (pkg.private) problems.push("package.json is private");
+            if (plugin.version !== pkg.version) problems.push(`plugin.json is ${plugin.version}, package.json is ${pkg.version}`);
+            if (!skill.includes(`sabotage-council@${pkg.version}`)) problems.push(`the skill does not pin sabotage-council@${pkg.version}`);
+            for (const p of problems) console.error(p);
+            process.exit(problems.length > 0 ? 1 : 0);
+          '
+      - name: Check npm can publish with trusted publishing
+        run: |
+          node -e '
+            const v = require("node:child_process").execSync("npm --version", { encoding: "utf8" }).trim();
+            const [a, b, c] = v.split(".").map(Number);
+            const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
+            console.log(`npm ${v}`);
+            if (!ok) { console.error("trusted publishing needs npm 11.5.1 or later"); process.exit(1); }
+          '
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: node dist/cli/index.js --version
+      - name: Publish with provenance
+        # Trusted publishing: npm exchanges the job's OIDC token for a short-lived publish token, and attaches a
+        # provenance statement (publishConfig.provenance in package.json). NPM_BOOTSTRAP_TOKEN exists only for the
+        # first release, before npm lets a trusted publisher be attached to the package (docs/releasing.md); the
+        # owner deletes it afterwards, and npm tries OIDC first either way.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: npm publish
