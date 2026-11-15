@@ -1572,13 +1572,17 @@ evidence rows behind the flag. It never swaps a seat by itself.
   the evidence over, and the reasons (and the JSON's `occupant`) name the occupant and the round it took the seat.
   The seat's fallback legs in those rounds count, as they do on the seat card; changing only the fallback starts
   nothing over. The seat cards themselves still cover the whole window, every occupant included.
-- **Two branches, each with its own N.** The ratified-rate branch needs N rounds seated: a seat that fails every
-  attempt over N rounds is flagged, its failures the evidence. The precision branch needs N adjudicated rounds it
-  ratified in (a round with no adjudication has no outcome, so it is no evidence that the seat found nothing). Both
-  need unique owed 0.
-- **Precision n/a is inconclusive,** never "at or above P": the reason says nothing it raised was adopted or refuted,
-  with the rounds, the findings raised and the blocking findings lost without it. Such a seat is not flagged on
-  precision; whether it should be is the owner's call, and this rule stands until then.
+- **Three branches, each with its own N.** The ratified-rate branch needs N rounds seated: a seat that fails every
+  attempt over N rounds is flagged, its failures the evidence. The precision branch and the silent branch need N
+  adjudicated rounds it ratified in (a round with no adjudication has no outcome, so it is no evidence that the seat
+  found nothing). All three need unique owed 0.
+- **A silent seat is a swap candidate (the owner ruled it, 2026-11-14).** Precision n/a (nothing it raised was
+  adopted or refuted) is never "at or above P". Over N adjudicated rounds it ratified in, a seat with precision n/a,
+  0 unique owed and `drop_one.blocking_lost` 0 is flagged, with the reason "raised nothing adopted or refuted over K
+  adjudicated rounds, and dropping it loses no blocking finding" and its evidence rows. A silent seat that alone
+  raised a blocking finding (a ruling not yet ruled on, the only blocking finding that leaves precision n/a) is not
+  flagged; the reason names the blocking findings dropping it would lose. Until this ruling such a seat was reported
+  as inconclusive and never flagged.
 
 The evidence is every round of the tenure the seat sat in (with its verdict, or why it did not ratify) and every
 finding it raised in the adjudicated ones (outcome, severity, unique or not).

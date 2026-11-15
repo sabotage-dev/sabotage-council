@@ -270,13 +270,15 @@ export function recommendFor(data: StatsData, seat: string, t: Thresholds, curre
 }
 
 /**
- * Plan 8.3, two branches, judged on the seat's current occupant (its tenure, `card` computed over those rounds). A seat
- * is a swap candidate when its unique owed count is 0 and either
+ * Plan 8.3, three branches, judged on the seat's current occupant (its tenure, `card` computed over those rounds). A
+ * seat is a swap candidate when its unique owed count is 0 and either
  * - its ratified rate is below R over at least N rounds seated (a seat that fails every attempt is flagged, its
  *   failures the evidence), or
- * - its precision is below P over at least N adjudicated rounds it ratified in.
- * A precision of null (nothing adopted or refuted) is not below P: it is reported as inconclusive, and whether such a
- * seat should be flagged is the owner's call. The flag never swaps anything.
+ * - its precision is below P over at least N adjudicated rounds it ratified in, or
+ * - it is silent over at least N adjudicated rounds it ratified in: a precision of null (nothing it raised was
+ *   adopted or refuted) and no blocking finding lost without it (`drop_one.blocking_lost` 0). The owner ruled this
+ *   branch on 2026-11-14. A silent seat that alone raised a blocking finding (a held ruling, say) is not flagged.
+ * A precision of null is never "below P". The flag never swaps anything.
  */
 export function recommend(card: Card, t: Thresholds, tenure: Tenure | null, seat: string): Recommendation {
   const n = t.min_ratified_rounds;
@@ -286,6 +288,7 @@ export function recommend(card: Card, t: Thresholds, tenure: Tenure | null, seat
   const precisionEligible = adjudicated >= n;
   const lowPrecision = precisionEligible && card.findings.precision !== null && card.findings.precision < t.precision_below;
   const lowRatified = rateEligible && card.ratified_rate !== null && card.ratified_rate < t.ratified_rate_below;
+  const silent = precisionEligible && card.findings.precision === null && card.drop_one.blocking_lost === 0;
   const reasons: string[] = [];
   if (tenure !== null) {
     reasons.push(
@@ -298,13 +301,17 @@ export function recommend(card: Card, t: Thresholds, tenure: Tenure | null, seat
     reasons.push(`${seated} round(s) seated and ${adjudicated} adjudicated round(s) ratified under it, below the ${n} the flag needs`);
     return { seat, swap_candidate: false, eligible: false, occupant: tenure, reasons, evidence: null };
   }
-  const flagged = card.unique.owed === 0 && (lowPrecision || lowRatified);
+  const flagged = card.unique.owed === 0 && (lowPrecision || lowRatified || silent);
   if (flagged) reasons.push(`0 unique owed over ${seated} round(s) seated (${adjudicated} adjudicated and ratified)`);
   if (card.unique.owed > 0) reasons.push(`${card.unique.owed} unique owed finding(s): it found what no other seat did`);
   if (!precisionEligible) reasons.push(`precision not judged: ${adjudicated} adjudicated round(s) ratified, below the ${n} that branch needs`);
-  else if (card.findings.precision === null) {
+  else if (silent) {
     reasons.push(
-      `precision inconclusive: nothing it raised was adopted or refuted over ${adjudicated} adjudicated round(s) ratified (${card.findings.raised} finding(s) raised, ${card.drop_one.blocking_lost} blocking lost without it)`,
+      `raised nothing adopted or refuted over ${adjudicated} adjudicated round${adjudicated === 1 ? '' : 's'}, and dropping it loses no blocking finding`,
+    );
+  } else if (card.findings.precision === null) {
+    reasons.push(
+      `precision n/a: nothing it raised was adopted or refuted over ${adjudicated} adjudicated round(s) ratified, but dropping it loses ${card.drop_one.blocking_lost} blocking finding(s) it alone raised (a ruling not yet ruled on), so it is not silent`,
     );
   } else reasons.push(`precision ${pct(card.findings.precision)} is ${lowPrecision ? 'below' : 'at or above'} ${pct(t.precision_below)}`);
   reasons.push(

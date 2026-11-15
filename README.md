@@ -516,13 +516,15 @@ The metrics (plan 8.2), as built:
 A seat is a **swap candidate** (plan 8.3) when its unique owed count is 0 and either its ratified rate is below
 `swap_ratified_rate_below` over at least `swap_min_ratified_rounds` rounds seated (a seat that fails every attempt is
 flagged, its failures the evidence), or its precision is below `swap_precision_below` over at least that many
-adjudicated rounds it ratified in. The flag judges the seat's **current occupant**: the config's, else the one the
-latest round seated, over the rounds since it took the seat (from the first round whose roster snapshot seats it
-there after a different one). So a swap starts the evidence over, and the reasons name the occupant. The seat's
-fallback legs in those rounds count; changing only the fallback starts nothing over. A precision of n/a (nothing
-adopted or refuted) is reported as inconclusive, with the rounds, the findings raised and the blocking findings lost,
-and is not flagged (that is the owner's call). Every flag lists the rounds and findings behind it. Nothing ever swaps
-a seat by itself.
+adjudicated rounds it ratified in, or it is **silent** over at least that many adjudicated rounds it ratified in:
+nothing it raised was adopted or refuted (precision n/a) and dropping it loses no blocking finding. The reason then
+reads "raised nothing adopted or refuted over K adjudicated rounds, and dropping it loses no blocking finding" (the
+owner ruled this branch on 2026-11-14). A silent seat that alone raised a blocking finding (a ruling not yet ruled
+on) is not flagged. The flag judges the seat's **current occupant**: the config's, else the one the latest round
+seated, over the rounds since it took the seat (from the first round whose roster snapshot seats it there after a
+different one). So a swap starts the evidence over, and the reasons name the occupant. The seat's fallback legs in
+those rounds count; changing only the fallback starts nothing over. Every flag lists the rounds and findings behind
+it. Nothing ever swaps a seat by itself.
 
 `--json` prints the report with `"schema": "sabotage-council.stats"` and `"version": 1`. Top-level keys: `schema`,
 `version`, `generated_at`, `window` (`since`, `first_round_at`, `last_round_at`, `rounds` counts, `adjudicator_usd`),

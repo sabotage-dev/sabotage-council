@@ -24,10 +24,12 @@ The first release.
   names the stable id each finding must have, even when its `id` is a placeholder the schema rejects, so any `f_` id
   can be a placeholder.
 - **The scorecard**: `stats` (per seat and per occupant, with swap candidates, as text, JSON or one HTML file) and the
-  `seats` commands (`list`, `test` on a built-in planted-defect fixture, `swap`, `add`, `remove`). `stats` and
-  `seats list` read the store read-only and create nothing beside a closed store: the Node floor is 22.15 (raised
-  from 22.13 before this release), whose SQLite opens a closed store immutable, and a closed store it cannot open
-  that way is refused with the reason.
+  `seats` commands (`list`, `test` on a built-in planted-defect fixture, `swap`, `add`, `remove`). A seat is a swap
+  candidate on a low ratified rate, a low precision, or silence: nothing it raised adopted or refuted over N
+  adjudicated rounds, with no blocking finding lost without it (a seat that alone raised a ruling still pending is
+  not silent). `stats` and `seats list` read the store read-only and create nothing beside a closed store: the Node
+  floor is 22.15 (raised from 22.13 before this release), whose SQLite opens a closed store immutable, and a closed
+  store it cannot open that way is refused with the reason.
 - **The Claude Code plugin** in `plugin/`: `/sabotage-council:council plan | diff | pr | status | doctor | stats |
   seats`, the skill, and the adjudication spec `ADJUDICATE.md` the headless adjudicator shares.
 - `doctor` and `doctor --deep`: every seat's preflight with no model call, and a canary root of planted agent

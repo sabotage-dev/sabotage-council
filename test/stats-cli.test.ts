@@ -50,7 +50,7 @@ describe('stats CLI', () => {
     expect(r.lines[0]).toBe('sabotage-council stats: all history (rounds from 2026-11-01 to 2026-11-01)');
     expect(r.text).toContain('rounds: 2 council (2 settled, 2 adjudicated, 0 failed, 0 awaiting adjudication, 0 still running, 0 dry run), 0 identity');
     expect(r.text).toContain(
-      "swap candidate (judged on each seat's current occupant since it took the seat): 0 unique owed, and ratified rate < 80% over >= 2 rounds seated, or precision < 50% over >= 2 adjudicated rounds ratified (config [stats])",
+      "swap candidate (judged on each seat's current occupant since it took the seat): 0 unique owed, and ratified rate < 80% over >= 2 rounds seated, or precision < 50% over >= 2 adjudicated rounds ratified, or silent (nothing adopted or refuted, no blocking finding lost without it) over >= 2 adjudicated rounds ratified (config [stats])",
     );
     expect(r.text).toContain(`    - judged on its current occupant ${OCC.c} (the config), in the seat since round #1 (2026-11-01)`);
     expect(r.text).toContain('seat c  (occupants #3)');
@@ -125,7 +125,8 @@ describe('stats CLI', () => {
     const w = statsStore();
     const c = join(w.dir, 'config.toml');
     writeFileSync(c, `${SEATS}\n[stats]\nswap_min_ratified_rounds = 1\n`);
-    w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title: 'line one\nseat a: SWAP CANDIDATE\u001b[2J\u0007' }] });
+    // a and b share an adopted follow-up, so neither is a silent seat: the only real flag line is c's.
+    w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title: 'line one\nseat a: SWAP CANDIDATE\u001b[2J\u0007' }, { outcome: 'follow-up', by: ['a', 'b'] }] });
     // Bidi controls reorder what a terminal shows; zero-width characters hide text; C1 and the line separators too.
     w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title: 'evil\u202egnp.exe\u2066x\u2069 zero\u200bwidth\ufeff\u200f end\u2028\u2029\u009b', path: 'src/\u202ex.ts' }] });
     w.close();
