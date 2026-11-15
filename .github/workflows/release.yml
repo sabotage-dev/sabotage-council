@@ -1,7 +1,8 @@
 name: Release
 
-# Publishes the npm package when a version tag (v0.1.0, ...) is pushed, and at no other time. The owner's one-time
-# setup (the trusted publisher on npmjs.com, the first release) is in docs/releasing.md.
+# Publishes the npm package when a version tag (v0.1.0, ...) on main is pushed, and at no other time. The owner's
+# one-time setup (the release environment, the trusted publisher on npmjs.com, the first release) is in
+# docs/releasing.md.
 
 on:
   push:
@@ -20,6 +21,9 @@ jobs:
     name: Publish to npm
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The environment's deployment rule admits only v* tags, and it holds the one-time bootstrap secret, so no
+    # other ref can reach that secret (docs/releasing.md).
+    environment: release
     permissions:
       contents: read
       # npm trusted publishing (OIDC) and the provenance statement both need the job's ID token.
@@ -28,6 +32,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Every branch's history, so the next step can tell whether the tagged commit is on main.
+          fetch-depth: 0
+      - name: Check the tagged commit is on main
+        run: |
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null; then
+            echo "origin/main was not fetched, so the tag cannot be checked against main"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "tag ${GITHUB_REF_NAME} points at $(git rev-parse HEAD), which is not on main: only a commit merged to main is released"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} points at $(git rev-parse HEAD), on main"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Trusted publishing needs Node 22.14.0 or later and npm 11.5.1 or later; Node 24 bundles npm 11.
@@ -66,11 +83,47 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node dist/cli/index.js --version
-      - name: Publish with provenance
-        # Trusted publishing: npm exchanges the job's OIDC token for a short-lived publish token, and attaches a
-        # provenance statement (publishConfig.provenance in package.json). NPM_BOOTSTRAP_TOKEN exists only for the
-        # first release, before npm lets a trusted publisher be attached to the package (docs/releasing.md); the
-        # owner deletes it afterwards, and npm tries OIDC first either way.
+      - name: Pack the package, install the tarball in an empty HOME, and run it
+        # The tarball installed and run here is the one the next step publishes.
+        run: |
+          work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/sabotage-council-release.XXXXXX")"
+          mkdir -p "$work/pack" "$work/prefix" "$work/home" "$work/xdg/config" "$work/xdg/data" "$work/xdg/cache" "$work/xdg/state" "$work/cwd"
+          npm pack --pack-destination "$work/pack"
+          set -- "$work"/pack/*.tgz
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then echo "npm pack did not make exactly one tarball"; exit 1; fi
+          tarball="$1"
+          nodebin="$(dirname "$(command -v node)")"
+          clean() {
+            (cd "$work/cwd" && env -i PATH="$work/prefix/bin:$nodebin:/usr/bin:/bin" HOME="$work/home" \
+              XDG_CONFIG_HOME="$work/xdg/config" XDG_DATA_HOME="$work/xdg/data" XDG_CACHE_HOME="$work/xdg/cache" \
+              XDG_STATE_HOME="$work/xdg/state" npm_config_prefix="$work/prefix" "$@")
+          }
+          clean npm install --global --no-audit --no-fund "$tarball"
+          want="$(node -p 'require("./package.json").version')"
+          got="$(clean sabotage-council --version)"
+          if [ "$got" != "$want" ]; then echo "the installed package says $got; package.json says $want"; exit 1; fi
+          # With no config in the empty HOME, doctor reports the missing config and exits 1, and it still creates the
+          # run store, which applies the packed migrations.
+          code=0
+          out="$(clean sabotage-council doctor 2>&1)" || code=$?
+          printf '%s\n' "$out"
+          if [ "$code" -ne 1 ]; then echo "doctor exited $code with no config; expected 1"; exit 1; fi
+          grep -q '^fail  config .* has 1 error' <<< "$out" || { echo "doctor did not report the missing config"; exit 1; }
+          grep -q '^ok    store .* at schema version [0-9]*, applied migration' <<< "$out" || { echo "doctor did not create the run store"; exit 1; }
+          echo "TARBALL=$tarball" >> "$GITHUB_ENV"
+      - name: Publish the tarball that ran, with provenance
+        # Trusted publishing: npm "automatically detects OIDC environments and uses them for authentication before
+        # falling back to traditional tokens" (docs.npmjs.com/trusted-publishers), exchanging the job's ID token for a
+        # short-lived publish token, and attaches a provenance statement (publishConfig.provenance in package.json).
+        # NPM_BOOTSTRAP_TOKEN exists only for the first release, before npm lets a trusted publisher be attached to
+        # the package (docs/releasing.md). Once that secret is deleted this step sets no token at all, and OIDC is the
+        # only way it can publish. A prerelease version (one with a "-") goes to the next dist-tag, never latest.
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
-        run: npm publish
+          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: |
+          if [ -n "${NPM_BOOTSTRAP_TOKEN}" ]; then export NODE_AUTH_TOKEN="${NPM_BOOTSTRAP_TOKEN}"; fi
+          unset NPM_BOOTSTRAP_TOKEN
+          case "$(node -p 'require("./package.json").version')" in
+            *-*) npm publish "$TARBALL" --tag next ;;
+            *) npm publish "$TARBALL" ;;
+          esac
