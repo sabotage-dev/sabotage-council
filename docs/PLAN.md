@@ -1563,8 +1563,10 @@ parsed strings are exact and the printed bytes hold none of them.
 ### 8.3 Recommendations
 
 The report flags a seat **"swap candidate"** when, over at least 20 ratified rounds (configurable), its unique
-owed count is 0 and either its precision is below 50% or its ratified rate is below 80%. It always shows the
-evidence rows behind the flag. It never swaps a seat by itself.
+owed count is 0 and either its precision is below 50%, or its ratified rate is below 80%, or it is silent: precision
+n/a (nothing it raised was adopted or refuted) and no blocking finding lost without it (the silent branch is the
+owner's ruling of 2026-11-14, below). It always shows the evidence rows behind the flag. It never swaps a seat by
+itself.
 
 **As built (P9, with council round 1 of PR #11).** N, P and R are `[stats] swap_min_ratified_rounds`,
 `swap_precision_below` and `swap_ratified_rate_below` (5.2).

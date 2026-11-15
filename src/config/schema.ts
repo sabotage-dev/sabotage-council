@@ -138,10 +138,12 @@ export const notifySchema = z.strictObject({
 const fraction = z.number().min(0, { error: 'must be from 0 to 1' }).max(1, { error: 'must be from 0 to 1' });
 
 /**
- * The scorecard's swap-candidate rule (plan 8.3, P9): a seat is flagged when, over at least
- * `swap_min_ratified_rounds` adjudicated rounds in which it ratified, its unique owed count is 0 and either its
- * precision is below `swap_precision_below` or its ratified rate is below `swap_ratified_rate_below`. The flag only
- * informs: nothing ever swaps a seat by itself.
+ * The scorecard's swap-candidate rule (plan 8.3, P9): a seat is flagged when its unique owed count is 0 and either its
+ * ratified rate is below `swap_ratified_rate_below` over at least `swap_min_ratified_rounds` rounds seated, or its
+ * precision is below `swap_precision_below` over at least that many adjudicated rounds it ratified in, or it is
+ * silent over at least that many adjudicated rounds it ratified in: precision n/a (nothing it raised was adopted or
+ * refuted) and no blocking finding lost without it (owner ruling, 2026-11-14). The flag only informs: nothing ever
+ * swaps a seat by itself.
  */
 export const statsSchema = z.strictObject({
   swap_min_ratified_rounds: positiveInt.default(20),
