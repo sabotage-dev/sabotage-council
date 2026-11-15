@@ -46,6 +46,10 @@ The plugin holds no engine logic: it calls the `sabotage-council` command you in
 each [backend page](docs/backends/README.md) says how to install, sign in and choose a model, and what it can and
 cannot enforce.
 
+A grok seat fails if its grok home's config starts any MCP server (`doctor` refuses it in step 3). If your own grok
+config starts one, either give the seat an `auth_home`, its own grok home (a directory you log in to once with
+`GROK_HOME=<dir> grok login`, holding no MCP config; set it on the commented line in step 2), or choose another seat.
+
 **2. Write the config** at `~/.config/sabotage-council/config.toml`. This never overwrites a config you already
 have: if the file exists, the shell refuses (`noclobber`) and nothing is written, so back up or move your config
 first, or add these seats to it by hand.
@@ -71,6 +75,7 @@ backend = "grok"
 model = "grok-4.7"
 effort = "high"
 sandbox = "off"   # grok's read-only sandbox does not start on a Mac with Docker Desktop
+# auth_home = "/abs/path/grok-home"   # its own grok home, when your grok config starts an MCP server (step 1)
 EOF
 ```
 
@@ -84,10 +89,10 @@ sabotage-council doctor
 ```
 
 It loads the config, creates the run store, and preflights every seat: binary, version, sign-in, model, and the
-isolation each backend can prove. Each seat line ends with its enforcement label. A `fail` line names what to fix; a
-`warn` line (for example grok's sandbox being off) is information. `round start` also runs the config-wide checks
-`doctor` skips: every model id against its adapter's list (an error), and two seats in one model family or a seat in
-the adjudicator's family (a `warn` line).
+isolation each backend can prove. Each seat line ends with its enforcement label. A `fail` line names what to fix (a
+grok seat whose grok home starts an MCP server is one; see step 1); a `warn` line (for example grok's sandbox being
+off) is information. `round start` also runs the config-wide checks `doctor` skips: every model id against its
+adapter's list (an error), and two seats in one model family or a seat in the adjudicator's family (a `warn` line).
 
 **4. Start a round** from a git repository that holds your plan (a Markdown file; it may be uncommitted):
 

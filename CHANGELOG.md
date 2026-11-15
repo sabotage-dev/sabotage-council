@@ -46,6 +46,9 @@ The first release.
 - `codex` seats accept only 0.167.0; a newer codex is refused until a release declares its tool list.
 - A grok fallback cannot set `sandbox = "off"`, so on a Mac whose Docker Desktop socket is a symlink it fails
   preflight.
+- A grok seat fails if its grok home's config starts any MCP server (preflight refuses it). If your own grok config
+  starts one, give the seat an `auth_home` (its own grok home, logged in once with `GROK_HOME=<dir> grok login`,
+  holding no MCP config) or choose another seat; the README quickstart says so at step 1.
 - On Node 22.13 and 22.14, `stats` and `seats list` leave SQLite's `-wal` and `-shm` files beside a closed store
   (its contents unchanged); Node 22.15 and later create nothing.
 - Not built: the plan's `doctor --seat`, the `auto` warning for seats below `strong`, the once-a-day usage-limit

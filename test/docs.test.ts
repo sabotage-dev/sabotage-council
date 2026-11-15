@@ -126,6 +126,14 @@ describe('docs', () => {
     expect(quick).toBeDefined();
     const q = await parseConfigText(quick!);
     expect(q.ok ? [] : q.errors).toEqual([]);
+    // Three families, the grok seat kept; step 1's route for a grok config that starts an MCP server is the seat's own
+    // grok home on the commented auth_home line, which loads once it names an existing directory.
+    expect(q.ok ? q.config.seats.map((s) => s.backend) : []).toEqual(['codex', 'claude', 'grok']);
+    const commented = /^# auth_home = "\/abs\/path\/grok-home"/m;
+    expect(quick).toMatch(commented);
+    const grokHome = scratch('sc-docs-grok-home-');
+    const withHome = await parseConfigText(quick!.replace(commented, `auth_home = ${JSON.stringify(grokHome)}`));
+    expect(withHome.ok ? withHome.config.seats[2]?.auth_home : withHome.errors).toBe(grokHome);
     const reference = /```toml\n([\s\S]*?)```/.exec(readme.slice(readme.indexOf('## Configuration')))?.[1];
     expect(reference).toBeDefined();
     const two = '\n[[seats]]\nid = "b"\nbackend = "claude"\nmodel = "claude-sonnet-5-5"\neffort = "high"\n\n[[seats]]\nid = "c"\nbackend = "grok"\nmodel = "grok-4.7"\neffort = "high"\nsandbox = "off"\n';
