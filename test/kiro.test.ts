@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { collectPaths } from '../src/adapters/acp/policy.js';
 import {
   KIRO_AGENT,
@@ -430,6 +430,39 @@ describe('kiro units', () => {
     const state = readTokenState(kiroTokenStore(home, 'darwin'));
     expect(state).toEqual({ present: true, expiresAt: FUTURE, expired: false, refreshToken: true, problem: null });
     expect(kiroTokenStore('/h', 'linux')).toBe('/h/.local/share/kiro-cli/data.sqlite3');
+  });
+  it('selects the expiry and the refresh-token presence in SQL: no token value reaches the engine', () => {
+    // The stored value is JSON5 (unquoted keys, a comment, a trailing comma): SQLite's JSON functions read it and
+    // JSON.parse refuses it, so code that parsed the whole value in the engine would report the store unreadable.
+    // Every row any statement hands back is also recorded, so code that selected the value at all fails too.
+    const raw = (value: string | Uint8Array): string => {
+      const home = scratch('sc-kiro-home-');
+      const store = kiroTokenStore(home, 'darwin');
+      mkdirSync(join(store, '..'), { recursive: true });
+      const db = new (sqlite().DatabaseSync)(store);
+      db.exec('CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value)');
+      db.prepare('INSERT INTO auth_kv (key, value) VALUES (?, ?)').run('kirocli:odic:token', value);
+      db.close();
+      return store;
+    };
+    const json5 = `{access_token: 'SECRET-ACCESS', expires_at: "${FUTURE}", refresh_token: 'SECRET-REFRESH', /* kiro writes JSON */ }`;
+    expect(() => JSON.parse(json5) as unknown).toThrow();
+    const proto = sqlite().StatementSync.prototype;
+    const get = vi.spyOn(proto, 'get');
+    const all = vi.spyOn(proto, 'all');
+    try {
+      expect(readTokenState(raw(json5))).toEqual({ present: true, expiresAt: FUTURE, expired: false, refreshToken: true, problem: null });
+      expect(readTokenState(raw(JSON.stringify({ access_token: 'SECRET-ACCESS', expires_at: PAST, refresh_token: '' })))).toEqual({ present: true, expiresAt: PAST, expired: true, refreshToken: false, problem: null });
+      expect(readTokenState(raw(JSON.stringify({ access_token: 'SECRET-ACCESS', expires_at: 1, refresh_token: 7 })))).toEqual({ present: true, expiresAt: null, expired: null, refreshToken: false, problem: null });
+      expect(readTokenState(raw('SECRET-NOT-JSON'))).toEqual({ present: false, expiresAt: null, expired: null, refreshToken: false, problem: 'token store unreadable: malformed JSON' });
+      expect(readTokenState(raw(Buffer.from('SECRET-BLOB')))).toMatchObject({ present: false, problem: 'no sign-in token in the store' });
+      const handedBack = JSON.stringify([...get.mock.results, ...all.mock.results].map((r) => r.value as unknown), (_k, v: unknown) => (v instanceof Uint8Array ? Buffer.from(v).toString('latin1') : v));
+      expect(get.mock.calls.length).toBeGreaterThan(0);
+      expect(handedBack).not.toContain('SECRET');
+    } finally {
+      get.mockRestore();
+      all.mockRestore();
+    }
   });
   it('parses the model list', () => {
     expect(parseKiroModels(MODELS_JSON)).toEqual(['auto', 'claude-sonnet-4.5', 'claude-haiku-4.5']);

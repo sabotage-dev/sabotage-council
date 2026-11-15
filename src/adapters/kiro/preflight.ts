@@ -43,8 +43,22 @@ export interface TokenState {
 }
 
 /**
+ * The login state, computed inside SQLite: only the row's `expires_at` (when it is a string) and whether its
+ * `refresh_token` is a non-empty string leave the query, so no token value ever reaches the engine. A value that is
+ * not JSON fails `json_type` ("malformed JSON").
+ */
+const TOKEN_STATE_SQL = `SELECT
+  typeof(value) = 'text' AS is_text,
+  CASE WHEN typeof(value) <> 'text' THEN NULL
+       WHEN json_type(value, '$.expires_at') = 'text' THEN json_extract(value, '$.expires_at') END AS expires_at,
+  CASE WHEN typeof(value) <> 'text' THEN 0
+       WHEN json_type(value, '$.refresh_token') = 'text' AND length(json_extract(value, '$.refresh_token')) > 0 THEN 1
+       ELSE 0 END AS has_refresh
+FROM auth_kv WHERE key = 'kirocli:odic:token'`;
+
+/**
  * Reads the login state from the token store: the `kirocli:odic:token` row's `expires_at` and whether its
- * `refresh_token` is non-empty. No value is returned or logged.
+ * `refresh_token` is non-empty, selected in SQL (TOKEN_STATE_SQL). No token value is read, returned or logged.
  */
 export function readTokenState(storePath: string, now = Date.now()): TokenState {
   const none = (problem: string): TokenState => ({ present: false, expiresAt: null, expired: null, refreshToken: false, problem });
@@ -52,12 +66,11 @@ export function readTokenState(storePath: string, now = Date.now()): TokenState 
   let db: InstanceType<ReturnType<typeof sqlite>['DatabaseSync']> | null = null;
   try {
     db = new (sqlite().DatabaseSync)(storePath, { readOnly: true });
-    const row = db.prepare("SELECT value FROM auth_kv WHERE key = 'kirocli:odic:token'").get() as { value?: unknown } | undefined;
-    if (!row || typeof row.value !== 'string') return none('no sign-in token in the store');
-    const token = JSON.parse(row.value) as Record<string, unknown>;
-    const expiresAt = typeof token['expires_at'] === 'string' ? token['expires_at'] : null;
+    const row = db.prepare(TOKEN_STATE_SQL).get() as { is_text?: unknown; expires_at?: unknown; has_refresh?: unknown } | undefined;
+    if (!row || row.is_text !== 1) return none('no sign-in token in the store');
+    const expiresAt = typeof row.expires_at === 'string' ? row.expires_at : null;
     const at = expiresAt !== null ? Date.parse(expiresAt) : NaN;
-    const refresh = typeof token['refresh_token'] === 'string' && token['refresh_token'] !== '';
+    const refresh = row.has_refresh === 1;
     return { present: true, expiresAt, expired: Number.isFinite(at) ? at <= now : null, refreshToken: refresh, problem: null };
   } catch (error) {
     return none(`token store unreadable: ${error instanceof Error ? error.message.split('\n')[0] : 'error'}`);
