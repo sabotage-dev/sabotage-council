@@ -8,6 +8,7 @@ import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import type { LegHandle, Occupant, Preflight, Ratification, RoundCtx, SeatAdapter } from '../src/adapters/types.js';
 import { buildPlantedRepo, DEFAULT_FIXTURE_DIR, loadFixture, matchDefects, matchDefectsInText } from '../src/seats/fixture.js';
 import { runSeatTest } from '../src/seats/run.js';
+import { resolveOccupantSpec } from '../src/seats/spec.js';
 import { loadStats } from '../src/stats/data.js';
 import { buildReport, thresholdsOf } from '../src/stats/report.js';
 import { openStore } from '../src/store/index.js';
@@ -72,7 +73,14 @@ function running(bin: string): string[] {
   return out.split('\n').filter((l) => l.includes(bin));
 }
 
-async function run(args: string[], fake: Fake, paths: { config: string; db: string; roots: string }): Promise<{ code: number; lines: string[]; text: string }> {
+const CLAUDE_MODELS = ['claude-haiku-5-5', 'claude-sonnet-5-5'];
+
+async function run(
+  args: string[],
+  fake: Fake,
+  paths: { config: string; db: string; roots: string },
+  models: readonly string[] = CLAUDE_MODELS,
+): Promise<{ code: number; lines: string[]; text: string }> {
   const lines: string[] = [];
   let code = -1;
   const io: ProgramIo = {
@@ -80,7 +88,7 @@ async function run(args: string[], fake: Fake, paths: { config: string; db: stri
     env: fake.env,
     setExitCode: (c) => (code = c),
     adapters: fake.adapters,
-    registry: fakeRegistry({ claude: [{ id: 'claude-haiku-5-5', family: 'anthropic' }, { id: 'claude-sonnet-5-5', family: 'anthropic' }] }),
+    registry: fakeRegistry({ claude: models.map((id) => ({ id, family: 'anthropic' })) }),
     seatTestPollMs: 20,
   };
   const program = buildProgram(io);
@@ -155,6 +163,23 @@ describe('seats test: the shipped planted-defect fixture', () => {
     ]);
     expect(r.other).toEqual(['F4', 'F5', 'F6', 'F8']);
     expect(matchDefectsInText(f, 'see planted/calc/rangesum.py:11 and calc/rangesum.py:19, not calc/rangesum.py:2').map((m) => m.defect)).toEqual(['D1', 'D3']);
+  });
+});
+
+describe('seats test: reading backend:model[:effort] against the adapter\'s list', () => {
+  it('takes the whole rest when listed, the split when only it is listed, and refuses both or neither', () => {
+    expect(resolveOccupantSpec('opencode:ollama/llama3:8b', ['ollama/llama3:8b'])).toEqual({ ok: true, occupant: { backend: 'opencode', model: 'ollama/llama3:8b', effort: undefined } });
+    expect(resolveOccupantSpec('opencode:ollama/llama3:8b', ['ollama/llama3'])).toEqual({ ok: true, occupant: { backend: 'opencode', model: 'ollama/llama3', effort: '8b' } });
+    expect(resolveOccupantSpec('opencode:ollama/llama3:8b:high', ['ollama/llama3:8b'])).toEqual({ ok: true, occupant: { backend: 'opencode', model: 'ollama/llama3:8b', effort: 'high' } });
+    expect(resolveOccupantSpec('claude:claude-haiku-5-5:low', ['claude-haiku-5-5'])).toEqual({ ok: true, occupant: { backend: 'claude', model: 'claude-haiku-5-5', effort: 'low' } });
+    expect(resolveOccupantSpec('claude:claude-haiku-5-5', ['claude-haiku-5-5'])).toEqual({ ok: true, occupant: { backend: 'claude', model: 'claude-haiku-5-5', effort: undefined } });
+    const both = resolveOccupantSpec('opencode:ollama/llama3:8b', ['ollama/llama3', 'ollama/llama3:8b']);
+    expect(both.ok).toBe(false);
+    expect(both.ok ? '' : both.message).toContain('model "ollama/llama3:8b" at the CLI\'s default effort, or model "ollama/llama3" at effort "8b"');
+    expect(resolveOccupantSpec('claude:nope', ['x'])).toEqual({ ok: false, message: 'backend "claude" does not offer model "nope"' });
+    // A trailing colon is no effort: only the whole reading, which is not listed.
+    expect(resolveOccupantSpec('claude:claude-haiku-5-5:', ['claude-haiku-5-5'])).toEqual({ ok: false, message: 'backend "claude" does not offer model "claude-haiku-5-5:"' });
+    for (const bad of ['claude:', ':x', 'claude']) expect(resolveOccupantSpec(bad, ['x']), bad).toEqual({ ok: false, message: `"${bad}" is not backend:model[:effort]` });
   });
 });
 
@@ -284,6 +309,29 @@ describe('seats test: one leg end to end with the fake claude', () => {
     expect(r.text).toContain('defects       found 3 of 3');
     expect(r.lines.at(-1)).toMatch(/^warn {2}could not record the seat test in .*council\.db: /);
     expect(running(fake.bin)).toEqual([]);
+  });
+
+  it('reads a model id that holds a colon whole when the adapter lists it, and refuses a spec that reads two listed ways', async () => {
+    const fake = fakeClaude({ answer: ALL_DEFECTS });
+    const p = places();
+    // Only the whole id is listed: the whole rest is the model, at the CLI's default effort.
+    const whole = await run(['seats', 'test', 'claude:claude-x:8b'], fake, p, ['claude-x:8b']);
+    expect(whole.lines[0]).toBe(
+      'seats test: about to run one paid leg: backend claude, model claude-x:8b, effort (the CLI default) (a candidate, not in the config); capped at 25 min, on the planted-defect fixture (3 defects)',
+    );
+    expect(storeRows(p.db).tests.at(-1)).toMatchObject({ occupant: { backend: 'claude', model: 'claude-x:8b', effort: null } });
+    expect(running(fake.bin)).toEqual([]);
+    // Both readings listed: refused, naming both, before anything launches.
+    const argv = join(fake.home, 'claude-argv.json');
+    const before = existsSync(argv) ? readFileSync(argv, 'utf8') : null;
+    const both = await run(['seats', 'test', 'claude:claude-x:8b'], fake, p, ['claude-x:8b', 'claude-x']);
+    expect(both.code).toBe(1);
+    expect(both.lines).toEqual([
+      '"claude:claude-x:8b" reads two ways and backend "claude" lists both: model "claude-x:8b" at the CLI\'s default effort, or model "claude-x" at effort "8b"; refusing to guess',
+    ]);
+    expect(existsSync(argv) ? readFileSync(argv, 'utf8') : null).toBe(before);
+    // Neither listed.
+    expect((await run(['seats', 'test', 'claude:claude-y:8b'], fake, p, ['claude-x'])).lines).toEqual(['backend "claude" offers neither model "claude-y:8b" nor model "claude-y" (with effort "8b")']);
   });
 
   it('refuses before launching anything: an unknown model, an unknown backend, an unknown seat, a seat with no fallback', async () => {

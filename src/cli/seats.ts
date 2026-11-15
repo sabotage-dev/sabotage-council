@@ -8,6 +8,7 @@ import { applySeatEdit, SeatApplyError } from '../seats/apply.js';
 import type { SeatEdit } from '../seats/edit.js';
 import { loadFixture } from '../seats/fixture.js';
 import { exitCodeOf, recordSeatTest, runSeatTest, type SeatTestResult } from '../seats/run.js';
+import { resolveOccupantSpec, splitBackend } from '../seats/spec.js';
 import { loadStats, occupantKey } from '../stats/data.js';
 import { buildReport, thresholdsOf, type SeatCard, type Recommendation } from '../stats/report.js';
 import { durationText, money, pctText } from '../stats/text.js';
@@ -237,19 +238,6 @@ export interface TestArgs {
   signal?: AbortSignal | undefined;
 }
 
-/** `backend:model[:effort]`; the effort is the last `:` segment when there are three or more. */
-export function parseOccupantSpec(spec: string): { backend: string; model: string; effort: string | undefined } | null {
-  const at = spec.indexOf(':');
-  if (at <= 0) return null;
-  const backend = spec.slice(0, at);
-  const rest = spec.slice(at + 1);
-  const last = rest.lastIndexOf(':');
-  const model = last > 0 ? rest.slice(0, last) : rest;
-  const effort = last > 0 ? rest.slice(last + 1) : undefined;
-  if (model === '' || effort === '') return null;
-  return { backend, model, effort };
-}
-
 export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, args: TestArgs): Promise<void> {
   const fail = (message: string): void => {
     io.write(message);
@@ -259,19 +247,22 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
   let occupant: Occupant;
   let who: { seat: string | null; role: 'primary' | 'fallback' | null };
   if (target.includes(':')) {
-    const spec = parseOccupantSpec(target);
-    if (spec === null) return fail(`"${target}" is not backend:model[:effort]`);
-    if (!(BACKENDS as readonly string[]).includes(spec.backend)) return fail(`unknown backend "${spec.backend}"; expected one of: ${BACKENDS.join(', ')}`);
+    const parts = splitBackend(target);
+    if (parts === null) return fail(`"${target}" is not backend:model[:effort]`);
+    if (!(BACKENDS as readonly string[]).includes(parts.backend)) return fail(`unknown backend "${parts.backend}"; expected one of: ${BACKENDS.join(', ')}`);
     if (args.fallback) return fail('--fallback takes a seat id, not an occupant');
-    const lister = registryOf(io)?.lister(spec.backend as BackendId);
-    if (!lister) return fail(`no adapter is registered for backend "${spec.backend}"`);
+    const lister = registryOf(io)?.lister(parts.backend as BackendId);
+    if (!lister) return fail(`no adapter is registered for backend "${parts.backend}"`);
     let models;
     try {
       models = await lister.listModels();
     } catch (error) {
-      return fail(`could not list the models of backend "${spec.backend}": ${error instanceof Error ? error.message : String(error)}`);
+      return fail(`could not list the models of backend "${parts.backend}": ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (!models.some((m) => m.id === spec.model)) return fail(`backend "${spec.backend}" does not offer model "${spec.model}"`);
+    // A model id may hold a `:`: the adapter's list decides between the two readings (src/seats/spec.ts).
+    const resolved = resolveOccupantSpec(target, models.map((m) => m.id));
+    if (!resolved.ok) return fail(resolved.message);
+    const spec = resolved.occupant;
     if (args.authHome !== undefined && spec.backend !== 'kiro' && spec.backend !== 'grok') return fail('--auth-home applies only to kiro and grok');
     if (args.sandbox !== undefined && spec.backend !== 'grok') return fail('--sandbox applies only to grok');
     occupant = occupantOf({ backend: spec.backend as BackendId, model: spec.model, effort: spec.effort, auth_home: args.authHome, sandbox: args.sandbox });
