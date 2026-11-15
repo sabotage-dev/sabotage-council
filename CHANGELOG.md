@@ -29,7 +29,8 @@ The first release.
   adjudicated rounds, with no blocking finding lost without it (a seat that alone raised a ruling still pending is
   not silent). `stats` and `seats list` read the store read-only and create nothing beside a closed store: the Node
   floor is 22.15 (raised from 22.13 before this release), whose SQLite opens a closed store immutable, and a closed
-  store it cannot open that way is refused with the reason.
+  store it cannot open that way is refused with the reason, as is a store with only one of its `-wal` and `-shm`
+  files (`doctor --db` clears it).
 - **The Claude Code plugin** in `plugin/`: `/sabotage-council:council plan | diff | pr | status | doctor | stats |
   seats`, the skill, and the adjudication spec `ADJUDICATE.md` the headless adjudicator shares.
 - `doctor` and `doctor --deep`: every seat's preflight with no model call, and a canary root of planted agent

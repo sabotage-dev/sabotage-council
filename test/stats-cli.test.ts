@@ -273,6 +273,97 @@ describe('stats reads the store read-only', () => {
     plain.close();
     expect(readdirSync(dataDir).sort()).toEqual(['council.db', 'council.db-shm', 'council.db-wal']);
   });
+
+  /** Every file in a directory, by name, with its bytes. */
+  const snapshot = (dir: string): Record<string, string> => Object.fromEntries(readdirSync(dir).sort().map((f) => [f, readFileSync(join(dir, f)).toString('base64')]));
+
+  // Council round 1 of PR #13: a lone -wal or -shm sent the read to the plain open, which created the other.
+  it.each(['-wal', '-shm'] as const)('refuses a store beside which only its %s file is left, names it, changes nothing, and the doctor it names clears it', async (kept) => {
+    const missing = kept === '-wal' ? '-shm' : '-wal';
+    // A partial copy of a store a writer has open: council.db and one of its two files.
+    const w = statsStore();
+    w.round({ legs: three() });
+    w.round({ legs: three() });
+    const dir = scratch('sc-stats-stray-');
+    const db = join(dir, 'council.db');
+    copyFileSync(w.dbPath, db);
+    copyFileSync(`${w.dbPath}${kept}`, `${db}${kept}`);
+    w.close();
+    const none = join(w.dir, 'none.toml');
+    const before = snapshot(dir);
+    expect(Object.keys(before)).toEqual(['council.db', `council.db${kept}`]);
+    const message = `cannot read the run store at ${db}: ${db}${kept} is there without ${db}${missing} (a writer that has the store open keeps both; a crash or a partial copy leaves one), and reading it would create ${db}${missing} beside it: run \`sabotage-council doctor --db ${db}\` once (it opens the store for writing, takes in any commits the -wal holds, and removes both files when it closes), then run this again`;
+    const r = await run(['stats', '--db', db, '--config', none]);
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual([`error: ${message}`]);
+    expect(snapshot(dir)).toEqual(before);
+    let caught: unknown;
+    try {
+      openStoreReadOnly(db).close();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(StoreReadError);
+    expect(caught).toMatchObject({ why: 'unreadable', message });
+    // `seats list` lists the seats without a scorecard and leaves the store alone too.
+    const config = join(w.dir, 'config.toml');
+    writeFileSync(config, SEATS);
+    const list = await run(['seats', 'list', '--config', config, '--db', db, '--no-preflight']);
+    expect(list.code).toBe(0);
+    expect(list.lines[0]).toBe(`note  the scorecard is not shown: ${message}`);
+    expect(snapshot(dir)).toEqual(before);
+    // The command it names clears the stray file (taking in what a -wal holds); stats then reads the store.
+    await run(['doctor', '--db', db, '--config', none]);
+    expect(readdirSync(dir)).toEqual(['council.db']);
+    const after = await run(['stats', '--db', db, '--config', none, '--json']);
+    expect(after.code).toBe(0);
+    if (kept === '-wal') expect((JSON.parse(after.text) as { window: { rounds: { council: number } } }).window.rounds.council).toBe(2);
+    expect(readdirSync(dir)).toEqual(['council.db']);
+  });
+
+  it('reads a store a writer has open through its -wal and -shm, and refuses with the reason (never a raw SQLite error) when that open fails', () => {
+    const w = statsStore();
+    w.round({ legs: three() });
+    expect([existsSync(`${w.dbPath}-wal`), existsSync(`${w.dbPath}-shm`)]).toEqual([true, true]);
+    const tried: string[] = [];
+    const opener =
+      (fail: boolean) =>
+      (filename: string, options: { readOnly: true }): DatabaseSync => {
+        tried.push(filename.startsWith('file:') ? 'uri' : 'plain');
+        if (fail) throw new Error('disk I/O error');
+        return new (sqlite().DatabaseSync)(filename, options);
+      };
+    const s = openStoreReadOnly(w.dbPath, { openDatabase: opener(false) });
+    expect(s.version).toBe(latest);
+    expect(s.db.prepare('SELECT count(*) AS n FROM rounds').get()).toEqual({ n: 1 });
+    s.close();
+    expect(tried).toEqual(['plain']);
+    tried.length = 0;
+    let caught: unknown;
+    try {
+      openStoreReadOnly(w.dbPath, { openDatabase: opener(true) }).close();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(StoreReadError);
+    expect(caught).toMatchObject({ why: 'unreadable', message: `cannot read the run store at ${w.dbPath}: SQLite could not open it read-only through its -wal and -shm (disk I/O error)` });
+    expect(tried).toEqual(['plain']);
+    w.close();
+    // A failure SQLite raises only at the first read is refused the same way.
+    const dir = scratch('sc-stats-notdb-wal-');
+    const db = join(dir, 'council.db');
+    writeFileSync(db, 'not a database');
+    writeFileSync(`${db}-wal`, '');
+    writeFileSync(`${db}-shm`, '');
+    caught = undefined;
+    try {
+      openStoreReadOnly(db).close();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(StoreReadError);
+    expect(caught).toMatchObject({ why: 'unreadable', message: `cannot read the run store at ${db}: SQLite could not open it read-only through its -wal and -shm (file is not a database)` });
+  });
 });
 
 // ---- the HTML report ----

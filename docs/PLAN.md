@@ -1490,13 +1490,16 @@ Per seat and per occupant, over a window:
 opens the store read-only and never migrates it: a store whose schema is behind this build is refused with the
 command that upgrades it (`sabotage-council doctor --db <path>`, which applies the pending migrations), and one ahead
 of this build is refused too. With no `-wal` or `-shm` file beside the store (no connection has it open) it opens it
-`immutable`, so SQLite creates nothing; with them it reads through them and sees a writer's last commit. Since the
-Node floor went to 22.15 before 0.1.0 (owner ruling, 2026-11-14), a closed store SQLite cannot open immutable is
-refused with the reason, never read through the plain read-only open that would leave `-wal` and `-shm` beside it. The
-window is all history unless `--since` narrows it (a duration such as `30d`, a UTC date, or an ISO timestamp with a
-zone; rounds count by `started_at`). The filters choose which rows are shown, never what a metric reads (the
-drop-one counterfactual, dissent and agreement need every seat's legs). An empty store or window prints a message and
-exits 0, and no store is created. The choices the table leaves open:
+`immutable`, so SQLite creates nothing; with both it reads through them and sees a writer's last commit. With only one
+(a crash or a partial copy left it; a writer keeps both) the plain open would create the other, so the store is
+refused, naming the stray file and `doctor --db`, whose read-write open takes in what a `-wal` holds and removes both
+files when it closes (council round 1 of PR #13). Since the Node floor went to 22.15 before 0.1.0 (owner ruling,
+2026-11-14), a closed store SQLite cannot open immutable is refused with the reason, never read through the plain
+read-only open that would leave `-wal` and `-shm` beside it. The window is all history unless `--since` narrows it
+(a duration such as `30d`, a UTC date, or an ISO timestamp with a zone; rounds count by `started_at`). The filters
+choose which rows are shown, never what a metric reads (the drop-one counterfactual, dissent and agreement need every
+seat's legs). An empty store or window prints a message and exits 0, and no store is created. The choices the table
+leaves open:
 
 - **Which rounds count.** Council rounds whose legs settled: dry-run rounds count (the shadow week is all dry runs),
   and failed, solo, awaiting-adjudication and superseded rounds count for the leg metrics (rounds seated, ratified

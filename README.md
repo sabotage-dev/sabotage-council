@@ -545,7 +545,9 @@ is not a regular file is refused. Its agreement matrix shows every pair a filter
 no model call) and a one-line scorecard, whose flag judges the config's occupant. It reads the store as `stats` does.
 Both open a closed store immutable, so SQLite creates nothing beside it, and read a store a writer has open through its
 `-wal` and `-shm` files. A closed store SQLite cannot open immutable is refused with the reason (`stats` exits 1,
-`seats list` shows no scorecard), never read through an open that would create those files.
+`seats list` shows no scorecard), never read through an open that would create those files. So is a store with only
+one of the two files beside it (a crash or a partial copy left it; a writer keeps both): the error names the stray
+file, and `sabotage-council doctor --db <path>` run once clears it.
 
 `seats test` qualifies an occupant before it is seated: it runs **one paid leg** on the planted-defect fixture that
 ships in the package (three defects planted in a small Python module), on a root built the normal way, and reports
