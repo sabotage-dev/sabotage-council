@@ -256,10 +256,12 @@ sabotage-council seats add <seat> --backend X --model Y [--effort E] [--dry-run]
 sabotage-council seats remove <seat> [--dry-run]
 ```
 
-`stats` reads the run store and changes nothing. It scores every seat and every occupant (a backend, model and
-effort) over a window: all history by default; `--since` takes `30d`, `12h`, `2w`, `90m`, a UTC date or an ISO
-timestamp. `--seat` and `--occupant` choose which rows are shown; every metric still reads every seat's legs. With no
-store or an empty window it says so and exits 0.
+`stats` reads the run store and changes nothing: it opens the store read-only and never migrates it. A store whose
+schema is behind this build is refused with the command that upgrades it (`sabotage-council doctor --db <path>`), and
+one written by a newer build is refused too. It scores every seat and every occupant (a backend, model and effort)
+over a window: all history by default; `--since` takes `30d`, `12h`, `2w`, `90m`, a UTC date or an ISO timestamp.
+`--seat` and `--occupant` choose which rows are shown; every metric still reads every seat's legs. With no store or an
+empty window it says so and exits 0.
 
 Which rounds count:
 
@@ -267,6 +269,9 @@ Which rounds count:
   and superseded rounds for the leg metrics; finding metrics read only adjudicated rounds (a stored verdict);
 - identity rounds have no legs and are left out, and so are rounds still running and any leg still `RUNNING`;
 - a fallback leg counts for its seat and for its own occupant, never for the seat's primary occupant;
+- an occupant that holds two seats in a round (two kiro seats on one model with two logins) has every ratified leg
+  counted on its card; a finding both legs raised is one finding, unique to it when no other occupant raised it; its
+  position for dissent and agreement is the one its legs share, and none in a round where they differ;
 - `seats test` runs are never rounds (see below).
 
 The metrics (plan 8.2), as built:
@@ -278,16 +283,21 @@ The metrics (plan 8.2), as built:
 | Verdict mix | The raw verdict of each ratified leg: SHIP, SHIP-WITH-FIXES, NEEDS-WORK, none. |
 | Raised, adopted, refuted, precision | Raised: canonical findings the seat was a source of (counted once). Adopted = owed + follow-up + ruling upheld; refuted = refuted + ruling overturned; a ruling not yet ruled on is pending; nits and noted findings are neither. Precision = adopted / (adopted + refuted), n/a when both are 0. |
 | Unique adopted, owed, HIGH | Raised by this seat alone (every source leg is its own). Uniqueness counts raisers, not severities: a finding two seats raised at different severities is unique to neither. Owed includes an upheld ruling. Unique HIGH: unique, adopted, and HIGH by the adjudicator's final severity (a seat's own HIGH label earns nothing). |
-| Drop-one | Blocking findings lost: owed rows and holding rulings (unruled or upheld) the seat raised alone. Flipped to SHIP: rounds that were not SHIP whose every blocking finding it raised alone, and that kept quorum (2 ratified legs) without it. A round whose other legs had fewer than 2 ratified is counted as quorum lost, never as a flip. |
-| Dissent | A lone dissent: its ratified SHIP-vs-not verdict differed from the two other ratified legs, which agreed. Right: a lone SHIP in a round that ended with nothing blocking, or a lone not-SHIP in a round that ended blocked or with one of its findings owed. |
-| Cost, duration | USD and credits summed over every leg (failed attempts cost too); units are never converted. Quota is the CLI's own rate-window snapshot, shown as the highest and the latest. p50 and p90 are nearest-rank percentiles of ratified legs' durations. Cost per adopted finding: the seat's USD (or credits) in adjudicated rounds / adopted findings in them. |
-| Agreement | Per pair of seats (and of occupants): settled rounds where both ratified with a verdict, and how many of them one said SHIP and the other did not. |
+| Drop-one | Blocking findings lost: owed rows and holding rulings (unruled or upheld) the seat raised alone. Flipped to SHIP: rounds whose stored verdict was not SHIP, whose every blocking finding it raised alone, and that kept quorum (2 ratified legs) without it; a stored SHIP with a held ruling is never a flip. A round whose other legs had fewer than 2 ratified is counted as quorum lost, never as a flip. |
+| Dissent | NEEDS-WORK vs not, on the raw verdict: SHIP and SHIP-WITH-FIXES are one position (only NEEDS-WORK blocks a round). A lone dissent: its position differed from the two other ratified legs, which agreed. Right: a lone NEEDS-WORK in a round that ended blocked or with one of its own findings owed, or a lone SHIP or SHIP-WITH-FIXES in a round that ended with nothing blocking. (The plan first said SHIP vs not; the council chose this axis in round 1 of P9, so a SHIP-WITH-FIXES whose findings became follow-ups is no dissent from two SHIPs.) |
+| Cost, duration | USD and credits summed over every leg (failed attempts cost too); units are never converted. Quota is the CLI's own rate-window snapshot, shown as the highest and the latest. p50 and p90 are nearest-rank percentiles of ratified legs' durations. Cost per adopted finding: the seat's USD (or credits) in adjudicated rounds / adopted findings in them; n/a unless one of its legs in an adjudicated round recorded that unit. |
+| Agreement | Per pair of seats (and of occupants): settled rounds where both ratified with a verdict, and how many of them one said NEEDS-WORK and the other did not. |
 
-A seat is a **swap candidate** (plan 8.3) when, over at least `swap_min_ratified_rounds` adjudicated rounds it
-ratified in, its unique owed count is 0 and either its precision is below `swap_precision_below` or its ratified rate
-is below `swap_ratified_rate_below`. A precision of n/a is not below the threshold. Every flag lists the rounds and
-findings behind it. Nothing ever swaps a seat by itself. After a swap the seat's history mixes occupants: use `--since`
-the swap, or `--occupant`.
+A seat is a **swap candidate** (plan 8.3) when its unique owed count is 0 and either its ratified rate is below
+`swap_ratified_rate_below` over at least `swap_min_ratified_rounds` rounds seated (a seat that fails every attempt is
+flagged, its failures the evidence), or its precision is below `swap_precision_below` over at least that many
+adjudicated rounds it ratified in. The flag judges the seat's **current occupant**: the config's, else the one the
+latest round seated, over the rounds since it took the seat (from the first round whose roster snapshot seats it
+there after a different one). So a swap starts the evidence over, and the reasons name the occupant. The seat's
+fallback legs in those rounds count; changing only the fallback starts nothing over. A precision of n/a (nothing
+adopted or refuted) is reported as inconclusive, with the rounds, the findings raised and the blocking findings lost,
+and is not flagged (that is the owner's call). Every flag lists the rounds and findings behind it. Nothing ever swaps
+a seat by itself.
 
 ```toml
 [stats]                          # the swap-candidate flag
@@ -300,30 +310,41 @@ swap_ratified_rate_below = 0.8   # R
 `version`, `generated_at`, `window` (`since`, `first_round_at`, `last_round_at`, `rounds` counts, `adjudicator_usd`),
 `filters`, `thresholds`, `message` (set when there is nothing to score), `notes`, `seats` and `occupants` (one card
 each: `rounds_seated`, `rounds_ratified`, `ratified_rate`, `adjudicated_ratified`, `failures`, `verdicts`,
-`findings`, `unique`, `drop_one`, `dissent`, `cost`), `agreement` (`seats`, `occupants`), `recommendations` (per
-seat: `swap_candidate`, `eligible`, `reasons`, `evidence`) and `seat_tests`. A field may be added within a version; a
-renamed, removed or redefined field bumps it. Ratios are 0 to 1, or null when their denominator is 0.
+`findings`, `unique`, `drop_one`, `dissent` (each lone round's `said` is `blocks` for NEEDS-WORK or `clears`),
+`cost`), `agreement` (`seats`, `occupants`), `recommendations` (per seat: `swap_candidate`, `eligible`, `occupant`
+(the occupant judged, where it came from, and the round it took the seat), `reasons`, `evidence`) and `seat_tests`. A
+field may be added within a version; a renamed, removed or redefined field bumps it (nothing is released yet, so the
+round 1 changes stay version 1). Ratios are 0 to 1, or null when their denominator is 0. DEL, C1, U+2028, U+2029,
+bidi controls and zero-width characters inside strings are written as `\uXXXX` escapes; the text and HTML forms
+replace them (and control characters) with U+FFFD.
 
 `--html <file>` writes the same report as one self-contained file (no script, font, image or link; light and dark;
 readable at phone width), with mode 0600. Everything in it that came from a round is escaped. A path that exists and
-is not a regular file is refused.
+is not a regular file is refused. Its agreement matrix shows every pair a filtered report keeps.
 
 `seats list` shows each seat and its fallback with the enforcement label its preflight gives (as `doctor` shows it;
-no model call) and a one-line scorecard.
+no model call) and a one-line scorecard, whose flag judges the config's occupant. It reads the store as `stats` does.
 
 `seats test` qualifies an occupant before it is seated: it runs **one paid leg** on the planted-defect fixture that
 ships in the package (three defects planted in a small Python module), on a root built the normal way, and reports
-which defects it found, ratification, verdict, cost and duration. It prints what it is about to run first. Exit 0:
-ratified and found every defect; 2: ratified but missed one; 1: did not ratify. It works for an occupant that is not
-in the config. Its result is stored as a `seat-test` event with no round, so no scorecard metric counts it; `stats`
-lists seat tests on their own.
+which defects it found, ratification, verdict, cost and duration. A finding names a defect when its path is
+`calc/rangesum.py` at the head (with or without the root's `planted/` prefix, never the `_base/` copy) and its line is
+the defect's changed line, or its title holds more of that defect's keywords than of any other's. It prints what it
+is about to run first (on stderr with `--json`, whose stdout is only the JSON). Ctrl-C before the launch starts
+nothing; a setup failure prints an error and exits 1, recording nothing. Exit 0: ratified and found every defect; 2:
+ratified but missed one; 1: did not ratify or did not run. It works for an occupant that is not in the config; a model
+id holding a `:` (`opencode:ollama/llama3:8b`) is read whole when the adapter lists it, and a spec that reads two
+listed ways is refused. Its result is stored as a `seat-test` event with no round, so no scorecard metric counts it;
+`stats` lists seat tests on their own.
 
 `seats swap | add | remove` edit the config file. They change only the target seat's own `[[seats]]` block and keep
-every other byte (comments, order, other sections). The edited text must pass the config loader first: seats are
+every other byte (comments, order, other sections), except that `remove` also takes the blank line that separated the
+removed block from its neighbour (the one after it, or the one before it when the block ends the file), so a remove
+and an add do not grow the file. The edited text must pass the config loader first: seats are
 fixed at three (D10), so `swap` replaces an occupant, `add` works only on a file with two seats and `remove` only on
 one with four. A swap keeps the seat id (and its fallback), so the history stays under that seat, and the new
 occupant gets its own row at its first leg. A timestamped backup (mode 0600) is written beside the file before it is
-replaced atomically; `--dry-run` prints the diff and writes nothing. A file whose seats are written as an inline
+replaced atomically, keeping its exact mode; `--dry-run` prints the diff and writes nothing. A file whose seats are written as an inline
 array, or a `[seats.x]` sub-table, is refused, never rewritten.
 
 ### Backend notes

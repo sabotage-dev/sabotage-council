@@ -130,9 +130,10 @@ narrow it, `--json` for the versioned JSON, `--html <file>` for a self-contained
 - lone dissents the outcome sided with, cost and duration, and the pairwise agreement between seats.
 
 When the user asks which seat to swap, run `sabotage-council stats` and read its **recommendations**: a seat is a
-**swap candidate** when, over enough adjudicated rounds (20 by default), it found nothing owed that no other seat
-found and its precision or ratified rate is low (the `[stats]` thresholds in the config). Show the flag with the
-rounds and findings behind it, and the drop-one numbers. Say how many rounds the numbers stand on: with few rounds,
+**swap candidate** when it found nothing owed that no other seat found and either its ratified rate is low over
+enough rounds seated or its precision is low over enough adjudicated rounds (20 by default; the `[stats]` thresholds
+in the config). The flag judges the seat's current occupant over its rounds since it took the seat, and names it.
+Show the flag with the rounds and findings behind it, and the drop-one numbers. Say how many rounds the numbers stand on: with few rounds,
 say there is not enough data yet. The flag only informs: nothing swaps a seat by itself.
 
 To change a seat, on the user's word for each step:
