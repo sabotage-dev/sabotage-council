@@ -578,7 +578,9 @@ Last line: VERDICT: SHIP | SHIP-WITH-FIXES | NEEDS-WORK
 
 - **Findings block.** It makes attribution exact without a second model reading the prose. If a leg omits it or
   breaks its grammar, the adjudicator extracts the findings, and the record marks them `extracted_by:
-  adjudicator`.
+  adjudicator`. As built, the parser reads three shapes (the line grammar, a JSON array, a YAML list), and the tag
+  either on the opening fence or, as a live seat wrote it before 0.1.0 (deepseek-3.2 through kiro), on the first
+  non-blank line inside an untagged fence when that line is exactly `findings` (any case); nothing looser is a block.
 - **Question budget.** At most 3 questions per brief. Codex-family legs measurably time out or abort on broad,
   many-question asks over large roots.
 
