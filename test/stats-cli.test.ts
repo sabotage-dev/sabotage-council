@@ -1,5 +1,6 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import { renderHtml } from '../src/stats/html.js';
@@ -363,6 +364,41 @@ describe('stats reads the store read-only', () => {
     }
     expect(caught).toBeInstanceOf(StoreReadError);
     expect(caught).toMatchObject({ why: 'unreadable', message: `cannot read the run store at ${db}: SQLite could not open it read-only through its -wal and -shm (file is not a database)` });
+  });
+
+  // Council round 1 of PR #13: SQLite puts -wal and -shm beside a symlink's target, so the probe follows the link.
+  it('reads a store reached through a symlink through the -wal and -shm beside its target, never immutable', async () => {
+    const w = statsStore();
+    w.round({ legs: three() });
+    const linkDir = scratch('sc-stats-link-');
+    const link = join(linkDir, 'council.db');
+    symlinkSync(w.dbPath, link);
+    expect([existsSync(`${link}-wal`), existsSync(`${w.dbPath}-wal`), existsSync(`${w.dbPath}-shm`)]).toEqual([false, true, true]);
+    const tried: string[] = [];
+    const openDatabase = (filename: string, options: { readOnly: true }): DatabaseSync => {
+      tried.push(filename);
+      return new (sqlite().DatabaseSync)(filename, options);
+    };
+    const s = openStoreReadOnly(link, { openDatabase });
+    // The plain open of the target, which sees the writer's commit still in its -wal.
+    expect(tried).toEqual([w.dbPath]);
+    expect(s.path).toBe(link);
+    expect(s.db.prepare('SELECT count(*) AS n FROM rounds').get()).toEqual({ n: 1 });
+    s.close();
+    w.round({ legs: three() });
+    const live = await run(['stats', '--db', link, '--config', join(linkDir, 'none.toml'), '--json']);
+    expect((JSON.parse(live.text) as { window: { rounds: { council: number } } }).window.rounds.council).toBe(2);
+    w.close();
+    // Closed: the target is opened immutable, and nothing appears beside the link or the target.
+    tried.length = 0;
+    openStoreReadOnly(link, { openDatabase }).close();
+    expect(tried).toEqual([`${pathToFileURL(w.dbPath).href}?mode=ro&immutable=1`]);
+    expect(readdirSync(linkDir)).toEqual(['council.db']);
+    expect(readdirSync(dirname(w.dbPath))).toEqual(['council.db']);
+    // A stray file beside the target is found, and named where it is.
+    writeFileSync(`${w.dbPath}-shm`, '');
+    expect(() => openStoreReadOnly(link).close()).toThrow(`cannot read the run store at ${link}: ${w.dbPath}-shm is there without ${w.dbPath}-wal (`);
+    expect(readdirSync(linkDir)).toEqual(['council.db']);
   });
 });
 
