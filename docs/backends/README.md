@@ -75,9 +75,11 @@ id = "a"
 backend = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
-fallback = { backend = "claude", model = "claude-sonnet-5-5", effort = "high", on = ["usage_limit", "auth"] }
+fallback = { backend = "claude", model = "claude-opus-5-5", effort = "high", on = ["usage_limit", "auth"] }
 ```
 
-The fallback must be a different occupant from the primary. A fallback table takes `backend`, `model`, `effort`,
-`on` and (kiro and grok) `auth_home`; it has no `sandbox` key, so a grok fallback always runs with the read-only
-sandbox.
+No model may vote twice: a fallback must be a different occupant (backend, model or effort) from its own primary,
+from every other seat's primary and from every other seat's fallback. So covering two seats with `claude` fallbacks
+for untrusted pull requests takes two different Claude models (or efforts), neither one a primary. A fallback table
+takes `backend`, `model`, `effort`, `on` and (kiro and grok) `auth_home`; it has no `sandbox` key, so a grok fallback
+always runs with the read-only sandbox.

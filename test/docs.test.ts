@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parseConfigText } from '../src/config/index.js';
 
 /*
  * The user-facing docs (P10). Every relative link in the docs resolves inside the repository (and every #anchor to a
@@ -111,5 +112,18 @@ describe('docs', () => {
       expect(text, f).not.toContain('\u2014');
       expect(text, f).not.toMatch(/\/Users\/|\/home\/[a-z]|\/private\/tmp\//);
     }
+  });
+
+  it('shows configs the loader accepts: the quickstart as written, and the reference with two more seats', async () => {
+    const readme = read('README.md');
+    const quick = /```sh\nmkdir -p ~\/\.config\/sabotage-council\ncat > [^\n]*<<'EOF'\n([\s\S]*?)EOF\n/.exec(readme)?.[1];
+    expect(quick).toBeDefined();
+    const q = await parseConfigText(quick!);
+    expect(q.ok ? [] : q.errors).toEqual([]);
+    const reference = /```toml\n([\s\S]*?)```/.exec(readme.slice(readme.indexOf('## Configuration')))?.[1];
+    expect(reference).toBeDefined();
+    const two = '\n[[seats]]\nid = "b"\nbackend = "claude"\nmodel = "claude-sonnet-5-5"\neffort = "high"\n\n[[seats]]\nid = "c"\nbackend = "grok"\nmodel = "grok-4.7"\neffort = "high"\nsandbox = "off"\n';
+    const r = await parseConfigText(reference! + two);
+    expect(r.ok ? [] : r.errors).toEqual([]);
   });
 });

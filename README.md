@@ -222,7 +222,7 @@ id = "a"
 backend = "codex"                  # codex, claude, grok, antigravity, kiro, opencode, cursor, muse
 model = "gpt-6.1-sol"              # an id the backend's adapter lists
 effort = "high"                    # required by most backends (see each backend page)
-fallback = { backend = "claude", model = "claude-sonnet-5-5", effort = "high", on = ["usage_limit", "auth"] }
+fallback = { backend = "claude", model = "claude-opus-5-5", effort = "high", on = ["usage_limit", "auth"] }
 # grok seats take sandbox = "read-only" | "off"; kiro and grok seats (and fallbacks) take auth_home = "/abs/dir",
 # a separate login of the seat's own.
 
@@ -267,8 +267,9 @@ swap_precision_below = 0.5
 swap_ratified_rate_below = 0.8
 ```
 
-Config load checks exactly three seats, unique ids, every model id against its adapter's list, and that a fallback
-is a different occupant; it warns when two seats share a model family, or a seat shares the adjudicator's.
+Config load checks exactly three seats, unique ids, every model id against its adapter's list, and that no model
+votes twice: a fallback differs from its own primary, from every other seat's primary and from every other seat's
+fallback. It warns when two seats share a model family, or a seat shares the adjudicator's.
 
 ## Reference
 
