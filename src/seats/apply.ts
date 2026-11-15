@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, constants, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { parseConfigText, type AdapterRegistry, type ConfigIssue } from '../config/index.js';
 import { SEAT_COUNT } from '../config/vocab.js';
@@ -64,10 +64,14 @@ function stamp(d: Date): string {
   return d.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
 
-/** Writes `bytes` to a new file (never an existing one) with `mode`. */
+/**
+ * Writes `bytes` to a new file (never an existing one) with exactly `mode`: `open` applies the umask, so the mode is
+ * set again on the descriptor (a 0664 config under umask 077 stays 0664 after the rename).
+ */
 function writeNew(path: string, bytes: string | Buffer, mode: number): void {
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), mode);
   try {
+    fchmodSync(fd, mode);
     writeSync(fd, typeof bytes === 'string' ? Buffer.from(bytes, 'utf8') : bytes);
     fsyncSync(fd);
   } finally {

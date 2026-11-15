@@ -171,6 +171,20 @@ describe('seats: applying an edit to the config file', () => {
     expect(again.backup).toBe(join(dir, 'config.toml.bak-20261114T080910Z-2'));
   });
 
+  it('keeps the exact mode whatever the umask (a umask that would clear bits)', async () => {
+    const { path } = configFile();
+    chmodSync(path, 0o664);
+    const previous = process.umask(0o077);
+    try {
+      const r = await applySeatEdit(path, swap('c', 'antigravity', 'gemini-3.8-pro'), { registry: REGISTRY, dryRun: false, now });
+      expect(r.written).toBe(true);
+      expect(lstatSync(path).mode & 0o777).toBe(0o664);
+      expect(lstatSync(r.backup ?? '').mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previous);
+    }
+  });
+
   it('--dry-run prints the diff and writes nothing', async () => {
     const { dir, path } = configFile();
     const r = await applySeatEdit(path, swap('c', 'antigravity', 'gemini-3.8-pro'), { registry: REGISTRY, dryRun: true, now });
