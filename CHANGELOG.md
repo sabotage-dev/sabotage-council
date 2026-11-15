@@ -20,7 +20,9 @@ The first release.
   `findings` on the opening fence or, as a live seat wrote it, on the first non-blank line inside an untagged fence;
   anything looser, or two blocks that differ, goes to the adjudicator.
 - **Adjudication**: `adjudicate` validates and stores your session's `ADJUDICATION.json`; `adjudicate --headless`
-  runs a restricted Claude Code to adjudicate with no user in the loop (what `auto` uses).
+  runs a restricted Claude Code to adjudicate with no user in the loop (what `auto` uses). `adjudicate --check`
+  names the stable id each finding must have, even when its `id` is a placeholder the schema rejects, so any `f_` id
+  can be a placeholder.
 - **The scorecard**: `stats` (per seat and per occupant, with swap candidates, as text, JSON or one HTML file) and the
   `seats` commands (`list`, `test` on a built-in planted-defect fixture, `swap`, `add`, `remove`).
 - **The Claude Code plugin** in `plugin/`: `/sabotage-council:council plan | diff | pr | status | doctor | stats |

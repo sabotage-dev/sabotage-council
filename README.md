@@ -125,8 +125,10 @@ sabotage-council adjudicate <round_id> ADJUDICATION.json
 ```
 
 `--check` validates and stores nothing; a rejection names the rule it broke (`[attribution]`, `[round-rule]`, ...).
-Finding ids are computed from the finding's path and title, so the first `--check` names the id each finding must
-have: copy it in and check again. The stored verdict is the round's.
+Finding ids are computed from the finding's path and title, so any `f_` id can be a placeholder (`f_1`, `f_2`, ...):
+`--check` names the real one each finding must have, even beside the schema error a placeholder that is not `f_` plus
+12 hex draws. Copy each in (and wherever you named it, in `fix_row` or `followups`) and check again. The stored
+verdict is the round's.
 
 **7. Fold and go again.** After you fix the owed findings, the same `round start` becomes round 2: the seats review
 only the change since the last adjudicated round, and the earlier owed findings come back as items each needing a

@@ -1440,7 +1440,9 @@ Cross-checks enforced by code:
 
 Finding ids:
 - **Stable id:** `sha256(target + path + normalized title)[:12]`. The same issue re-raised in a later round keeps
-  its id.
+  its id. A wrong id is rejected (`[ids]`) with the id it must have; as built before 0.1.0 (the live run), a
+  document the schema rejects also names that id for every finding whose title and path the schema accepts, so a
+  placeholder that is not `f_` plus 12 hex still learns its real id on the first `--check`.
 - **Store key:** `(round_id, id)`, so rounds never collide.
 - **Earlier ids:** `same_as` links a finding to an earlier round's id when the adjudicator judges it the same
   issue under a changed title.

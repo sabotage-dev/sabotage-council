@@ -128,6 +128,17 @@ describe('CLI: round start / wait / show and adjudicate', () => {
       summary: 'One owed defect.',
       blocker_call: 'Fix the loop bound.',
     };
+    // Any placeholder id: the first --check names the stable id the finding must have, though the id is not f_ plus
+    // 12 hex (a schema rejection), and stores nothing.
+    writeFileSync(file, JSON.stringify({ ...adjudication, findings: [{ ...adjudication.findings[0], id: 'f_1' }] }));
+    const placeholder = await c.run('adjudicate', String(start.round_id), file, '--check');
+    expect(placeholder.code).toBe(1);
+    expect(placeholder.lines).toEqual([
+      'check failed: 2 problem(s); nothing was stored',
+      '  [schema] findings[0].id: a finding id is f_ and 12 lowercase hex',
+      `  [ids] findings[0] ("range_sum excludes the end index") must have the stable id ${id} (sha256 of target, path and normalized title)`,
+    ]);
+
     writeFileSync(file, JSON.stringify({ ...adjudication, verdict: 'SHIP' }));
     const rejected = await c.run('adjudicate', String(start.round_id), file);
     expect(rejected.code).toBe(1);

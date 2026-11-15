@@ -226,6 +226,50 @@ describe('adjudicate: plan 7.3 validator', () => {
     expect(errors.every((e) => /^\[[a-z-]+\] /.test(e))).toBe(true);
   });
 
+  // The live run: placeholder ids that were not f_ plus 12 hex failed [schema], and the first --check named no stable id.
+  it('names the stable id a finding must have even when its id is malformed or missing, and still rejects', () => {
+    const a = valid();
+    f(a, 0)['id'] = 'f_1';
+    delete f(a, 1)['id'];
+    const r = validateAdjudication(a, ctx());
+    expect(r.ok).toBe(false);
+    expect(r.ok ? [] : r.errors).toEqual([
+      '[schema] findings[0].id: a finding id is f_ and 12 lowercase hex',
+      '[schema] findings[1].id: Invalid input: expected string, received undefined',
+      `[ids] findings[0] ("range_sum drops the end element") must have the stable id ${F1} (sha256 of target, path and normalized title)`,
+      `[ids] findings[1] ("mean divides by zero") must have the stable id ${F2} (sha256 of target, path and normalized title)`,
+    ]);
+  });
+
+  it('names it when the schema rejects the file for another reason, from the title and path as the schema reads them', () => {
+    const a = valid();
+    a['summary'] = ' ';
+    f(a, 0)['id'] = 'f_000000000001';
+    f(a, 0)['title'] = '  range_sum drops the end element  ';
+    f(a, 1)['id'] = 'f_000000000002';
+    f(a, 1)['path'] = `  ${PATH} `;
+    const errors = errorsOf(a);
+    expect(errors[0]).toMatch(/^\[schema\] summary: /);
+    expect(errors.slice(1)).toEqual([
+      `[ids] findings[0] ("range_sum drops the end element") must have the stable id ${F1} (sha256 of target, path and normalized title)`,
+      `[ids] findings[1] ("mean divides by zero") must have the stable id ${F2} (sha256 of target, path and normalized title)`,
+    ]);
+    // A null path is part of the id; a finding that already has its stable id gets no line.
+    const c = valid();
+    c['summary'] = ' ';
+    f(c, 0)['path'] = null;
+    expect(errorsOf(c).slice(1)).toEqual([
+      `[ids] findings[0] ("range_sum drops the end element") must have the stable id ${id('range_sum drops the end element', null)} (sha256 of target, path and normalized title)`,
+    ]);
+    // One whose title or path the schema rejects has no stable id yet and keeps only its schema error.
+    const b = valid();
+    f(b, 0)['id'] = 'X';
+    f(b, 0)['title'] = ' ';
+    f(b, 1)['path'] = '';
+    expect(errorsOf(b).filter((e) => e.startsWith('[ids]'))).toEqual([]);
+    expect(validateAdjudicationText(JSON.stringify(b), ctx())).toMatchObject({ ok: false });
+  });
+
   it('covers every check class with at least one rejection', () => {
     const classes = new Set(CASES.map((c) => c[0]));
     expect([...classes].sort()).toEqual(['approval', 'attribution', 'coverage', 'effective', 'followups', 'human-asks', 'identity', 'ids', 'owner', 'refutation', 'round-rule', 'schema', 'severity', 'verdict'].sort());

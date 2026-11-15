@@ -148,9 +148,10 @@ Each rejection starts with its class in brackets.
 - `[identity]`: `nonce`, `head_sha` and `round` are this round's.
 - `[ids]`: finding ids are unique and stable: `f_` plus the first 12 hex of sha256 of the round's `target_key`,
   the finding's `path` (empty when null) and its normalized title (Unicode NFKC, lower case, whitespace runs as one
-  space, trimmed, trailing periods dropped), joined by newlines. A wrong id is rejected with the id it must have:
-  copy it in. `same_as` names an earlier round's finding of this target; `closes_item` names an earlier item of
-  this round.
+  space, trimmed, trailing periods dropped), joined by newlines. A wrong id is rejected with the id it must have,
+  even one that is not `f_` plus 12 hex (beside its `[schema]` error), so any `f_` id can be a placeholder for the
+  first `--check`: copy each real id in, wherever you named it. `same_as` names an earlier round's finding of this
+  target; `closes_item` names an earlier item of this round.
 - `[attribution]`: every finding of every counted leg is mapped exactly once, in one finding's `raised_by` or in
   `unmapped` (with a reason; `unmapped` is only for items that are not findings at all). `raised_by` keeps the
   seat's own severity. A leg with `findings_extracted_by: adjudicator-needed` has no parsed block: extract its

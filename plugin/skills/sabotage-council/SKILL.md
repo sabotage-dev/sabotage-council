@@ -86,7 +86,8 @@ the first round: the commands and flags this skill uses are the 0.1.0 engine's.
    ```
 
    A rejection lists every broken rule with its class: fix the file and check again. A wrong finding id is rejected
-   with the id it must have. If the check lists a majority override, show the user each one with its proof and wait
+   with the id it must have, even a placeholder that is not `f_` plus 12 hex, so any `f_` id can be a placeholder
+   for the first check. If the check lists a majority override, show the user each one with its proof and wait
    for their go before the storing call. Then store it:
 
    ```sh
