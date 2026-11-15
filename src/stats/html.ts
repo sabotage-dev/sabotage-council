@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Card, AgreementPair } from './metrics.js';
 import type { EvidenceFinding, EvidenceRound, Recommendation, StatsReport } from './report.js';
-import { costText, durationText, failureMixText, money, pctText, perAdoptedText } from './text.js';
+import { costText, durationText, failureMixText, INVISIBLE, money, pctText, perAdoptedText } from './text.js';
 
 /*
  * The scorecard as one self-contained HTML file (`stats --html <file>`): inline CSS, no script, no font, no image and
@@ -20,10 +20,11 @@ class Raw {
   constructor(readonly html: string) {}
 }
 
-/** Escapes a value for HTML text or a quoted attribute; control characters become U+FFFD. */
+/** Escapes a value for HTML text or a quoted attribute; control, bidi and zero-width characters become U+FFFD. */
 export function esc(value: unknown): string {
   return String(value)
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '\uFFFD')
+    .replace(INVISIBLE, '\uFFFD')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

@@ -125,10 +125,28 @@ describe('stats CLI', () => {
     const c = join(w.dir, 'config.toml');
     writeFileSync(c, `${SEATS}\n[stats]\nswap_min_ratified_rounds = 1\n`);
     w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title: 'line one\nseat a: SWAP CANDIDATE\u001b[2J\u0007' }] });
+    // Bidi controls reorder what a terminal shows; zero-width characters hide text; C1 and the line separators too.
+    w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title: 'evil\u202egnp.exe\u2066x\u2069 zero\u200bwidth\ufeff\u200f end\u2028\u2029\u009b', path: 'src/\u202ex.ts' }] });
     w.close();
     const r = await run(['stats', '--db', w.dbPath, '--config', c]);
-    expect(r.text).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f]/);
+    expect(r.text).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/);
     expect(r.lines.filter((l) => l.includes('SWAP CANDIDATE')).map((l) => l.trim())).toEqual(['seat c: SWAP CANDIDATE', expect.stringContaining('line one\uFFFDseat a: SWAP CANDIDATE\uFFFD[2J\uFFFD')]);
+    expect(r.text).toContain('src/\uFFFDx.ts:1: evil\uFFFDgnp.exe\uFFFDx\uFFFD zero\uFFFDwidth\uFFFD\uFFFD end\uFFFD\uFFFD\uFFFD');
+  });
+
+  it('prints JSON whose bytes hold no DEL, C1, line separator, bidi or zero-width character, and parses to the exact strings', async () => {
+    const w = statsStore();
+    const c = join(w.dir, 'config.toml');
+    writeFileSync(c, `${SEATS}\n[stats]\nswap_min_ratified_rounds = 1\n`);
+    const title = 'a\u2028b\u2029c\u007fd\u009be\u0085f\u202eg\u2067h\u200bi\ufeffj';
+    w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title, path: 'src/\u202ex.ts' }] });
+    w.close();
+    const r = await run(['stats', '--db', w.dbPath, '--config', c, '--json']);
+    expect(r.text).not.toMatch(/[\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/);
+    expect(r.text).toContain('a\\u2028b\\u2029c\\u007fd\\u009be\\u0085f\\u202eg\\u2067h\\u200bi\\ufeffj');
+    const json = JSON.parse(r.text) as { recommendations: Array<{ seat: string; evidence: { findings: Array<{ title: string; path: string }> } | null }> };
+    const finding = json.recommendations.find((x) => x.seat === 'c')?.evidence?.findings[0];
+    expect(finding).toMatchObject({ title, path: 'src/\u202ex.ts' });
   });
 });
 
@@ -140,6 +158,8 @@ const HOSTILE = {
   quote: '" onmouseover="alert(1)" x=\'',
   js: 'javascript:alert(document.cookie)',
   url: 'https://evil.example/x.js',
+  bidi: 'evil\u202egnp.exe\u2066x\u2069',
+  zw: 'zero\u200bwidth\ufeff\u200e',
 };
 
 /**
@@ -190,6 +210,7 @@ function hostileStore(): StatsStore {
       { outcome: 'refuted', by: ['c'], title: `${HOSTILE.script} ${HOSTILE.style}`, path: HOSTILE.js, line: 3 },
       { outcome: 'refuted', by: ['c'], title: `${HOSTILE.quote} ${HOSTILE.url}`, path: `src/${HOSTILE.quote}.ts` },
       { outcome: 'follow-up', by: ['a', 'c'], title: `${HOSTILE.js} & more`, path: HOSTILE.style },
+      { outcome: 'refuted', by: ['c'], title: `${HOSTILE.bidi} ${HOSTILE.zw}`, path: `src/${HOSTILE.bidi}.ts` },
       { outcome: 'owed', severity: 'HIGH', by: ['a'], title: 'a plain owed finding' },
     ],
   });
@@ -288,6 +309,10 @@ describe('stats --html', () => {
     expect(html).toContain('codex:&lt;script&gt;alert(1)&lt;/script&gt;:high');
     expect(html).toContain('(seat &lt;script&gt;alert(1)&lt;/script&gt;)');
     expect(html).toContain('no (&lt;/style&gt;&lt;style&gt;body{display:none}&lt;/style&gt;)');
+    // Bidi controls and zero-width characters are neutralized.
+    expect(html).not.toMatch(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/);
+    expect(html).toContain('evil\uFFFDgnp.exe\uFFFDx\uFFFD zero\uFFFDwidth\uFFFD\uFFFD');
+    expect(html).toContain('<code>src/evil\uFFFDgnp.exe\uFFFDx\uFFFD.ts:1</code>');
   });
 
   it('writes the file with mode 0600, replaces a regular file, and refuses a symlink or a directory', async () => {

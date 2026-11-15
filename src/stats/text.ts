@@ -9,9 +9,27 @@ import type { Recommendation, StatsReport } from './report.js';
  * forge lines in a terminal.
  */
 
-/** Control characters (C0 but tab, DEL, C1) and line separators replaced by U+FFFD: one value stays one line. */
+/**
+ * Characters an untrusted value must not bring to a reader: bidi controls (U+202A-U+202E, U+2066-U+2069), which reorder
+ * what is displayed, and zero-width characters (U+200B-U+200F, U+FEFF), which hide text.
+ */
+export const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
+/**
+ * Control characters (C0 but tab, DEL, C1), line separators, bidi controls and zero-width characters replaced by
+ * U+FFFD: one value stays one line and reads in the order it was written.
+ */
 export function clean(text: string): string {
-  return text.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/g, '\uFFFD');
+  return text.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/g, '\uFFFD').replace(INVISIBLE, '\uFFFD');
+}
+
+/**
+ * JSON for a terminal or a pipe: `JSON.stringify` (2-space indent), then every DEL, C1, U+2028, U+2029, bidi control and
+ * zero-width character written as a `\uXXXX` escape. The parsed value is unchanged (a reader gets the exact string);
+ * the bytes printed hold none of those characters. They can only occur inside JSON strings, where the escape is valid.
+ */
+export function safeJson(value: unknown): string {
+  return JSON.stringify(value, null, 2).replace(/[\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 export const pctText = (x: number | null): string => (x === null ? 'n/a' : `${Math.round(x * 1000) / 10}%`);

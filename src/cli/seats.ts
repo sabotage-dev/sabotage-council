@@ -11,7 +11,7 @@ import { exitCodeOf, recordSeatTest, runSeatTest, SeatTestNotRun, type SeatTestR
 import { resolveOccupantSpec, splitBackend } from '../seats/spec.js';
 import { loadStats, occupantKey } from '../stats/data.js';
 import { buildReport, thresholdsOf, type SeatCard, type Recommendation } from '../stats/report.js';
-import { durationText, money, pctText } from '../stats/text.js';
+import { clean, durationText, money, pctText, safeJson } from '../stats/text.js';
 import { openStore } from '../store/index.js';
 import type { StorePaths } from './round.js';
 
@@ -52,7 +52,7 @@ function occupantOf(o: { backend: BackendId; model: string; effort?: string | un
 
 // ---------- list ----------
 
-interface Label {
+export interface Label {
   enforcement: string;
   cli_version: string | null;
   preflight_ok: boolean | null;
@@ -72,11 +72,12 @@ async function labelOf(io: SeatsIo, o: Occupant, root: string, legDir: () => str
   return { enforcement: pre.enforcement, cli_version: pre.cliVersion, preflight_ok: pre.ok, reason: pre.ok ? null : pre.reason };
 }
 
-function labelText(backend: string, l: Label | null): string {
+/** The label as one line; every adapter-supplied string (enforcement, version, reason) is cleaned. */
+export function labelText(backend: string, l: Label | null): string {
   if (l === null) return 'enforcement not checked (--no-preflight)';
-  const version = l.cli_version !== null ? ` (${backend} ${l.cli_version})` : '';
-  const failed = l.preflight_ok === false ? `; preflight failed: ${l.reason ?? 'unknown'}` : l.preflight_ok === null ? `; ${l.reason ?? ''}` : '';
-  return `enforcement ${l.enforcement}${version}${failed}`;
+  const version = l.cli_version !== null ? ` (${backend} ${clean(l.cli_version)})` : '';
+  const failed = l.preflight_ok === false ? `; preflight failed: ${clean(l.reason ?? 'unknown')}` : l.preflight_ok === null ? `; ${clean(l.reason ?? '')}` : '';
+  return `enforcement ${clean(l.enforcement)}${version}${failed}`;
 }
 
 /**
@@ -144,7 +145,7 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
 
   if (opts.json) {
     io.write(
-      JSON.stringify(
+      safeJson(
         {
           config: paths.configPath,
           seats: rows.map(({ seat, label, fallbackLabel, card, rec }) => {
@@ -172,8 +173,6 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
             };
           }),
         },
-        null,
-        2,
       ),
     );
     io.setExitCode(0);
@@ -324,7 +323,7 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
   } catch (error) {
     recorded = `could not record the seat test in ${paths.dbPath}: ${error instanceof Error ? error.message : String(error)}`;
   }
-  if (args.json) io.write(JSON.stringify({ ...result, exit_code: code, record_error: recorded }, null, 2));
+  if (args.json) io.write(safeJson({ ...result, exit_code: code, record_error: recorded }));
   else {
     for (const line of resultLines(result, fixture.defects.map((d) => ({ id: d.id, severity: d.severity, title: d.title })))) io.write(line);
     if (recorded !== null) say(`warn  ${recorded}`);
@@ -332,16 +331,19 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
   io.setExitCode(code);
 }
 
+/** The result as text. Adapter- and leg-supplied strings (checks, reasons, versions, finding ids) are cleaned. */
 export function resultLines(r: SeatTestResult, defects: ReadonlyArray<{ id: string; severity: string; title: string }>): string[] {
   const out: string[] = [];
-  out.push(`ratification  ${r.ratified ? 'PASS' : `${r.status}${r.failure_class !== null ? ` (${r.failure_class})` : ''}`}${r.enforcement !== null ? `; enforcement ${r.enforcement}` : ''}${r.cli_version !== null ? `; ${r.occupant.backend} ${r.cli_version}` : ''}`);
-  for (const c of r.failed_checks) out.push(`  failed  ${c}`);
-  if (r.reason !== null) out.push(`  ${r.reason}`);
-  out.push(`verdict       ${r.verdict ?? 'none'}${r.findings_extracted_by === 'adjudicator-needed' ? ' (its findings block did not parse: defects read from the answer text)' : ''}`);
+  out.push(
+    `ratification  ${r.ratified ? 'PASS' : `${clean(r.status)}${r.failure_class !== null ? ` (${clean(r.failure_class)})` : ''}`}${r.enforcement !== null ? `; enforcement ${clean(r.enforcement)}` : ''}${r.cli_version !== null ? `; ${r.occupant.backend} ${clean(r.cli_version)}` : ''}`,
+  );
+  for (const c of r.failed_checks) out.push(`  failed  ${clean(c)}`);
+  if (r.reason !== null) out.push(`  ${clean(r.reason)}`);
+  out.push(`verdict       ${clean(r.verdict ?? 'none')}${r.findings_extracted_by === 'adjudicator-needed' ? ' (its findings block did not parse: defects read from the answer text)' : ''}`);
   out.push(`defects       found ${r.defects.found.length} of ${r.defects.total}${r.defects.other_findings.length > 0 ? `; ${r.defects.other_findings.length} other finding(s) (the base is correct, so these are noise)` : ''}`);
   for (const d of defects) {
     const m = r.defects.matches.find((x) => x.defect === d.id);
-    out.push(`  ${r.defects.found.includes(d.id) ? 'found ' : 'missed'}  ${d.id} ${d.severity} ${d.title}${m ? ` (${m.finding}, by ${m.by})` : ''}`);
+    out.push(`  ${r.defects.found.includes(d.id) ? 'found ' : 'missed'}  ${d.id} ${d.severity} ${d.title}${m ? ` (${clean(m.finding)}, by ${m.by})` : ''}`);
   }
   const cost = [r.cost_usd !== null ? money(r.cost_usd) : null, r.credits !== null ? `${r.credits} credits` : null, r.quota_used_pct !== null ? `quota ${r.quota_used_pct}%` : null].filter((x) => x !== null);
   out.push(`cost          ${cost.join(', ') || 'none recorded'}; duration ${durationText(r.duration_ms)}`);

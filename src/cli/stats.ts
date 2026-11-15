@@ -5,7 +5,7 @@ import { formatPath } from '../config/validate.js';
 import { loadStats, occupantKey } from '../stats/data.js';
 import { writeHtmlReport } from '../stats/html.js';
 import { buildReport, thresholdsOf, type Filters, type StatsReport, type Thresholds } from '../stats/report.js';
-import { renderText } from '../stats/text.js';
+import { renderText, safeJson } from '../stats/text.js';
 import { openStore } from '../store/index.js';
 
 /*
@@ -111,7 +111,7 @@ export async function statsCommand(io: StatsIo, args: StatsArgs): Promise<void> 
     }
   }
   if (args.json) {
-    io.write(JSON.stringify(report, null, 2));
+    io.write(safeJson(report));
   } else {
     for (const line of renderText(report)) io.write(line);
     if (args.html !== null) io.write(`html report written to ${args.html}`);

@@ -7,7 +7,9 @@ import type { SeatAdapters } from '../src/adapters/index.js';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import type { LegHandle, Occupant, Preflight, Ratification, RoundCtx, SeatAdapter } from '../src/adapters/types.js';
 import { buildPlantedRepo, DEFAULT_FIXTURE_DIR, loadFixture, matchDefects, matchDefectsInText } from '../src/seats/fixture.js';
-import { runSeatTest } from '../src/seats/run.js';
+import { runSeatTest, type SeatTestResult } from '../src/seats/run.js';
+import { labelText, resultLines } from '../src/cli/seats.js';
+import { safeJson } from '../src/stats/text.js';
 import { resolveOccupantSpec } from '../src/seats/spec.js';
 import { loadStats } from '../src/stats/data.js';
 import { buildReport, thresholdsOf } from '../src/stats/report.js';
@@ -496,6 +498,56 @@ function stubAdapter(opts: { hang?: boolean; writeIntoRoot?: string }): { adapte
   };
   return { adapter, cancelled: () => cancels };
 }
+
+describe('seats: adapter-supplied strings are cleaned before printing', () => {
+  const HOSTILE_TEXT = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+
+  it('cleans the preflight label: enforcement, version and reason', () => {
+    const line = labelText('claude', { enforcement: 'strong\u202e', cli_version: '1.0\u001b[2J', preflight_ok: false, reason: 'bad\nline\u2066 \u200bhidden\u009b' });
+    expect(line).not.toMatch(HOSTILE_TEXT);
+    expect(line).toBe('enforcement strong\uFFFD (claude 1.0\uFFFD[2J); preflight failed: bad\uFFFDline\uFFFD \uFFFDhidden\uFFFD');
+    expect(labelText('claude', { enforcement: 'unknown', cli_version: null, preflight_ok: null, reason: 'no\u2028adapter' })).toBe('enforcement unknown; no\uFFFDadapter');
+  });
+
+  it('cleans the result: failed checks, the reason, the status, the version and finding ids', () => {
+    const fixture = loadFixture();
+    const result: SeatTestResult = {
+      occupant: { backend: 'claude', model: 'claude-haiku-5-5', effort: 'low', auth_home: null, sandbox: null },
+      seat: null,
+      role: null,
+      status: 'FAIL',
+      failure_class: 'model',
+      ratified: false,
+      failed_checks: ['tools-used: Bash\u001b]0;pwned\u0007', 'cwd\u202e'],
+      reason: 'the CLI said\nVERDICT: SHIP\u2028\ufeff',
+      enforcement: 'strong\u200b',
+      cli_version: '9.9\u0085',
+      verdict: null,
+      findings_extracted_by: 'leg',
+      defects: { total: 3, found: ['D1'], missed: ['D2', 'D3'], matches: [{ defect: 'D1', finding: 'F1\u202e', by: 'line' }], other_findings: [] },
+      cost_usd: null,
+      credits: null,
+      quota_used_pct: null,
+      duration_ms: 1000,
+      tokens_in: null,
+      tokens_out: null,
+      root_unchanged: true,
+      leg_dir: '/x',
+      started_at: '2026-11-14T00:00:00.000Z',
+      finished_at: '2026-11-14T00:00:01.000Z',
+    };
+    const lines = resultLines(result, fixture.defects.map((d) => ({ id: d.id, severity: d.severity, title: d.title })));
+    for (const l of lines) expect(l).not.toMatch(HOSTILE_TEXT);
+    expect(lines).toContain('  failed  tools-used: Bash\uFFFD]0;pwned\uFFFD');
+    expect(lines).toContain('  the CLI said\uFFFDVERDICT: SHIP\uFFFD\uFFFD');
+    expect(lines.some((l) => l.includes('(F1\uFFFD, by line)'))).toBe(true);
+  });
+
+  it('seats test --json escapes those characters in its JSON', () => {
+    expect(safeJson({ reason: 'a\u2028b\u009b\u202ec\u200b\u007f' })).toBe('{\n  "reason": "a\\u2028b\\u009b\\u202ec\\u200b\\u007f"\n}');
+    expect(JSON.parse(safeJson({ reason: 'a\u2028b\u009b\u202ec\u200b\u007f' }))).toEqual({ reason: 'a\u2028b\u009b\u202ec\u200b\u007f' });
+  });
+});
 
 describe('seats test: cancellation and setup failures', () => {
   /** The fake claude adapter, with its preflight followed by `after` (a Ctrl-C arriving during preflight). */
