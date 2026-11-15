@@ -11,7 +11,10 @@ jobs:
   test:
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # macOS jobs take 7 to 10 minutes on Node 22 and 24. On the 22.13.0 floor a Node process starts about 1.6 times
+    # slower (measured), test/auto-pass.test.ts alone starts 3,760 of them (the fake gh and the fake CLIs), and a
+    # macOS 22.13.0 job was cancelled at the old 15-minute cap; 30 leaves room.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

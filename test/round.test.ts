@@ -302,17 +302,26 @@ describe('round runner end to end through the fake CLIs', () => {
   }, 60_000);
 
   it('does not relaunch a timed-out leg when the round has no time left', async () => {
+    // The round budget is shorter than the leg cap, so the hanging leg's cap is what is left of the budget when it
+    // launches, and it times out at the round's deadline however long the serial preflights took (the budget's clock
+    // starts before them). The preflights may take up to budget - minLegMs (7000 - 2400 ms) before the seat would be
+    // left out unlaunched; the old 1600 ms budget left them 300 ms, which a slow macOS runner on Node 22.13 used up.
     const h = harness();
     const { repo } = fixtureRepo();
     const { prepared } = await runRound(
       h,
       resolveDiffTarget(repo, 'main..feature'),
       { codex: { [OCC.a]: [codexCase('success', { hang: true }), codexCase('success')] } },
-      { legTimeoutMs: 1500, roundBudgetMs: 1600 },
+      { legTimeoutMs: 12_000, roundBudgetMs: 7_000 },
     );
     const a = getLegs(h.store.db, prepared.inputs.roundId).filter((l) => l.seat_id === 'a');
     expect(a.map((l) => [l.attempt, l.failure_class])).toEqual([[1, 'timeout']]);
-    expect(getEvents(h.store.db, prepared.inputs.roundId).find((e) => e.kind === 'seat-out')?.detail).toMatchObject({ seat: 'a', why: expect.stringContaining('no time remains') });
+    const events = getEvents(h.store.db, prepared.inputs.roundId);
+    expect(events.some((e) => e.kind === 'relaunch')).toBe(false);
+    // The decision after the timeout (plan 4.4), not the pre-launch refusal ("no time remains ... for this leg").
+    expect(events.filter((e) => e.kind === 'seat-out').map((e) => e.detail)).toEqual([
+      { seat: 'a', role: 'primary', attempt: 1, failure_class: 'timeout', why: 'timeout, and no time remains in the round for a relaunch' },
+    ]);
   }, 60_000);
 
   it('treats a ratified leg with no verdict and no findings as empty, and relaunches it once', async () => {
