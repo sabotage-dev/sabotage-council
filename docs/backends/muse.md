@@ -89,5 +89,6 @@ None of these texts comes from a logged-in run:
 ## Known gaps
 
 - Everything about a logged-in leg (above); muse stays below `strong` in v1 whatever a canary would show.
-- Muse 1.4.15 does not record the effort or the contributor mode in the session, so neither is ratified from the
-  record; the ratifier checks the launch flags instead.
+- Muse 1.4.15 does not record the effort, the contributor mode or the permission profile in the session, so none of
+  them is ratified from the record (the ratifier accepts their absence for that version); it checks the launch flags
+  instead. Muse records no offered tools either.

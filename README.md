@@ -9,9 +9,9 @@ verdict: `SHIP`, `SHIP-WITH-FIXES` or `NEEDS-WORK`.
 
 Each seat is filled by a CLI you already use: Codex CLI, Claude Code, Grok CLI, Antigravity CLI, Kiro CLI, opencode,
 Cursor CLI or Muse Code. Every leg is ratified from the CLI's own records (the model that actually ran, the tools it
-was offered and used, the files it read), so a leg that is not the review it claims to be does not count. Every round
-records which seat raised which finding and what became of it, so you can see which seats earn their place and swap
-the ones that do not.
+used and, where the CLI records it, what it was offered, the files it read), so a leg that is not the review it claims
+to be does not count. Every round records which seat raised which finding and what became of it, so you can see which
+seats earn their place and swap the ones that do not.
 
 Four modes:
 
@@ -46,11 +46,13 @@ The plugin holds no engine logic: it calls the `sabotage-council` command you in
 each [backend page](docs/backends/README.md) says how to install, sign in and choose a model, and what it can and
 cannot enforce.
 
-**2. Write the config** at `~/.config/sabotage-council/config.toml`:
+**2. Write the config** at `~/.config/sabotage-council/config.toml`. This never overwrites a config you already
+have: if the file exists, the shell refuses (`noclobber`) and nothing is written, so back up or move your config
+first, or add these seats to it by hand.
 
 ```sh
 mkdir -p ~/.config/sabotage-council
-cat > ~/.config/sabotage-council/config.toml <<'EOF'
+(set -o noclobber; cat > ~/.config/sabotage-council/config.toml) <<'EOF'
 [[seats]]
 id = "a"
 backend = "codex"
@@ -123,7 +125,7 @@ have: copy it in and check again. The stored verdict is the round's.
 
 **7. Fold and go again.** After you fix the owed findings, the same `round start` becomes round 2: the seats review
 only the change since the last adjudicated round, and the earlier owed findings come back as items each needing a
-row. From round 4 only HIGH findings block.
+row. From round 4 only HIGH findings block (and an open change-request ask from you stays owed).
 
 ## More modes
 
@@ -216,7 +218,7 @@ repository under review. Defaults are shown.
 [council]                          # quorum is fixed at 2 and seats at 3 (D10)
 leg_timeout_minutes = 25
 untrusted_seat_policy = "fallback" # PRs from authors without write access: "fallback" | "skip" | "allow"
-high_only_from_round = 4           # from this round only HIGH findings block
+high_only_from_round = 4           # from this round only HIGH findings (and your open asks) block
 
 [[seats]]                          # exactly three
 id = "a"
@@ -570,8 +572,9 @@ npm run typecheck
 npm run build     # compile to dist/
 ```
 
-`node dist/cli/index.js doctor` then runs the build. CI runs lint, typecheck, test and build on Ubuntu and macOS, on
-Node 22.13.0, the newest 22 and 24.
+Then `node dist/cli/index.js doctor` runs the build you just made: it checks Node, the config, the run store (applying
+pending migrations) and every seat's preflight, with no model call. CI runs lint, typecheck, test and build on Ubuntu
+and macOS, on Node 22.13.0, the newest 22 and 24.
 
 ## License
 

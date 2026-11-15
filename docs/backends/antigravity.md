@@ -74,7 +74,10 @@ client. Until each is shown denied on its own, agy stays `pending`, and on a pul
 write access it follows `council.untrusted_seat_policy`.
 
 Every leg is ratified from agy's own records: its log names the session's conversation and one CLI version, the app
-data dir is the leg's own, and every model call's label in the conversation database equals the pin.
+data dir is the leg's own, and every model call's label in the conversation database equals the pin. agy offers an ACP
+client its whole tool set, command, write, edit and web tools included (`run_command`, `write_file`, `edit_file`,
+`search_web`, and sub-agent and task tools); the client rejects their permission requests and the ratifier fails a
+leg in which one ran, but the offer itself is recorded on the leg, not rejected.
 
 ## Preflight and `doctor`
 

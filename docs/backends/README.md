@@ -31,8 +31,12 @@ review root. How well a backend enforces that differs, and each adapter declares
 | `weak` | Enforcement depends on configuration the agent may not honour, or is unmeasured. |
 
 Whatever the label, every leg is ratified after it ends from the CLI's own records (the model that ran, the tools
-offered and used, the paths read, the root's hash, the nonce line), and a leg that used or was offered a forbidden
-tool is `contaminated` and does not count. Ratification catches a violation; only `strong` prevents it.
+used, the paths read, the nonce line) and the root's hash, and a leg that used a forbidden tool, read outside the root
+or changed the root is `contaminated` and does not count. The offer is checked only where the CLI records it or the
+adapter can compute it: claude, codex and grok legs fail on a forbidden offer and opencode's is computed at preflight;
+antigravity is offered command and write tools and its ratifier records that offer without failing on it; kiro,
+cursor and muse record no offer. [The security page](../security.md#what-a-seat-can-do) has the table per backend.
+Ratification catches a violation; only `strong` prevents it.
 
 **Pull requests from authors without write access.** In `pr` and `auto` rounds, a seat below `strong` follows
 `council.untrusted_seat_policy`:

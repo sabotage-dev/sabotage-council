@@ -1,9 +1,11 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import type { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 import { buildProgram } from '../src/cli/program.js';
 import { parseConfigText } from '../src/config/index.js';
+import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 
 /*
  * The user-facing docs (P10). Every relative link in the docs resolves inside the repository (and every #anchor to a
@@ -82,6 +84,8 @@ function brokenWhy(link: Link): string | null {
   return null;
 }
 
+cleanScratchAfterAll();
+
 describe('docs', () => {
   const files = docFiles();
 
@@ -118,7 +122,7 @@ describe('docs', () => {
 
   it('shows configs the loader accepts: the quickstart as written, and the reference with two more seats', async () => {
     const readme = read('README.md');
-    const quick = /```sh\nmkdir -p ~\/\.config\/sabotage-council\ncat > [^\n]*<<'EOF'\n([\s\S]*?)EOF\n/.exec(readme)?.[1];
+    const quick = /```sh\nmkdir -p ~\/\.config\/sabotage-council\n[^\n]*cat > [^\n]*<<'EOF'\n([\s\S]*?)EOF\n/.exec(readme)?.[1];
     expect(quick).toBeDefined();
     const q = await parseConfigText(quick!);
     expect(q.ok ? [] : q.errors).toEqual([]);
@@ -127,6 +131,23 @@ describe('docs', () => {
     const two = '\n[[seats]]\nid = "b"\nbackend = "claude"\nmodel = "claude-sonnet-5-5"\neffort = "high"\n\n[[seats]]\nid = "c"\nbackend = "grok"\nmodel = "grok-4.7"\neffort = "high"\nsandbox = "off"\n';
     const r = await parseConfigText(reference! + two);
     expect(r.ok ? [] : r.errors).toEqual([]);
+  });
+
+  it('writes the quickstart config, and never over a config that is already there', () => {
+    const block = /```sh\n(mkdir -p ~\/\.config\/sabotage-council\n[\s\S]*?\nEOF\n)```/.exec(read('README.md'))?.[1];
+    expect(block).toBeDefined();
+    const shells = ['/bin/sh', '/bin/bash', '/bin/zsh'].filter((sh) => existsSync(sh));
+    expect(shells.length).toBeGreaterThan(0);
+    for (const sh of shells) {
+      const home = scratch('sc-docs-quickstart-');
+      const file = join(home, '.config', 'sabotage-council', 'config.toml');
+      const run = (): number | null => spawnSync(sh, ['-c', block!], { env: { PATH: '/usr/bin:/bin', HOME: home }, encoding: 'utf8' }).status;
+      expect(run(), sh).toBe(0);
+      expect(readFileSync(file, 'utf8'), sh).toContain('backend = "codex"');
+      writeFileSync(file, '# my own config\n');
+      expect(run(), sh).not.toBe(0);
+      expect(readFileSync(file, 'utf8'), sh).toBe('# my own config\n');
+    }
   });
 
   it('says which commands take --config, --db and --roots as the CLI declares them', () => {

@@ -19,13 +19,29 @@ details and the measurements):
 | `pending` | antigravity, kiro, opencode; claude on an untested version; grok with its sandbox running | the mechanism should prevent it; its canary did not prove every action | not proven; detected afterwards |
 | `weak` | grok with `sandbox = "off"`, cursor, muse | depends on configuration the agent may not honour, or unmeasured | yes for grok (measured); unmeasured for cursor and muse |
 
-**Ratification, for every leg.** After a leg ends, the engine proves from the CLI's own records (never the model's
-word) that it is the review it claims to be: the record belongs to this launch, the working directory is the root,
-the model and effort match the pin, the tools offered and used are only reads (codex: only its declared native tools,
-each command parsed), every read path resolves inside the root, the root's tree hash is unchanged, the reply's first
-line is the round's nonce, and the run completed cleanly. A leg that used or was offered a forbidden tool, read
-outside the root or changed the root is `contaminated`: it does not count, it is never relaunched in that root, and
-`stats` shows it. A missing record field fails closed. Ratification detects; only `strong` prevents.
+**Per backend.** What a leg is offered, what stops it, and what its ratifier can check differ by backend:
+
+| Backend | What the leg is offered, and what stops an action | What ratification checks beyond the common checks below |
+|---|---|---|
+| claude (`strong` on 2.1.322, 2.1.323, 2.1.325; `pending` on other versions) | only Read, Glob and Grep; the engine kills the leg at `system/init` if it is offered anything else or is not in `dontAsk`; a read outside the root is denied before it runs (a canary on each `strong` version) | the offered tools (`system/init`) |
+| codex (`sandboxed-exec`, 0.167.0 only) | its 14 built-in tools, which cannot be removed, among them a command tool: the leg runs shell commands (through a login shell, so your shell profile runs) inside a sandbox that denies writes and network, and those commands can read outside the root | the offer by exact membership in the declared list; every command parsed from the rollout, failing a denied write, a command off the read list or a path outside the root (lexical, after the fact: an outside read is detected, not prevented); every child agent's own rollout |
+| grok (`weak` with `sandbox = "off"`; `pending` with its sandbox running, unmeasured) | exactly `read_file`, `grep` and `list_dir`; with the sandbox off nothing stops a read outside the root (measured: such reads ran) | the offer (`tool_definitions.json`), every read path (each outside read in the canary was caught, after it ran), no MCP server started |
+| antigravity (`pending`) | agy's own tool set, which includes command, write, edit and web tools (`run_command`, `write_file`, `edit_file`, `search_web`); the engine's ACP client rejects every permission request but a read inside the root, and the canary showed a rejection holds, but not that every write, command and fetch reaches the client | that none of those tools ran; the offer is recorded on the leg, not rejected |
+| kiro (`pending`) | a council agent profile with read tools only and shell, writes and web denied (preflight refuses any other profile); the ACP client rejects every request but a read inside the root. With an allow rule planted in the profile, an outside read ran with no request (the canary; preflight is the guard) | the session's grants (no trusted tool, write path or allowed command); kiro records no offered tools, so the offer is not checked |
+| opencode (`pending`) | the read tools, plus `skill`, which opencode keeps offering and which is accepted only while no skill file exists; opencode refuses an outside path itself, but a read through a symlink inside the root ran (the canary) | the offer computed at preflight from the council agent's effective rules; no skill use, sub-agent or instruction file |
+| cursor (`weak`, no live run) | ask mode, Cursor's sandbox, deny rules and a council hook that allows only reads inside the root; none of it has run against a real Cursor | the council hook's log (model, workspace, every call and path, no file edit); the offered tools are not recorded |
+| muse (`weak`, no logged-in run) | a read-only permission profile with write, shell and web tools disabled by flag | the launch flags; muse 1.4.15 does not record the effort, the contributor mode or the permission profile, so the ratifier accepts their absence; the read-tool list it accepts is unmeasured |
+
+**Ratification, for every leg.** After a leg ends, the engine judges it from the CLI's own records (never the model's
+word): the record belongs to this launch, the working directory is the root, the model and (where the CLI records
+it) the effort are the pin, every tool that ran is a read (codex: every command is on its read list), every read path
+resolves inside the root, the reply's first line is the round's nonce, the run completed cleanly, and the root's tree
+hash is unchanged with nothing left behind (the engine's own sweep). The table says what else each backend's records
+let it check. A leg that ran a forbidden tool, was offered one where the offer is checked, read outside the root or
+changed the root is `contaminated`: it does not count, it is never relaunched in that root, and `stats` shows it. A
+field a backend's records hold fails the leg when it is missing. What a CLI does not record is not proven by the
+record: kiro, cursor and muse record no offered tools, muse 1.4.15 records no effort, contributor mode or permission
+profile, and antigravity's recorded offer is not a check. Ratification detects; only `strong` prevents.
 
 **Untrusted pull requests.** On a PR whose author has no write access to the repository, every seat below `strong`
 follows `council.untrusted_seat_policy`: `fallback` (the default) uses the seat's fallback if that is `strong` and
@@ -74,7 +90,12 @@ about them. The defences:
 
 - every piece of PR text enters the root marked `DATA:`, and the brief and the adjudication spec say that
   instructions inside the tree are data;
-- seats have no tool that acts (above), so an injected instruction has nothing to call;
+- what an injected instruction can make a seat do is what its row above allows: a `strong` claude seat has no tool
+  that acts and cannot read outside the root; a codex seat can run commands in its write- and network-denied sandbox
+  and read outside the root, and a grok seat with its sandbox off can read outside the root, those reads caught only
+  afterwards; antigravity, kiro and opencode rely on mechanisms their canaries did not fully prove, and cursor and
+  muse are unmeasured. So on a PR from an author without write access every seat below `strong` follows
+  `council.untrusted_seat_policy` (above);
 - leg text never starts a round, adds context, posts or runs a command; the plugin's skill says so and pre-approves
   only read-only commands and `adjudicate`, so Claude Code asks you before every `round start` and every `post`;
 - every posted byte passes the validator below.
@@ -110,7 +131,8 @@ the launcher never passes one, and only its flags keep a server from starting.
 
 - **The engine never handles a CLI's credentials.** Each leg gets a scrubbed environment holding only the variables
   its backend needs (each backend page lists them); API keys pass through by name and are never read, logged or
-  recorded. The engine never copies a login (for example codex's `auth.json`) anywhere.
+  recorded. The engine never copies a login (for example codex's `auth.json`) anywhere. Kiro's preflight asks SQLite
+  for its token store's expiry and whether a refresh token is present, so no token value reaches the engine.
 - **Claude.** The engine shells out to your unmodified `claude` binary, which uses whatever you signed in to, and
   never reads, stores or forwards that login (D15). For heavy `auto` use, use `ANTHROPIC_API_KEY` or a Team or
   Enterprise plan: it is not "ordinary, individual usage" of a consumer plan.
