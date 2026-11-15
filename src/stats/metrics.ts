@@ -216,6 +216,26 @@ export function matches(subject: Subject, leg: StatsLeg): boolean {
   return subject.kind === 'seat' ? leg.seat === subject.seat : leg.occupantId === subject.occupantId;
 }
 
+/** Of a round's blocking findings, those only `mine` (the subject's ratified legs) raised: lost had it been absent. */
+function loneBlocking(blocking: readonly StatsFinding[], mine: ReadonlySet<number>): StatsFinding[] {
+  return blocking.filter((f) => f.sources.length > 0 && f.sources.every((s) => mine.has(s.legId)));
+}
+
+/**
+ * The findings `drop_one.blocking_lost` counts, by round id and finding id, in round order: in each adjudicated round
+ * the subject ratified in, the blocking findings only it raised.
+ */
+export function blockingLostOf(data: StatsData, subject: Subject): Array<{ round: number; id: string }> {
+  const out: Array<{ round: number; id: string }> = [];
+  for (const r of data.rounds) {
+    if (!r.adjudicated) continue;
+    const mine = new Set(r.legs.filter((l) => matches(subject, l) && l.status === 'PASS').map((l) => l.id));
+    if (mine.size === 0) continue;
+    for (const f of loneBlocking(r.findings.filter(isBlocking), mine)) out.push({ round: r.id, id: f.id });
+  }
+  return out;
+}
+
 /** The card for one subject over the window's rounds. */
 export function cardOf(data: StatsData, subject: Subject): Card {
   const byClass: Record<string, number> = {};
@@ -321,7 +341,7 @@ export function cardOf(data: StatsData, subject: Subject): Card {
       if (isAdopted(f) && f.severity === 'HIGH') unique.high += 1;
     }
     const blocking = r.findings.filter(isBlocking);
-    const lost = blocking.filter((f) => f.sources.length > 0 && f.sources.every((s) => mine.has(s.legId)));
+    const lost = loneBlocking(blocking, mine);
     blockingLost += lost.length;
     if (others.length < QUORUM) quorumLost += 1;
     else if (r.verdict !== 'SHIP' && blocking.length > 0 && lost.length === blocking.length) flipped.push(r.id);

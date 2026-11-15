@@ -520,11 +520,11 @@ adjudicated rounds it ratified in, or it is **silent** over at least that many a
 nothing it raised was adopted or refuted (precision n/a) and dropping it loses no blocking finding. The reason then
 reads "raised nothing adopted or refuted over K adjudicated rounds, and dropping it loses no blocking finding" (the
 owner ruled this branch on 2026-11-14). A silent seat that alone raised a blocking finding (a ruling not yet ruled
-on) is not flagged. The flag judges the seat's **current occupant**: the config's, else the one the latest round
-seated, over the rounds since it took the seat (from the first round whose roster snapshot seats it there after a
-different one). So a swap starts the evidence over, and the reasons name the occupant. The seat's fallback legs in
-those rounds count; changing only the fallback starts nothing over. Every flag lists the rounds and findings behind
-it. Nothing ever swaps a seat by itself.
+on) is not flagged, and its reasons name those findings by round and finding id. The flag judges the seat's **current
+occupant**: the config's, else the one the latest round seated, over the rounds since it took the seat (from the first
+round whose roster snapshot seats it there after a different one). So a swap starts the evidence over, and the reasons
+name the occupant. The seat's fallback legs in those rounds count; changing only the fallback starts nothing over. Every
+flag lists the rounds and findings behind it. Nothing ever swaps a seat by itself.
 
 `--json` prints the report with `"schema": "sabotage-council.stats"` and `"version": 1`. Top-level keys: `schema`,
 `version`, `generated_at`, `window` (`since`, `first_round_at`, `last_round_at`, `rounds` counts, `adjudicator_usd`),

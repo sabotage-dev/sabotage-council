@@ -1,6 +1,6 @@
 import type { StatsConfig } from '../config/schema.js';
 import type { RoundCounts, SeatTestRecord, StatsData, StatsOccupant } from './data.js';
-import { agreementOf, cardOf, isAdopted, isOwed, isRefuted, outcomeKey, type AgreementPair, type Card, type OutcomeKey } from './metrics.js';
+import { agreementOf, blockingLostOf, cardOf, isAdopted, isOwed, isRefuted, outcomeKey, type AgreementPair, type Card, type OutcomeKey } from './metrics.js';
 
 /*
  * The scorecard report: the one structure `stats` prints as text, as JSON (`--json`) and as HTML (`--html`). Its JSON
@@ -265,7 +265,8 @@ const pct = (x: number): string => `${Math.round(x * 1000) / 10}%`;
 export function recommendFor(data: StatsData, seat: string, t: Thresholds, current: string | undefined): Recommendation {
   const { tenure, rounds } = tenureOf(data, seat, current);
   const scoped: StatsData = { ...data, rounds };
-  const rec = recommend(cardOf(scoped, { kind: 'seat', seat }), t, tenure, seat);
+  const subject = { kind: 'seat', seat } as const;
+  const rec = recommend(cardOf(scoped, subject), t, tenure, seat, blockingLostOf(scoped, subject));
   return rec.swap_candidate ? { ...rec, evidence: evidenceOf(scoped, seat) } : rec;
 }
 
@@ -278,9 +279,10 @@ export function recommendFor(data: StatsData, seat: string, t: Thresholds, curre
  * - it is silent over at least N adjudicated rounds it ratified in: a precision of null (nothing it raised was
  *   adopted or refuted) and no blocking finding lost without it (`drop_one.blocking_lost` 0). The owner ruled this
  *   branch on 2026-11-14. A silent seat that alone raised a blocking finding (a held ruling, say) is not flagged.
- * A precision of null is never "below P". The flag never swaps anything.
+ * A precision of null is never "below P". The flag never swaps anything. `lost` is the blocking findings it alone
+ * raised (`blockingLostOf`, what `drop_one.blocking_lost` counts): a seat not silent for them names them.
  */
-export function recommend(card: Card, t: Thresholds, tenure: Tenure | null, seat: string): Recommendation {
+export function recommend(card: Card, t: Thresholds, tenure: Tenure | null, seat: string, lost: ReadonlyArray<{ round: number; id: string }>): Recommendation {
   const n = t.min_ratified_rounds;
   const seated = card.rounds_seated;
   const adjudicated = card.adjudicated_ratified;
@@ -311,7 +313,7 @@ export function recommend(card: Card, t: Thresholds, tenure: Tenure | null, seat
     );
   } else if (card.findings.precision === null) {
     reasons.push(
-      `precision n/a: nothing it raised was adopted or refuted over ${adjudicated} adjudicated round(s) ratified, but dropping it loses ${card.drop_one.blocking_lost} blocking finding(s) it alone raised (a ruling not yet ruled on), so it is not silent`,
+      `precision n/a: nothing it raised was adopted or refuted over ${adjudicated} adjudicated round(s) ratified, but dropping it loses ${card.drop_one.blocking_lost} blocking finding(s) it alone raised (${lost.length === 1 ? 'a ruling' : 'rulings'} not yet ruled on: ${lost.map((f) => `round #${f.round} ${f.id}`).join(', ')}), so it is not silent`,
     );
   } else reasons.push(`precision ${pct(card.findings.precision)} is ${lowPrecision ? 'below' : 'at or above'} ${pct(t.precision_below)}`);
   reasons.push(
