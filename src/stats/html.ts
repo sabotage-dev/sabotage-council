@@ -110,12 +110,24 @@ ${row('cost per adopted finding', perAdoptedText)}
 </tbody></table></div>`;
 }
 
-function matrix(pairs: readonly AgreementPair[], keys: readonly string[]): Raw {
+/**
+ * The matrix's axes: every endpoint of the pairs the report keeps, and every subject it shows. A filtered report keeps
+ * a shown subject's pairs with every other one (as the text and the JSON do), so those others are axes too.
+ */
+function axesOf(pairs: readonly AgreementPair[], shown: readonly string[], compare: (a: string, b: string) => number): string[] {
+  return [...new Set([...shown, ...pairs.flatMap((p) => [p.a, p.b])])].sort(compare);
+}
+
+const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+/** Occupant labels end in ` #<id>`: by id. */
+const byOccupantId = (a: string, b: string): number => Number(a.slice(a.lastIndexOf('#') + 1)) - Number(b.slice(b.lastIndexOf('#') + 1)) || byText(a, b);
+
+function matrix(pairs: readonly AgreementPair[], keys: readonly string[], shown: ReadonlySet<string>): Raw {
   if (pairs.length === 0) return h`<p class="muted">No two ratified with a verdict in the same round.</p>`;
   const cell = (a: string, b: string): Raw => {
     if (a === b) return h`<td class="muted">-</td>`;
     const p = pairs.find((x) => (x.a === a && x.b === b) || (x.a === b && x.b === a));
-    if (!p) return h`<td class="muted">no shared round</td>`;
+    if (!p) return h`<td class="muted">${shown.has(a) || shown.has(b) ? 'no shared round' : 'not in this filter'}</td>`;
     return h`<td>${p.disagree} of ${p.rounds} disagree (${pctText(p.disagree_rate)})${p.always_agree ? h` <span class="flag">always agree</span>` : ''}</td>`;
   };
   return h`<div class="scroll"><table>
@@ -158,8 +170,10 @@ export function renderHtml(report: StatsReport): string {
   const w = report.window;
   const c = w.rounds;
   const t = report.thresholds;
-  const seatKeys = report.seats.map((s) => s.seat);
-  const occupantKeys = report.occupants.map((o) => `${o.occupant.key} #${o.occupant.id}`);
+  const shownSeats = report.seats.map((s) => s.seat);
+  const shownOccupants = report.occupants.map((o) => `${o.occupant.key} #${o.occupant.id}`);
+  const seatKeys = axesOf(report.agreement.seats, shownSeats, byText);
+  const occupantKeys = axesOf(report.agreement.occupants, shownOccupants, byOccupantId);
   const body = h`<!doctype html>
 <html lang="en">
 <head>
@@ -203,8 +217,8 @@ ${report.occupants.length > 0 ? metricRows(report.occupants.map((o) => ({ head: 
 <section>
 <h2>Agreement</h2>
 <p class="muted">Pairwise disagreement on NEEDS-WORK vs not (raw verdicts: SHIP and SHIP-WITH-FIXES agree with each other), over the settled rounds where both ratified with a verdict. Two seats that always agree are one seat.</p>
-${matrix(report.agreement.seats, seatKeys)}
-${report.agreement.occupants.length > 0 ? h`<h3>By occupant</h3>${matrix(report.agreement.occupants, occupantKeys)}` : ''}
+${matrix(report.agreement.seats, seatKeys, new Set(shownSeats))}
+${report.agreement.occupants.length > 0 ? h`<h3>By occupant</h3>${matrix(report.agreement.occupants, occupantKeys, new Set(shownOccupants))}` : ''}
 </section>`
     : ''
 }

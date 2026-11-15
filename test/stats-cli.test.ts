@@ -347,6 +347,29 @@ describe('stats --html', () => {
     expect(lstatSync(sub).isDirectory()).toBe(true);
   });
 
+  it('shows every agreement pair a filtered report keeps, as the text and the JSON do', () => {
+    const w = statsStore();
+    w.round({ legs: three({ a: 'NEEDS-WORK', b: 'SHIP', c: 'SHIP-WITH-FIXES' }) });
+    w.round({ legs: three({ a: 'SHIP', b: 'SHIP', c: 'NEEDS-WORK' }) });
+    const data = loadStats(w.store.db, null);
+    w.close();
+    const t = thresholdsOf({ swap_min_ratified_rounds: 20, swap_precision_below: 0.5, swap_ratified_rate_below: 0.8 }, 'defaults');
+    const report = buildReport(data, t, { seat: 'a', occupant: null }, NOW);
+    expect(report.agreement.seats.map((p) => `${p.a}-${p.b}`)).toEqual(['a-b', 'a-c']);
+    const html = renderHtml(report);
+    expect(wellFormed(html)).toEqual([]);
+    const table = /<h2>Agreement<\/h2>[\s\S]*?<\/table>/.exec(html)?.[0] ?? '';
+    // Axes a, b and c: a's pairs with b and c are shown; b-c is not a pair this filter keeps.
+    expect([...table.matchAll(/<th scope="col">([^<]*)<\/th>/g)].map((m) => m[1])).toEqual(['', 'a', 'b', 'c']);
+    expect(table).toContain('<td>1 of 2 disagree (50%)</td>');
+    expect(table).toContain('<td>2 of 2 disagree (100%)</td>');
+    expect(table).toContain('<td class="muted">not in this filter</td>');
+    // By occupant: the same, with the occupant axes in id order.
+    const occTable = /<h3>By occupant<\/h3>[\s\S]*?<\/table>/.exec(html)?.[0] ?? '';
+    expect([...occTable.matchAll(/<th scope="col">([^<]*)<\/th>/g)].map((m) => m[1])).toEqual(['', `${OCC.a} #1`, `${OCC.b} #2`, `${OCC.c} #3`]);
+    expect(occTable).toContain('<td>1 of 2 disagree (50%)</td>');
+  });
+
   it('renders the empty report too', () => {
     const w = statsStore();
     const html = renderHtml(buildReport(loadStats(w.store.db, null), thresholdsOf({ swap_min_ratified_rounds: 20, swap_precision_below: 0.5, swap_ratified_rate_below: 0.8 }, 'defaults'), { seat: null, occupant: null }, NOW));
