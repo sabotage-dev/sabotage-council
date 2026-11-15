@@ -632,6 +632,16 @@ describe('stats: the flag judges the seat\'s current occupant', () => {
     w.close();
   });
 
+  it('starts the tenure at the round whose roster snapshot seats the new occupant, even when the seat has no leg there', () => {
+    const w = statsStore();
+    poorRounds(w, 25, X);
+    // The roster seats Y in c, but c has no leg (the untrusted-PR policy skipped it): the snapshot alone says who sat.
+    const swapRound = w.round({ roster: { a: OCC.a, b: OCC.b, c: Y }, legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: OCC.b }] });
+    const c = report(w).recommendations.find((x) => x.seat === 'c');
+    expect(c).toMatchObject({ swap_candidate: false, eligible: false, occupant: { occupant: Y, source: 'roster', since_round: swapRound } });
+    w.close();
+  });
+
   it('reads a round whose roster snapshot does not name the seat from its primary leg, and changing only the fallback starts nothing over', () => {
     const w = statsStore();
     const ids = poorRounds(w, 10, X);
