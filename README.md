@@ -83,8 +83,9 @@ sabotage-council doctor
 
 It loads the config, creates the run store, and preflights every seat: binary, version, sign-in, model, and the
 isolation each backend can prove. Each seat line ends with its enforcement label. A `fail` line names what to fix; a
-`warn` line (for example the Claude seat sharing the adjudicator's model family, or grok's sandbox being off) is
-information.
+`warn` line (for example grok's sandbox being off) is information. `round start` also runs the config-wide checks
+`doctor` skips: every model id against its adapter's list (an error), and two seats in one model family or a seat in
+the adjudicator's family (a `warn` line).
 
 **4. Start a round** from a git repository that holds your plan (a Markdown file; it may be uncommitted):
 
@@ -93,8 +94,8 @@ sabotage-council round start plan docs/PLAN.md --json
 ```
 
 It snapshots the plan into a sealed review root, writes the brief, starts the three legs in a background worker, and
-prints the round as JSON (`round_id`, `round_no`, `rule`, `scope`, the brief's path, and the `next` command). Rounds
-cost money: each leg is one paid run of its CLI.
+prints the round as JSON on its last line (`round_id`, `round_no`, `rule`, `scope`, the brief's path, and the `next`
+command), after any `warn` lines. Rounds cost money: each leg is one paid run of its CLI.
 
 **5. Wait for the legs** (each is capped at 25 minutes by default):
 
@@ -108,8 +109,8 @@ readable summary at any time.
 
 **6. Adjudicate.** In Claude Code with the plugin, `/sabotage-council:council plan docs/PLAN.md` runs steps 4 to 6
 for you: the session waits for the legs, verifies each finding against the code, writes the adjudication and stores
-it. By hand, write `ADJUDICATION.json` by the procedure in [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md), check it,
-then store it:
+it. By hand, write `ADJUDICATION.json` by the procedure in [plugin/ADJUDICATE.md](plugin/ADJUDICATE.md) (map every
+finding of every ratified leg, verify each against the root that `round wait` printed), check it, then store it:
 
 ```sh
 sabotage-council adjudicate <round_id> ADJUDICATION.json --check
@@ -117,7 +118,8 @@ sabotage-council adjudicate <round_id> ADJUDICATION.json
 ```
 
 `--check` validates and stores nothing; a rejection names the rule it broke (`[attribution]`, `[round-rule]`, ...).
-The stored verdict is the round's.
+Finding ids are computed from the finding's path and title, so the first `--check` names the id each finding must
+have: copy it in and check again. The stored verdict is the round's.
 
 **7. Fold and go again.** After you fix the owed findings, the same `round start` becomes round 2: the seats review
 only the change since the last adjudicated round, and the earlier owed findings come back as items each needing a
