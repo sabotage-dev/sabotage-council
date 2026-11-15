@@ -120,15 +120,22 @@ describe('seats test: the shipped planted-defect fixture', () => {
   it('ships in the package, outside test/, with three defects in one file', () => {
     expect(DEFAULT_FIXTURE_DIR).not.toContain('/test/');
     const f = loadFixture();
-    expect(f.defects.map((d) => [d.id, d.severity, d.path, d.lines])).toEqual([
-      ['D1', 'HIGH', 'calc/rangesum.py', [10, 12]],
-      ['D2', 'MEDIUM', 'calc/rangesum.py', [6, 7]],
-      ['D3', 'MEDIUM', 'calc/rangesum.py', [18, 20]],
-    ]);
-    expect([...f.base.keys()]).toEqual(['calc/__init__.py', 'calc/rangesum.py', 'calc/test_rangesum.py']);
-    for (const p of f.base.keys()) if (p !== 'calc/rangesum.py') expect(f.head.get(p), p).toBe(f.base.get(p));
     const head = (f.head.get('calc/rangesum.py') ?? '').split('\n');
     expect([head[5], head[10], head[19]]).toEqual(['    if start < 0 or end > len(values):', '    for i in range(start, end):', '    return sum(values) // len(values)']);
+    expect(f.defects.map((d) => [d.id, d.severity, d.path, d.lines])).toEqual([
+      ['D1', 'HIGH', 'calc/rangesum.py', [11, 11]],
+      ['D2', 'MEDIUM', 'calc/rangesum.py', [6, 6]],
+      ['D3', 'MEDIUM', 'calc/rangesum.py', [20, 20]],
+    ]);
+    // The ranges are the changed lines only: the base and the head differ at 6, 11 and 20, nowhere else.
+    const base = (f.base.get('calc/rangesum.py') ?? '').split('\n');
+    const changed = head.map((l, i) => (l !== base[i] ? i + 1 : 0)).filter((n) => n > 0);
+    expect(changed).toEqual([6, 11, 20]);
+    for (const d of f.defects) expect(changed).toContain(d.lines[0]);
+    for (const d of f.defects) expect(d.keywords).not.toContain('//');
+    expect([...f.base.keys()]).toEqual(['calc/__init__.py', 'calc/rangesum.py', 'calc/test_rangesum.py']);
+    for (const p of f.base.keys()) if (p !== 'calc/rangesum.py') expect(f.head.get(p), p).toBe(f.base.get(p));
+
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { files: string[] };
     expect(pkg.files).toContain('fixtures/planted');
   });
@@ -142,9 +149,10 @@ describe('seats test: the shipped planted-defect fixture', () => {
     expect(git(one.repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('feature');
   });
 
+  const finding = (id: string, path: string | null, line: number | null, title: string) => ({ id, severity: 'HIGH' as const, severity_raw: 'HIGH', severity_flag: null, path, line, end_line: null, title });
+
   it('matches a finding to one defect by line, else by keyword on the right file', () => {
     const f = loadFixture();
-    const finding = (id: string, path: string | null, line: number | null, title: string) => ({ id, severity: 'HIGH' as const, severity_raw: 'HIGH', severity_flag: null, path, line, end_line: null, title });
     const r = matchDefects(f, [
       finding('F1', 'planted/calc/rangesum.py', 11, 'anything'),
       finding('F2', './calc/rangesum.py', null, 'An out-of-range END is accepted'),
@@ -154,15 +162,60 @@ describe('seats test: the shipped planted-defect fixture', () => {
       finding('F6', 'calc/rangesum.py', 15, 'a tidy-up'),
       finding('F7', 'calc/rangesum.py', 12, 'the loop'),
       finding('F8', 'calc/rangesum.py', 13, 'after the loop'),
+      finding('F9', './planted/calc/rangesum.py', 20, 'anything'),
     ]);
     expect(r.matches).toEqual([
       { defect: 'D1', finding: 'F1', by: 'line' },
       { defect: 'D2', finding: 'F2', by: 'keyword' },
       { defect: 'D3', finding: 'F3', by: 'keyword' },
-      { defect: 'D1', finding: 'F7', by: 'line' },
+      { defect: 'D3', finding: 'F9', by: 'line' },
     ]);
-    expect(r.other).toEqual(['F4', 'F5', 'F6', 'F8']);
-    expect(matchDefectsInText(f, 'see planted/calc/rangesum.py:11 and calc/rangesum.py:19, not calc/rangesum.py:2').map((m) => m.defect)).toEqual(['D1', 'D3']);
+    // Line 12 is unchanged: no line match, and "the loop" names no defect.
+    expect(r.other).toEqual(['F4', 'F5', 'F6', 'F7', 'F8']);
+  });
+
+  it('never credits the base copy or another prefix, an unchanged line, or "//" in a URL', () => {
+    const f = loadFixture();
+    const r = matchDefects(f, [
+      // The base copy holds the correct code at the same lines.
+      finding('F1', '_base/calc/rangesum.py', 11, 'range(start, end) drops the end element'),
+      finding('F2', '_base/planted/calc/rangesum.py', 6, 'bounds check'),
+      finding('F3', 'vendor/calc/rangesum.py', 20, 'floor division'),
+      finding('F4', '/abs/planted/calc/rangesum.py', 11, 'off-by-one'),
+      // The unchanged guard at 18-19.
+      finding('F5', 'planted/calc/rangesum.py', 19, 'mean of an empty list raises ValueError'),
+      // A title holding a URL, on the right file but no defect's line.
+      finding('F6', 'planted/calc/rangesum.py', 15, 'see https://docs.python.org/3/library/functions.html'),
+    ]);
+    expect(r.matches).toEqual([]);
+    expect(r.other).toEqual(['F1', 'F2', 'F3', 'F4', 'F5', 'F6']);
+  });
+
+  it('gives a keyword match to the defect with the most hits, never the first in file order; a tie is no match', () => {
+    const f = loadFixture();
+    const r = matchDefects(f, [
+      // A D2 finding that names range(start, end) (a D1 keyword) holds more of D2's keywords.
+      finding('F1', 'planted/calc/rangesum.py', null, 'the bounds check lets an out-of-range end through to range(start, end)'),
+      // One keyword each of D1 and D2: no match.
+      finding('F2', 'planted/calc/rangesum.py', null, 'off-by-one in the bounds check'),
+      // A line on no defect, two D1 keywords.
+      finding('F3', 'planted/calc/rangesum.py', 12, 'off-by-one: drops the end element'),
+      finding('F4', 'planted/calc/rangesum.py', null, 'Integer division TRUNCATES the mean'),
+    ]);
+    expect(r.matches).toEqual([
+      { defect: 'D2', finding: 'F1', by: 'keyword' },
+      { defect: 'D1', finding: 'F3', by: 'keyword' },
+      { defect: 'D3', finding: 'F4', by: 'keyword' },
+    ]);
+    expect(r.other).toEqual(['F2']);
+  });
+
+  it('reads citations in the answer text by the same path rule', () => {
+    const f = loadFixture();
+    const ids = (text: string): string[] => matchDefectsInText(f, text).map((m) => m.defect);
+    expect(ids('see planted/calc/rangesum.py:11 and calc/rangesum.py:19, not calc/rangesum.py:2')).toEqual(['D1']);
+    expect(ids('`./calc/rangesum.py:6` and (./planted/calc/rangesum.py:20)')).toEqual(['D2', 'D3']);
+    expect(ids('_base/calc/rangesum.py:11 _base/planted/calc/rangesum.py:6 vendor/calc/rangesum.py:20 x-calc/rangesum.py:11')).toEqual([]);
   });
 });
 

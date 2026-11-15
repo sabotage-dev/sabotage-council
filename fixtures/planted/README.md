@@ -4,9 +4,11 @@ The planted-defect fixture `sabotage-council seats test` runs one leg on (plan 8
 candidate can be qualified without the repository's tests.
 
 `base/` is the repository at the base commit; `head/` is the same repository at the head commit, which plants three
-defects in `calc/rangesum.py`. `defects.json` names each one with its lines and a few keywords; a finding counts for a
-defect when it names that file and a line in the defect's range, or, with no line in a range, when its title holds one
-of the keywords.
+defects in `calc/rangesum.py`, one on each changed line (6, 11 and 20). `defects.json` names each one with its line and
+a few keywords. A finding counts for a defect when its path is that file at the head (`calc/rangesum.py`, with or
+without the root's `planted/` prefix; never the `_base/` copy or any other prefix) and either its line is the defect's
+line, or, with no line on a defect, its title holds more of that defect's keywords than of any other's (a tie is no
+match).
 
 - D1 (HIGH): the loop runs `range(start, end)`, so the inclusive range sum drops its last element. The existing test
   fails on it.

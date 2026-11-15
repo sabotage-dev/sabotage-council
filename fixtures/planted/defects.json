@@ -11,7 +11,7 @@
       "severity": "HIGH",
       "title": "range_sum drops the end element: range(start, end) excludes the inclusive end (off-by-one)",
       "path": "calc/rangesum.py",
-      "lines": [10, 12],
+      "lines": [11, 11],
       "keywords": ["off-by-one", "off by one", "end + 1", "last element", "end element", "drops the end", "range(start, end)"]
     },
     {
@@ -19,7 +19,7 @@
       "severity": "MEDIUM",
       "title": "the bounds check lets end == len(values) through (> instead of >=), so an out-of-range end is summed instead of raising IndexError",
       "path": "calc/rangesum.py",
-      "lines": [6, 7],
+      "lines": [6, 6],
       "keywords": ["bounds", "out of range", "out-of-range", ">= len", "> len", "indexerror"]
     },
     {
@@ -27,8 +27,8 @@
       "severity": "MEDIUM",
       "title": "mean uses floor division (//), so the mean of [1, 2] is 1, not 1.5",
       "path": "calc/rangesum.py",
-      "lines": [18, 20],
-      "keywords": ["floor division", "integer division", "//", "truncat"]
+      "lines": [20, 20],
+      "keywords": ["floor division", "integer division", "floor-division", "truncat"]
     }
   ]
 }

@@ -98,26 +98,42 @@ export interface DefectMatch {
   by: 'line' | 'keyword' | 'answer-text';
 }
 
-/** A finding's path relative to the repository: the root's `<repo>/` prefix and a leading `./` dropped. */
+/**
+ * A finding's path relative to the repository: a leading `./` and the root's `<repo>/` prefix dropped, nothing else. The
+ * result must equal a defect's head path exactly: `_base/calc/rangesum.py` (the correct base copy) or any other prefix
+ * never names the defect.
+ */
 function repoPath(path: string, repo: string): string {
   let p = path.replace(/\\/g, '/').replace(/^\.\//, '');
   if (p.startsWith(`${repo}/`)) p = p.slice(repo.length + 1);
   return p;
 }
 
+/** How many of the defect's keywords the title holds (each counted once, case-insensitively). */
+function keywordHits(d: PlantedDefect, title: string): number {
+  const t = title.toLowerCase();
+  return d.keywords.filter((k) => t.includes(k.toLowerCase())).length;
+}
+
 /**
- * Which planted defects a leg's findings name. A finding counts for one defect at most: the first whose file it names
- * and whose line range holds its line; else, the first whose file it names and whose keyword its title holds.
+ * Which planted defects a leg's findings name. A finding counts for one defect at most: the defect on its file (the
+ * head path exactly) whose line range holds its line; else the defect on its file whose keywords its title holds most
+ * of, never the first in file order (a tie is no match).
  */
 export function matchDefects(fixture: PlantedFixture, findings: readonly LegFinding[]): { matches: DefectMatch[]; other: string[] } {
   const matches: DefectMatch[] = [];
   const other: string[] = [];
   for (const f of findings) {
     const path = f.path === null ? null : repoPath(f.path, fixture.repo);
-    const onFile = fixture.defects.filter((d) => path !== null && (path === d.path || path.endsWith(`/${d.path}`)));
+    const onFile = fixture.defects.filter((d) => path === d.path);
     const byLine = f.line === null ? undefined : onFile.find((d) => (f.line as number) >= d.lines[0] && (f.line as number) <= d.lines[1]);
-    const title = f.title.toLowerCase();
-    const byKeyword = byLine ? undefined : onFile.find((d) => d.keywords.some((k) => title.includes(k.toLowerCase())));
+    let byKeyword: PlantedDefect | undefined;
+    if (!byLine) {
+      const scored = onFile.map((d) => ({ d, hits: keywordHits(d, f.title) })).filter((x) => x.hits > 0);
+      const best = Math.max(0, ...scored.map((x) => x.hits));
+      const top = scored.filter((x) => x.hits === best);
+      if (top.length === 1) byKeyword = top[0]?.d;
+    }
     const d = byLine ?? byKeyword;
     if (d) matches.push({ defect: d.id, finding: f.id, by: byLine ? 'line' : 'keyword' });
     else other.push(f.id);
@@ -126,13 +142,15 @@ export function matchDefects(fixture: PlantedFixture, findings: readonly LegFind
 }
 
 /**
- * When the leg's findings block did not parse, the answer text is read instead: a defect counts when the text cites
- * its file at a line in its range (`calc/rangesum.py:11`).
+ * When the leg's findings block did not parse, the answer text is read instead: a defect counts when the text cites its
+ * file at a line in its range (`calc/rangesum.py:11`, `planted/calc/rangesum.py:11`), by the same path rule: a citation
+ * inside a longer path (`_base/calc/rangesum.py:11`) does not count.
  */
 export function matchDefectsInText(fixture: PlantedFixture, text: string): DefectMatch[] {
   const out: DefectMatch[] = [];
+  const quote = (x: string): string => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   for (const d of fixture.defects) {
-    const cite = new RegExp(`${d.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:(\\d+)`, 'g');
+    const cite = new RegExp(`(?<![\\w./\\\\-])(?:\\./)?(?:${quote(fixture.repo)}/)?${quote(d.path)}:(\\d+)`, 'g');
     for (const m of text.matchAll(cite)) {
       const line = Number(m[1]);
       if (line >= d.lines[0] && line <= d.lines[1]) {
