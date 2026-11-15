@@ -6,11 +6,12 @@ import { loadStats, occupantKey } from '../stats/data.js';
 import { writeHtmlReport } from '../stats/html.js';
 import { buildReport, thresholdsOf, type Filters, type StatsReport, type Thresholds } from '../stats/report.js';
 import { renderText, safeJson } from '../stats/text.js';
-import { openStore } from '../store/index.js';
+import { openStoreReadOnly } from '../store/index.js';
 
 /*
- * `sabotage-council stats` (plan 8.2, 8.3): the seat scorecard over the run store. It reads; it never changes a
- * round. With no store, or an empty window, it says so and exits 0.
+ * `sabotage-council stats` (plan 8.2, 8.3): the seat scorecard over the run store. It only reads: the store is opened
+ * read-only and never migrated (src/store/read.ts), and a store whose schema is behind or ahead of this build is
+ * refused with what to do. With no store, or an empty window, it says so and exits 0.
  */
 
 export interface StatsIo {
@@ -78,7 +79,7 @@ export function readReport(
   current?: ReadonlyMap<string, string>,
 ): StatsReport | null {
   if (!existsSync(dbPath)) return null;
-  const store = openStore(dbPath);
+  const store = openStoreReadOnly(dbPath);
   try {
     return buildReport(loadStats(store.db, since), thresholds, filters, generatedAt, current);
   } finally {
@@ -94,7 +95,14 @@ export async function statsCommand(io: StatsIo, args: StatsArgs): Promise<void> 
     io.setExitCode(1);
     return;
   }
-  let report = readReport(args.dbPath, args.since, t.thresholds, args.filters, args.generatedAt, t.current);
+  let report: StatsReport | null;
+  try {
+    report = readReport(args.dbPath, args.since, t.thresholds, args.filters, args.generatedAt, t.current);
+  } catch (error) {
+    io.write(`error: ${error instanceof Error ? error.message : String(error)}`);
+    io.setExitCode(1);
+    return;
+  }
   if (report === null) {
     // No store yet: the same empty report a fresh store would give, without creating one.
     report = emptyReport(args, t.thresholds);

@@ -12,7 +12,7 @@ import { resolveOccupantSpec, splitBackend } from '../seats/spec.js';
 import { loadStats, occupantKey } from '../stats/data.js';
 import { buildReport, thresholdsOf, type SeatCard, type Recommendation } from '../stats/report.js';
 import { clean, durationText, money, pctText, safeJson } from '../stats/text.js';
-import { openStore } from '../store/index.js';
+import { openStore, openStoreReadOnly } from '../store/index.js';
 import type { StorePaths } from './round.js';
 
 /*
@@ -108,15 +108,21 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
   const seats = config.config.seats;
   let cards: SeatCard[] = [];
   let recs: Recommendation[] = [];
+  let unread: string | null = null;
   if (existsSync(paths.dbPath)) {
-    const store = openStore(paths.dbPath);
+    // The scorecard is a read, as in `stats`: read-only, never migrated.
     try {
-      const current = new Map(seats.map((seat) => [seat.id, occupantKey(seat)]));
-      const report = buildReport(loadStats(store.db, null), thresholdsOf(config.config.stats, 'config'), { seat: null, occupant: null }, undefined, current);
-      cards = report.seats;
-      recs = report.recommendations;
-    } finally {
-      store.close();
+      const store = openStoreReadOnly(paths.dbPath);
+      try {
+        const current = new Map(seats.map((seat) => [seat.id, occupantKey(seat)]));
+        const report = buildReport(loadStats(store.db, null), thresholdsOf(config.config.stats, 'config'), { seat: null, occupant: null }, undefined, current);
+        cards = report.seats;
+        recs = report.recommendations;
+      } finally {
+        store.close();
+      }
+    } catch (error) {
+      unread = `the scorecard is not shown: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
   const tmp = opts.preflight ? realpathSync(mkdtempSync(join(tmpdir(), 'sc-seats-'))) : null;
@@ -157,6 +163,7 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
               occupant: { backend: s.backend, model: s.model, effort: s.effort ?? null, auth_home: s.auth_home ?? null, sandbox: s.sandbox ?? null },
               label: label ?? null,
               fallback: s.fallback ? { backend: s.fallback.backend, model: s.fallback.model, effort: s.fallback.effort ?? null, on: s.fallback.on, label: fallbackLabel ?? null } : null,
+              scorecard_error: unread,
               scorecard: c
                 ? {
                     rounds_seated: c.rounds_seated,
@@ -178,6 +185,7 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
     io.setExitCode(0);
     return;
   }
+  if (unread !== null) io.write(`note  ${unread}`);
   io.write(`seats in ${paths.configPath}:`);
   for (const { seat, label, fallbackLabel, card, rec } of rows) {
     const s = seat as SeatConfig;

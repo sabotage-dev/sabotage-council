@@ -1,10 +1,11 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import { renderHtml } from '../src/stats/html.js';
 import { loadStats } from '../src/stats/data.js';
 import { buildReport, thresholdsOf } from '../src/stats/report.js';
+import { DEFAULT_MIGRATIONS_DIR, openStore, readMigrations } from '../src/store/index.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 import { OCC, statsStore, three, type FindingSpec, type StatsStore } from './helpers/stats-store.js';
 
@@ -23,7 +24,7 @@ async function run(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ code:
   const io: ProgramIo = { write: (l) => lines.push(l), env, setExitCode: (c) => (code = c), now: () => NOW };
   const program = buildProgram(io);
   // A bad option value throws (CommanderError) instead of exiting, and commander's own message stays out of the output.
-  for (const c of [program, ...program.commands]) c.exitOverride().configureOutput({ writeErr: () => undefined, writeOut: () => undefined });
+  for (const c of [program, ...program.commands, ...program.commands.flatMap((x) => x.commands)]) c.exitOverride().configureOutput({ writeErr: () => undefined, writeOut: () => undefined });
   await program.parseAsync(['node', 'sabotage-council', ...args]);
   return { code, lines, text: lines.join('\n') };
 }
@@ -147,6 +148,92 @@ describe('stats CLI', () => {
     const json = JSON.parse(r.text) as { recommendations: Array<{ seat: string; evidence: { findings: Array<{ title: string; path: string }> } | null }> };
     const finding = json.recommendations.find((x) => x.seat === 'c')?.evidence?.findings[0];
     expect(finding).toMatchObject({ title, path: 'src/\u202ex.ts' });
+  });
+});
+
+// ---- the store is only read ----
+
+describe('stats reads the store read-only', () => {
+  const latest = readMigrations().length;
+
+  /** A store at schema version `upTo` (the shipped migrations 1..upTo only). */
+  function olderStore(upTo: number): { dir: string; db: string } {
+    const dir = scratch('sc-stats-old-');
+    const mig = join(dir, 'migrations');
+    mkdirSync(mig);
+    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR)) if (/^\d{3}_/.test(f) && Number(f.slice(0, 3)) <= upTo) copyFileSync(join(DEFAULT_MIGRATIONS_DIR, f), join(mig, f));
+    const db = join(dir, 'data', 'council.db');
+    openStore(db, { migrationsDir: mig }).close();
+    return { dir, db };
+  }
+
+  it('refuses a store whose schema is behind, names the command that upgrades it, and leaves it byte for byte unchanged', async () => {
+    const { dir, db } = olderStore(3);
+    const before = readFileSync(db);
+    const files = readdirSync(join(dir, 'data')).sort();
+    expect(files).toEqual(['council.db']);
+    const r = await run(['stats', '--db', db, '--config', join(dir, 'none.toml')]);
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual([
+      `error: the run store at ${db} is at schema version 3; this build reads version ${latest}, and this command never writes the store: run \`sabotage-council doctor --db ${db}\` once to upgrade it (doctor applies the pending migrations), then run this again`,
+    ]);
+    expect(readFileSync(db).equals(before)).toBe(true);
+    expect(readdirSync(join(dir, 'data')).sort()).toEqual(files);
+    // `seats list` reads the scorecard the same way: the seats are listed, the store is left alone.
+    const config = join(dir, 'config.toml');
+    writeFileSync(config, SEATS);
+    const list = await run(['seats', 'list', '--config', config, '--db', db, '--no-preflight']);
+    expect(list.code).toBe(0);
+    expect(list.lines[0]).toMatch(/^note {2}the scorecard is not shown: the run store at .* is at schema version 3;/);
+    expect(readFileSync(db).equals(before)).toBe(true);
+    expect(readdirSync(join(dir, 'data')).sort()).toEqual(files);
+    // The command it names upgrades the store; stats then reads it.
+    await run(['doctor', '--db', db, '--config', join(dir, 'none.toml')]);
+    expect((await run(['stats', '--db', db, '--config', join(dir, 'none.toml')])).code).toBe(0);
+  });
+
+  it('refuses a store ahead of this build', async () => {
+    const { dir, db } = olderStore(latest);
+    const s = openStore(db);
+    s.db.prepare("INSERT INTO schema_version (version, name, sha256, applied_at) VALUES (?, 'future', 'x', '2026-11-14T00:00:00.000Z')").run(latest + 1);
+    s.close();
+    const before = readFileSync(db);
+    const r = await run(['stats', '--db', db, '--config', join(dir, 'none.toml')]);
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual([`error: the run store at ${db} has schema version ${latest + 1}, newer than this build reads (${latest}): it was written by a newer sabotage-council; upgrade this one to read it`]);
+    expect(readFileSync(db).equals(before)).toBe(true);
+  });
+
+  it('creates no -wal or -shm file beside a closed store, and reads a writer\'s last commit through its open ones', async () => {
+    const w = statsStore();
+    w.round({ legs: three() });
+    // A writer has the store open (its -wal and -shm exist): stats sees its uncheckpointed commits.
+    expect(existsSync(`${w.dbPath}-wal`)).toBe(true);
+    const live = JSON.parse((await run(['stats', '--db', w.dbPath, '--json'], { HOME: w.dir })).text) as { window: { rounds: { council: number } } };
+    expect(live.window.rounds.council).toBe(1);
+    w.round({ legs: three() });
+    const live2 = JSON.parse((await run(['stats', '--db', w.dbPath, '--json'], { HOME: w.dir })).text) as { window: { rounds: { council: number } } };
+    expect(live2.window.rounds.council).toBe(2);
+    w.close();
+    const dataDir = join(w.dir, 'data');
+    const files = readdirSync(dataDir).sort();
+    expect(files).toEqual(['council.db']);
+    const before = readFileSync(w.dbPath);
+    const r = await run(['stats', '--db', w.dbPath, '--json'], { HOME: w.dir });
+    expect(r.code).toBe(0);
+    expect((JSON.parse(r.text) as { window: { rounds: { council: number } } }).window.rounds.council).toBe(2);
+    expect(readdirSync(dataDir).sort()).toEqual(files);
+    expect(readFileSync(w.dbPath).equals(before)).toBe(true);
+  });
+
+  it('refuses a file that is not a run store, with an error rather than a crash', async () => {
+    const dir = scratch('sc-stats-notdb-');
+    const db = join(dir, 'council.db');
+    writeFileSync(db, 'not a database');
+    const r = await run(['stats', '--db', db, '--config', join(dir, 'none.toml')]);
+    expect(r.code).toBe(1);
+    expect(r.lines[0]).toMatch(/^error: /);
+    expect(readFileSync(db, 'utf8')).toBe('not a database');
   });
 });
 
