@@ -209,7 +209,7 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
     // Plan 6.3: leg text on someone else's PR is attacker-influenced, and the interactive adjudicator is this session.
     if (o.headless !== true && o.config.pr.interactive_adjudication === 'trusted-only') {
       throw new PrRoundError(
-        `${pr.author} has no write access to ${pr.baseRepo} (permission: ${pr.authorPermission ?? 'unknown'}), so this PR's text is untrusted. The restricted headless adjudicator (plan 6.4) is not built yet (P7); to adjudicate it in this session anyway, accepting that leg text reaches it, set pr.interactive_adjudication = "untrusted-too"`,
+        `${pr.author} has no write access to ${pr.baseRepo} (permission: ${pr.authorPermission ?? 'unknown'}), so this PR's text is untrusted and this session would read it. \`auto\` adjudicates such a PR with the restricted headless adjudicator (plan 6.4); to adjudicate it in this session anyway, accepting that leg text reaches it, set pr.interactive_adjudication = "untrusted-too"`,
       );
     }
     untrusted = { policy: o.config.council.untrusted_seat_policy, interactive_adjudication: o.headless === true ? 'headless' : o.config.pr.interactive_adjudication };
