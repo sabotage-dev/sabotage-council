@@ -48,17 +48,41 @@ function fences(text: string): Fence[] {
   return scanFences(splitLines(text)).fences;
 }
 
+/** A line of only spaces and tabs (CommonMark's blank line: U+00A0 and the other Unicode spaces are text). */
+const BLANK = /^[ \t]*$/;
+/** The tag written on the line after an untagged opening fence: exactly `findings`, any case, spaces and tabs around. */
+const TAG_LINE = /^[ \t]*findings[ \t]*$/i;
+
+/**
+ * The body of a findings block, or null when the fence is not one. A findings block is a fence tagged `findings`
+ * (the info string's first word), or an untagged fence whose first non-blank line is exactly `findings` (seen live:
+ * a seat wrote the fence, then the tag on its own line); that tag line and the blank lines before it are not body.
+ * Nothing looser is a block: the word on the first line of a fence tagged otherwise, a first line holding more than
+ * the word, or the word after any other line.
+ */
+function findingsBody(f: Fence): string[] | null {
+  if ((f.info.split(/\s+/)[0] ?? '').toLowerCase() === 'findings') return f.body;
+  if (f.info !== '') return null;
+  const first = f.body.findIndex((line) => !BLANK.test(line));
+  if (first === -1 || !TAG_LINE.test(f.body[first] ?? '')) return null;
+  return f.body.slice(first + 1);
+}
+
 /**
  * Parses the leg's fenced `findings` block (plan 3.9). Three shapes are accepted, all seen from real seats:
  * the line grammar `F1 | HIGH | path:line | title`, a JSON array of objects, and a YAML list of the same objects
- * (id, severity, path or file, line, title). A missing or broken block never throws: it returns
- * `{findings: [], extracted_by: 'adjudicator-needed'}` with the reason, so the adjudicator extracts the findings.
- * Several `findings` blocks are accepted only when they all parse to the same findings: a block the leg quoted
- * (from the PR, a test, an earlier review) must never stand in for its own, so blocks that differ go to the
+ * (id, severity, path or file, line, title). The tag is the fence's info string, or the first non-blank line of an
+ * untagged fence when that line is exactly `findings` (findingsBody). A missing or broken block never throws: it
+ * returns `{findings: [], extracted_by: 'adjudicator-needed'}` with the reason, so the adjudicator extracts the
+ * findings. Several `findings` blocks are accepted only when they all parse to the same findings: a block the leg
+ * quoted (from the PR, a test, an earlier review) must never stand in for its own, so blocks that differ go to the
  * adjudicator, never "take the last".
  */
 export function parseFindings(text: string): FindingsResult {
-  const blocks = fences(text).filter((f) => (f.info.split(/\s+/)[0] ?? '').toLowerCase() === 'findings');
+  const blocks = fences(text).flatMap((f) => {
+    const body = findingsBody(f);
+    return body === null ? [] : [{ body, closed: f.closed }];
+  });
   if (blocks.length === 0) return needed('no fenced findings block');
   if (blocks.some((b) => !b.closed)) return needed('the findings block is not closed');
   const results = blocks.map((b) => parseOne(b.body.join('\n')));
