@@ -67,17 +67,24 @@ export function outcomeKey(f: Pick<StatsFinding, 'outcome' | 'rulingResult'>): O
   return f.rulingResult === 'upheld' ? 'ruling-upheld' : f.rulingResult === 'overturned' ? 'ruling-overturned' : 'ruling-pending';
 }
 
-/** A leg's SHIP-vs-not position (plan 8.2's agreement axis); a `none` verdict has none. */
-export function position(v: LegVerdict): 'ship' | 'not' | null {
-  return v === 'none' ? null : v === 'SHIP' ? 'ship' : 'not';
+/**
+ * A position on the decision axis of dissent and agreement: NEEDS-WORK vs not (plan 3.2 treats SHIP and
+ * SHIP-WITH-FIXES alike; only NEEDS-WORK blocks). The council chose this axis over the plan's earlier SHIP vs not in
+ * round 1 of P9, so a SHIP-WITH-FIXES whose findings became follow-ups is not a dissent from two SHIPs.
+ */
+export type Position = 'blocks' | 'clears';
+
+/** A leg's position from its raw verdict (what the seat said): NEEDS-WORK blocks, SHIP and SHIP-WITH-FIXES clear; `none` has none. */
+export function position(v: LegVerdict): Position | null {
+  return v === 'none' ? null : v === 'NEEDS-WORK' ? 'blocks' : 'clears';
 }
 
 /**
- * The round's final position, ruling-aware: SHIP when nothing blocks (a SHIP-WITH-FIXES with no owed row reads as
- * SHIP, plan 3.2), not SHIP while any owed row or holding ruling remains.
+ * The round's final position, ruling-aware: it clears when nothing blocks (a SHIP-WITH-FIXES with no owed row reads as
+ * SHIP, plan 3.2), and blocks while any owed row or holding ruling remains.
  */
-export function finalPosition(r: StatsRound): 'ship' | 'not' {
-  return r.findings.some(isBlocking) ? 'not' : 'ship';
+export function finalPosition(r: StatsRound): Position {
+  return r.findings.some(isBlocking) ? 'blocks' : 'clears';
 }
 
 // ---- the card ----
@@ -161,18 +168,18 @@ export interface Card {
   };
   dissent: {
     /**
-     * Adjudicated rounds where its ratified verdict (SHIP vs not) differed from the two other ratified legs, which
-     * agreed with each other. A `none` verdict has no position; a round with fewer than two other positioned legs has
-     * no lone dissent.
+     * Adjudicated rounds where its ratified raw verdict, NEEDS-WORK vs not, differed from the two other ratified legs,
+     * which agreed with each other. A `none` verdict has no position; a round with fewer than two other positioned legs
+     * has no lone dissent.
      */
     lone: number;
     /**
-     * Lone dissents the outcome sided with: a lone SHIP when the round ended with nothing blocking; a lone not-SHIP when
-     * something blocked at the end or one of its own findings was owed.
+     * Lone dissents the outcome sided with: a lone NEEDS-WORK (`said: blocks`) when the round ended blocked or one of its
+     * own findings was owed; a lone SHIP or SHIP-WITH-FIXES (`said: clears`) when nothing blocked at the end.
      */
     right: number;
     right_rate: number | null;
-    rounds: Array<{ round: number; said: 'ship' | 'not'; right: boolean }>;
+    rounds: Array<{ round: number; said: Position; right: boolean }>;
   };
   cost: {
     /** Summed over every settled leg of the subject (failed attempts cost too). Units are never converted (Q8). */
@@ -300,11 +307,11 @@ export function cardOf(data: StatsData, subject: Subject): Card {
     else if (blocking.length > 0 && lost.length === blocking.length) flipped.push(r.id);
 
     const said = position(pass.verdictRaw);
-    const otherPositions = others.map((l) => position(l.verdictRaw)).filter((p): p is 'ship' | 'not' => p !== null);
+    const otherPositions = others.map((l) => position(l.verdictRaw)).filter((p): p is Position => p !== null);
     if (said !== null && otherPositions.length >= 2 && otherPositions.every((p) => p === otherPositions[0]) && otherPositions[0] !== said) {
       const end = finalPosition(r);
       const ownOwed = r.findings.some((f) => isOwed(f) && f.sources.some((s) => mine.has(s.legId)));
-      const right = said === 'ship' ? end === 'ship' : end === 'not' || ownOwed;
+      const right = said === 'clears' ? end === 'clears' : end === 'blocks' || ownOwed;
       dissents.push({ round: r.id, said, right });
     }
   }
@@ -354,19 +361,19 @@ export interface AgreementPair {
   b: string;
   /** Settled rounds where both had a ratified leg with a verdict. */
   rounds: number;
-  /** Of those, rounds where one said SHIP and the other did not. */
+  /** Of those, rounds where one said NEEDS-WORK and the other did not. */
   disagree: number;
   disagree_rate: number | null;
   /** They agreed in every shared round: two such seats behave as one. */
   always_agree: boolean;
 }
 
-/** Pairwise SHIP-vs-not disagreement between seats (or occupants), over every settled round both ratified in. */
+/** Pairwise NEEDS-WORK-vs-not disagreement (raw verdicts) between seats (or occupants), over every settled round both ratified in. */
 export function agreementOf(data: StatsData, kind: 'seat' | 'occupant'): AgreementPair[] {
   const pairs = new Map<string, { a: string; b: string; rounds: number; disagree: number }>();
   const keyOf = (l: StatsLeg): string => (kind === 'seat' ? l.seat : String(l.occupantId));
   for (const r of data.rounds) {
-    const pos = new Map<string, 'ship' | 'not'>();
+    const pos = new Map<string, Position>();
     for (const l of r.legs) {
       const p = l.status === 'PASS' ? position(l.verdictRaw) : null;
       if (p !== null) pos.set(keyOf(l), p);

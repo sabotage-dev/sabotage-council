@@ -253,38 +253,69 @@ describe('stats: dissent', () => {
     const shipRight = w.round({ legs: three({ a: 'NEEDS-WORK', b: 'NEEDS-WORK', c: 'SHIP' }), findings: [{ outcome: 'refuted', by: ['a', 'b'] }] });
     // Not a lone dissent: only one other leg has a verdict.
     w.round({ legs: three({ a: 'none', b: 'SHIP', c: 'NEEDS-WORK' }) });
-    // Not a lone dissent for c (b agrees with it); a lone SHIP for a, since SHIP-WITH-FIXES is not SHIP.
-    const aAlone = w.round({ legs: three({ a: 'SHIP', b: 'SHIP-WITH-FIXES', c: 'NEEDS-WORK' }) });
+    // SHIP and SHIP-WITH-FIXES are one position (only NEEDS-WORK blocks): c's NEEDS-WORK is the lone dissent, a's SHIP
+    // is not one. Nothing blocked at the end and c had nothing owed, so c was wrong.
+    const cAlone = w.round({ legs: three({ a: 'SHIP', b: 'SHIP-WITH-FIXES', c: 'NEEDS-WORK' }) });
     const r = report(w);
     expect(seatCard(r, 'c').dissent).toEqual({
+      lone: 4,
+      right: 2,
+      right_rate: 0.5,
+      rounds: [
+        { round: right, said: 'blocks', right: true },
+        { round: wrong, said: 'blocks', right: false },
+        { round: shipRight, said: 'clears', right: true },
+        { round: cAlone, said: 'blocks', right: false },
+      ],
+    });
+    expect(seatCard(r, 'a').dissent.lone).toBe(0);
+    expect(seatCard(r, 'b').dissent.lone).toBe(0);
+    w.close();
+  });
+
+  it('reads NEEDS-WORK vs not on the raw verdict: a SHIP-WITH-FIXES whose findings became follow-ups is no dissent from two SHIPs', () => {
+    const w = statsStore();
+    // b said SHIP-WITH-FIXES and its two findings became follow-ups; a and c said SHIP; the round ended SHIP.
+    w.round({ legs: three({ b: 'SHIP-WITH-FIXES' }), findings: [{ outcome: 'follow-up', by: ['b'] }, { outcome: 'follow-up', by: ['b'] }] });
+    // A lone SHIP-WITH-FIXES is right when nothing blocked at the end: the two NEEDS-WORK legs' findings were refuted.
+    const swfRight = w.round({ legs: three({ a: 'NEEDS-WORK', b: 'SHIP-WITH-FIXES', c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['a', 'c'] }, { outcome: 'follow-up', by: ['b'] }] });
+    // A lone SHIP-WITH-FIXES is wrong when the round ended blocked, even with a finding of its own adopted.
+    const swfWrong = w.round({ legs: three({ a: 'NEEDS-WORK', b: 'SHIP-WITH-FIXES', c: 'NEEDS-WORK' }), findings: [{ outcome: 'owed', by: ['a', 'c'] }, { outcome: 'follow-up', by: ['b'] }] });
+    // A lone NEEDS-WORK whose own finding was owed is right.
+    const nwRight = w.round({ legs: three({ a: 'SHIP-WITH-FIXES', b: 'NEEDS-WORK', c: 'SHIP' }), findings: [{ outcome: 'owed', by: ['b'] }] });
+    const r = report(w);
+    expect(seatCard(r, 'b').dissent).toEqual({
       lone: 3,
       right: 2,
       right_rate: 2 / 3,
       rounds: [
-        { round: right, said: 'not', right: true },
-        { round: wrong, said: 'not', right: false },
-        { round: shipRight, said: 'ship', right: true },
+        { round: swfRight, said: 'clears', right: true },
+        { round: swfWrong, said: 'clears', right: false },
+        { round: nwRight, said: 'blocks', right: true },
       ],
     });
-    expect(seatCard(r, 'a').dissent).toEqual({ lone: 1, right: 1, right_rate: 1, rounds: [{ round: aAlone, said: 'ship', right: true }] });
-    expect(seatCard(r, 'b').dissent.lone).toBe(0);
+    // The first round is agreement for every pair.
+    const data = loadStats(w.store.db, null);
+    const ab = agreementOf(data, 'seat').find((p) => p.a === 'a' && p.b === 'b');
+    expect(ab).toMatchObject({ rounds: 4, disagree: 3 });
+    expect(agreementOf({ ...data, rounds: data.rounds.slice(0, 1) }, 'seat').every((p) => p.always_agree)).toBe(true);
     w.close();
   });
 });
 
 describe('stats: the agreement matrix', () => {
-  it('shows two seats that always agree, and counts SHIP-vs-not disagreements', () => {
+  it('shows two seats that always agree, and counts NEEDS-WORK-vs-not disagreements (SHIP and SHIP-WITH-FIXES agree)', () => {
     const w = statsStore();
-    w.round({ legs: three({ a: 'SHIP', b: 'SHIP', c: 'NEEDS-WORK' }) });
-    w.round({ legs: three({ a: 'SHIP-WITH-FIXES', b: 'NEEDS-WORK', c: 'SHIP' }) });
+    w.round({ legs: three({ a: 'SHIP', b: 'SHIP-WITH-FIXES', c: 'NEEDS-WORK' }) });
+    w.round({ legs: three({ a: 'SHIP-WITH-FIXES', b: 'SHIP-WITH-FIXES', c: 'SHIP' }) });
     w.round({ legs: three({ a: 'SHIP', b: 'SHIP', c: 'SHIP' }) });
-    w.round({ legs: three({ a: 'NEEDS-WORK', b: 'SHIP-WITH-FIXES', c: 'none' }) });
+    w.round({ legs: three({ a: 'NEEDS-WORK', b: 'NEEDS-WORK', c: 'none' }) });
     w.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: OCC.b, status: 'FAIL', failure: 'empty' }, { seat: 'c', occ: OCC.c, verdict: 'NEEDS-WORK' }] });
     const data = loadStats(w.store.db, null);
     expect(agreementOf(data, 'seat')).toEqual([
       { a: 'a', b: 'b', rounds: 4, disagree: 0, disagree_rate: 0, always_agree: true },
-      { a: 'a', b: 'c', rounds: 4, disagree: 3, disagree_rate: 0.75, always_agree: false },
-      { a: 'b', b: 'c', rounds: 3, disagree: 2, disagree_rate: 2 / 3, always_agree: false },
+      { a: 'a', b: 'c', rounds: 4, disagree: 2, disagree_rate: 0.5, always_agree: false },
+      { a: 'b', b: 'c', rounds: 3, disagree: 1, disagree_rate: 1 / 3, always_agree: false },
     ]);
     const occ = report(w).agreement.occupants;
     expect(occ[0]).toMatchObject({ a: `${OCC.a} #${w.occupantId(OCC.a)}`, b: `${OCC.b} #${w.occupantId(OCC.b)}`, always_agree: true });

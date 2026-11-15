@@ -126,7 +126,7 @@ export function renderText(report: StatsReport): string[] {
     out.push(...cardLines(o));
   }
   out.push('');
-  out.push('agreement (SHIP vs not, rounds both ratified with a verdict)');
+  out.push('agreement (NEEDS-WORK vs not, raw verdicts, rounds both ratified with a verdict)');
   out.push(...matrixLines(report.agreement.seats));
   if (report.agreement.occupants.length > 0) {
     out.push('agreement by occupant');

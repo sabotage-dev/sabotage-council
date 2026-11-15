@@ -201,7 +201,7 @@ ${report.occupants.length > 0 ? metricRows(report.occupants.map((o) => ({ head: 
 </section>
 <section>
 <h2>Agreement</h2>
-<p class="muted">Pairwise SHIP-vs-not disagreement, over the settled rounds where both ratified with a verdict. Two seats that always agree are one seat.</p>
+<p class="muted">Pairwise disagreement on NEEDS-WORK vs not (raw verdicts: SHIP and SHIP-WITH-FIXES agree with each other), over the settled rounds where both ratified with a verdict. Two seats that always agree are one seat.</p>
 ${matrix(report.agreement.seats, seatKeys)}
 ${report.agreement.occupants.length > 0 ? h`<h3>By occupant</h3>${matrix(report.agreement.occupants, occupantKeys)}` : ''}
 </section>`
@@ -230,7 +230,7 @@ ${
 <dt>Adopted, refuted, precision</dt><dd>Adopted = owed + follow-up + ruling upheld; refuted = refuted + ruling overturned; precision = adopted / (adopted + refuted). Nits, noted findings and rulings not yet ruled on are in neither.</dd>
 <dt>Unique</dt><dd>Raised by this seat alone, whatever severity each seat gave it. Unique HIGH uses the adjudicator's final severity and counts only adopted findings.</dd>
 <dt>Drop-one</dt><dd>Blocking findings (owed, or a ruling that holds) it raised alone; rounds whose every blocking finding was its alone and that kept quorum without it would have been SHIP. A round left below quorum without it is counted as quorum lost, never as a flip.</dd>
-<dt>Dissent</dt><dd>Its SHIP-vs-not verdict differed from the two other ratified legs, which agreed. Right: a lone SHIP in a round that ended with nothing blocking, or a lone not-SHIP in a round that ended blocked or with one of its findings owed.</dd>
+<dt>Dissent</dt><dd>Its raw verdict, NEEDS-WORK vs not, differed from the two other ratified legs, which agreed (SHIP and SHIP-WITH-FIXES are one position: only NEEDS-WORK blocks). Right: a lone NEEDS-WORK in a round that ended blocked or with one of its own findings owed, or a lone SHIP or SHIP-WITH-FIXES in a round that ended with nothing blocking.</dd>
 <dt>Cost</dt><dd>Every leg's cost, failed attempts included; units are never converted. Quota is the CLI's own rate-window snapshot (highest and latest). Durations are nearest-rank percentiles over ratified legs.</dd>
 </dl>
 </section>
