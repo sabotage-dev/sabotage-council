@@ -400,6 +400,21 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
     expect(c?.reasons).toEqual(['precision n/a and ratified rate 100% are at or above the thresholds']);
     w.close();
   });
+
+  it('does not flag a seat exactly at R or exactly at P: "below" is strict', () => {
+    const w = statsStore();
+    // a: 20 of 25 ratified (exactly 80%), nothing raised. c: 10 refuted and 10 follow-ups of its own (exactly 50%).
+    for (let i = 0; i < 20; i++) w.round({ legs: three({ c: 'SHIP-WITH-FIXES' }), findings: [{ outcome: i % 2 === 0 ? 'refuted' : 'follow-up', by: ['c'] }] });
+    for (let i = 0; i < 5; i++) w.round({ legs: [{ seat: 'a', occ: OCC.a, status: 'FAIL', failure: 'usage_limit' }, { seat: 'b', occ: OCC.b }, { seat: 'c', occ: OCC.c }] });
+    const r = report(w);
+    expect(seatCard(r, 'a')).toMatchObject({ ratified_rate: 0.8, adjudicated_ratified: 20, unique: { owed: 0 }, findings: { precision: null } });
+    expect(seatCard(r, 'c')).toMatchObject({ unique: { owed: 0 }, findings: { precision: 0.5 } });
+    for (const seat of ['a', 'c']) {
+      const rec = r.recommendations.find((x) => x.seat === seat);
+      expect(rec, seat).toMatchObject({ swap_candidate: false, eligible: true, evidence: null });
+    }
+    w.close();
+  });
 });
 
 describe('stats: filters and the report shape', () => {

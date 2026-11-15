@@ -213,19 +213,23 @@ describe('seats: applying an edit to the config file', () => {
       { name: "a fallback equal to its seat's occupant", op: swap('a', 'kiro', 'gpt-5.6-sol', 'high'), expect: [/seats\[0\]\.fallback: the fallback is the same occupant as seat "a"/] },
       { name: "another seat's occupant", op: swap('c', 'claude', 'claude-sonnet-5-5', 'high'), expect: [/is the same occupant as seat "b"/] },
     ];
-    for (const c of cases) {
-      const { dir, path } = configFile(c.text ?? CONFIG);
-      const before = readFileSync(path, 'utf8');
-      const error = await applySeatEdit(path, c.op, { registry: REGISTRY, dryRun: false, now }).then(
-        () => null,
-        (e: unknown) => e,
-      );
-      expect(error, c.name).toBeInstanceOf(SeatApplyError);
-      const all = [(error as SeatApplyError).message, ...(error as SeatApplyError).details].join('\n');
-      expect(all, c.name).toMatch(/^refused: the config loader would reject the edited file/);
-      for (const re of c.expect) expect(all, c.name).toMatch(re);
-      expect(readFileSync(path, 'utf8'), c.name).toBe(before);
-      expect(filesIn(dir), c.name).toEqual(['config.toml']);
+    // A dry run refuses the same edits: its diff never shows a change the real run would refuse.
+    for (const dryRun of [false, true]) {
+      for (const c of cases) {
+        const label = `${c.name}${dryRun ? ' (--dry-run)' : ''}`;
+        const { dir, path } = configFile(c.text ?? CONFIG);
+        const before = readFileSync(path, 'utf8');
+        const error = await applySeatEdit(path, c.op, { registry: REGISTRY, dryRun, now }).then(
+          () => null,
+          (e: unknown) => e,
+        );
+        expect(error, label).toBeInstanceOf(SeatApplyError);
+        const all = [(error as SeatApplyError).message, ...(error as SeatApplyError).details].join('\n');
+        expect(all, label).toMatch(/^refused: the config loader would reject the edited file/);
+        for (const re of c.expect) expect(all, label).toMatch(re);
+        expect(readFileSync(path, 'utf8'), label).toBe(before);
+        expect(filesIn(dir), label).toEqual(['config.toml']);
+      }
     }
   });
 
