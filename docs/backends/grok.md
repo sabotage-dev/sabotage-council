@@ -3,6 +3,10 @@
 xAI's Grok Build CLI, run headless. Label: **`weak`** with `sandbox = "off"` (the only measured configuration),
 `pending` with the read-only sandbox running. Back to [all backends](README.md).
 
+**A grok seat fails if its grok home's config starts any MCP server:** preflight refuses the seat, so `doctor` and
+every round do. If your own grok config starts one, either give the seat an `auth_home` (its own grok home, a
+directory logged in once with `GROK_HOME=<dir> grok login`, holding no MCP config) or choose another seat.
+
 | | |
 |---|---|
 | Binary | `$GROK_HOME/bin/grok` (default `~/.grok/bin/grok`) when it exists, else `grok` on `PATH` |
@@ -30,8 +34,8 @@ starting (a sign-in prompt) is killed and classified `auth`.
 **MCP servers.** Servers in a grok config start inside the leg even when no tool can reach them (measured: a
 `context7` server started through `npx`, a process with network). So a leg that starts an MCP server fails, and
 preflight refuses a seat whose grok home lists one (`grok inspect` names them). If your own grok config has MCP
-servers, give the seat an `auth_home`, or use `XAI_API_KEY`, or disable the servers in your grok config yourself.
-The engine never edits your grok config.
+servers, give the seat an `auth_home` or choose another seat. (`XAI_API_KEY`, whose leg runs on an empty grok home,
+and disabling the servers in your own grok config also work.) The engine never edits your grok config.
 
 ## A seat in the config
 

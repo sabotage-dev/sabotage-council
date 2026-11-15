@@ -430,7 +430,8 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
     const w = statsStore();
     for (let i = 0; i < n; i++) {
       const adopted = i % 5 < 2;
-      w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [adopted ? { outcome: 'follow-up', by: ['a', 'c'] } : { outcome: 'refuted', by: ['c'], title: `refuted ${i}` }] });
+      // a and b raise the adopted follow-ups with c, so neither is a silent seat (owner ruling, 2026-11-14).
+      w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [adopted ? { outcome: 'follow-up', by: ['a', 'b', 'c'] } : { outcome: 'refuted', by: ['c'], title: `refuted ${i}` }] });
     }
     return w;
   }
@@ -528,56 +529,143 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
     w.close();
   });
 
-  it('flags a seat whose ratified rate is below R, and not one whose precision is n/a and rate is fine', () => {
+  it('flags a seat whose ratified rate is below R, and a silent one whose rate is fine as silent (never "at or above" P)', () => {
     const w = statsStore();
     for (let i = 0; i < 20; i++) w.round({ legs: three() });
     for (let i = 0; i < 6; i++) w.round({ status: 'failed', legs: [{ seat: 'a', occ: OCC.a, status: 'FAIL', failure: 'usage_limit' }, { seat: 'b', occ: OCC.b, status: 'FAIL', failure: 'auth' }, { seat: 'c', occ: OCC.c }] });
     const r = report(w);
-    // a and b: 20 of 26 ratified (76.9%) with nothing raised (precision n/a): flagged by the rate.
+    // a and b: 20 of 26 ratified (76.9%) with nothing raised: flagged by the rate, and silent too.
     const a = r.recommendations.find((x) => x.seat === 'a');
     expect(a?.swap_candidate).toBe(true);
     expect(a?.reasons.slice(1)).toEqual([
       '0 unique owed over 26 round(s) seated (20 adjudicated and ratified)',
-      'precision inconclusive: nothing it raised was adopted or refuted over 20 adjudicated round(s) ratified (0 finding(s) raised, 0 blocking lost without it)',
+      'raised nothing adopted or refuted over 20 adjudicated rounds, and dropping it loses no blocking finding',
       'ratified rate 76.9% (20 of 26 round(s) seated) is below 80%',
     ]);
     expect(a?.evidence?.rounds.filter((e) => !e.ratified).map((e) => e.said)).toEqual(Array(6).fill('not ratified: primary 1 FAIL usage_limit'));
-    // c: 26 of 26 ratified, nothing raised: precision n/a is inconclusive, never "at or above" P, and not flagged.
+    // c: 26 of 26 ratified, nothing raised over 20 adjudicated rounds: silent, so flagged though its rate is fine.
     const c = r.recommendations.find((x) => x.seat === 'c');
-    expect(c?.swap_candidate).toBe(false);
-    expect(c?.reasons.slice(1)).toEqual([
-      'precision inconclusive: nothing it raised was adopted or refuted over 20 adjudicated round(s) ratified (0 finding(s) raised, 0 blocking lost without it)',
-      'ratified rate 100% (26 of 26 round(s) seated) is at or above 80%',
-    ]);
+    expect(c?.swap_candidate).toBe(true);
+    expect(c?.reasons.slice(1)).toEqual(['0 unique owed over 26 round(s) seated (20 adjudicated and ratified)', 'raised nothing adopted or refuted over 20 adjudicated rounds, and dropping it loses no blocking finding', 'ratified rate 100% (26 of 26 round(s) seated) is at or above 80%']);
     w.close();
   });
 
-  it('reports a seat that raised nothing adopted or refuted as inconclusive, with the findings it raised and the blocking lost', () => {
+  it('flags a silent seat that raises only nits and noted findings, with the rounds and findings behind it', () => {
     const w = statsStore();
     // b raises a nit and a noted finding in every round: raised, but neither adopted nor refuted.
     for (let i = 0; i < 20; i++) w.round({ legs: three(), findings: [{ outcome: 'nit', by: ['b'] }, { outcome: 'noted', by: ['b'] }] });
     const b = report(w).recommendations.find((x) => x.seat === 'b');
-    expect(b).toMatchObject({ swap_candidate: false, eligible: true });
-    expect(b?.reasons.slice(1)).toEqual([
-      'precision inconclusive: nothing it raised was adopted or refuted over 20 adjudicated round(s) ratified (40 finding(s) raised, 0 blocking lost without it)',
-      'ratified rate 100% (20 of 20 round(s) seated) is at or above 80%',
-    ]);
+    expect(b).toMatchObject({ swap_candidate: true, eligible: true });
+    expect(b?.reasons.slice(1)).toEqual(['0 unique owed over 20 round(s) seated (20 adjudicated and ratified)', 'raised nothing adopted or refuted over 20 adjudicated rounds, and dropping it loses no blocking finding', 'ratified rate 100% (20 of 20 round(s) seated) is at or above 80%']);
+    expect(b?.evidence?.rounds).toHaveLength(20);
+    expect(b?.evidence?.findings).toHaveLength(40);
+    expect(b?.evidence?.findings.every((f) => f.unique && !f.adopted && !f.refuted && !f.owed && (f.outcome === 'nit' || f.outcome === 'noted'))).toBe(true);
     w.close();
   });
 
   it('does not flag a seat exactly at R or exactly at P: "below" is strict', () => {
     const w = statsStore();
-    // a: 20 of 25 ratified (exactly 80%), nothing raised. c: 10 refuted and 10 follow-ups of its own (exactly 50%).
-    for (let i = 0; i < 20; i++) w.round({ legs: three({ c: 'SHIP-WITH-FIXES' }), findings: [{ outcome: i % 2 === 0 ? 'refuted' : 'follow-up', by: ['c'] }] });
+    // a: 20 of 25 ratified (exactly 80%), one follow-up shared with b (so not silent: precision 100%). c: 10 refuted and
+    // 10 follow-ups of its own (exactly 50%).
+    for (let i = 0; i < 20; i++) {
+      const findings: FindingSpec[] = [{ outcome: i % 2 === 0 ? 'refuted' : 'follow-up', by: ['c'] }];
+      if (i === 0) findings.push({ outcome: 'follow-up', by: ['a', 'b'] });
+      w.round({ legs: three({ c: 'SHIP-WITH-FIXES' }), findings });
+    }
     for (let i = 0; i < 5; i++) w.round({ legs: [{ seat: 'a', occ: OCC.a, status: 'FAIL', failure: 'usage_limit' }, { seat: 'b', occ: OCC.b }, { seat: 'c', occ: OCC.c }] });
     const r = report(w);
-    expect(seatCard(r, 'a')).toMatchObject({ ratified_rate: 0.8, adjudicated_ratified: 20, unique: { owed: 0 }, findings: { precision: null } });
+    expect(seatCard(r, 'a')).toMatchObject({ ratified_rate: 0.8, adjudicated_ratified: 20, unique: { owed: 0 }, findings: { precision: 1 } });
     expect(seatCard(r, 'c')).toMatchObject({ unique: { owed: 0 }, findings: { precision: 0.5 } });
     for (const seat of ['a', 'c']) {
       const rec = r.recommendations.find((x) => x.seat === seat);
       expect(rec, seat).toMatchObject({ swap_candidate: false, eligible: true, evidence: null });
     }
     w.close();
+  });
+
+  // Owner ruling, 2026-11-14: a silent seat (nothing adopted or refuted, no blocking finding lost without it) over N
+  // adjudicated rounds it ratified in is a swap candidate.
+  describe('a silent seat', () => {
+    const SILENT = (k: number): string => `raised nothing adopted or refuted over ${k} adjudicated rounds, and dropping it loses no blocking finding`;
+    /** n adjudicated rounds in which a and b raise one owed finding together and c says SHIP and raises nothing. */
+    function quietC(n: number): StatsStore {
+      const w = statsStore();
+      for (let i = 0; i < n; i++) w.round({ legs: three({ a: 'NEEDS-WORK', b: 'NEEDS-WORK' }), findings: [{ outcome: 'owed', by: ['a', 'b'] }] });
+      return w;
+    }
+
+    it('is flagged over 20 adjudicated rounds, with every round of the tenure as evidence', () => {
+      const w = quietC(20);
+      const r = report(w);
+      expect(seatCard(r, 'c')).toMatchObject({ adjudicated_ratified: 20, findings: { raised: 0, precision: null }, unique: { owed: 0 }, drop_one: { blocking_lost: 0 } });
+      const c = r.recommendations.find((x) => x.seat === 'c');
+      expect(c).toMatchObject({ swap_candidate: true, eligible: true });
+      expect(c?.reasons.slice(1)).toEqual(['0 unique owed over 20 round(s) seated (20 adjudicated and ratified)', SILENT(20), 'ratified rate 100% (20 of 20 round(s) seated) is at or above 80%']);
+      expect(c?.evidence?.rounds).toHaveLength(20);
+      expect(c?.evidence?.rounds.every((e) => e.ratified && e.adjudicated && e.said === 'SHIP' && e.verdict === 'NEEDS-WORK')).toBe(true);
+      expect(c?.evidence?.findings).toEqual([]);
+      // a and b raised what was owed (shared, so not unique): precision 100%, not silent, not flagged.
+      for (const seat of ['a', 'b']) expect(r.recommendations.find((x) => x.seat === seat), seat).toMatchObject({ swap_candidate: false, eligible: true, evidence: null });
+      w.close();
+    });
+
+    it('is not flagged over 19 adjudicated rounds, whether it sat in 19 rounds or in 20 with one not adjudicated', () => {
+      const w = quietC(19);
+      const c = report(w).recommendations.find((x) => x.seat === 'c');
+      expect(c).toMatchObject({ swap_candidate: false, eligible: false, evidence: null });
+      expect(c?.reasons.slice(1)).toEqual(['19 round(s) seated and 19 adjudicated round(s) ratified under it, below the 20 the flag needs']);
+      // A 20th round seated but still awaiting adjudication is no evidence that it found nothing.
+      w.round({ status: 'awaiting-adjudication', legs: three() });
+      const c20 = report(w).recommendations.find((x) => x.seat === 'c');
+      expect(c20).toMatchObject({ swap_candidate: false, eligible: true, evidence: null });
+      expect(c20?.reasons.slice(1)).toEqual(['precision not judged: 19 adjudicated round(s) ratified, below the 20 that branch needs', 'ratified rate 100% (20 of 20 round(s) seated) is at or above 80%']);
+      w.close();
+    });
+
+    /** The id of the ruling in round `round`. */
+    const rulingIn = (w: StatsStore, round: number): string => (w.store.db.prepare("SELECT id FROM findings WHERE round_id = ? AND outcome = 'ruling'").get(round) as { id: string }).id;
+
+    it('is not flagged when it alone raised a blocking finding: one held ruling, named in the reason', () => {
+      const w = quietC(19);
+      // c alone raises a ruling nobody has ruled on yet: neither adopted nor refuted (precision stays n/a), but it holds.
+      const held = w.round({ legs: three({ a: 'NEEDS-WORK', b: 'NEEDS-WORK', c: 'NEEDS-WORK' }), findings: [{ outcome: 'owed', by: ['a', 'b'] }, { outcome: 'ruling', severity: 'HIGH', by: ['c'] }] });
+      const r = report(w);
+      expect(seatCard(r, 'c')).toMatchObject({ adjudicated_ratified: 20, findings: { raised: 1, adopted: 0, refuted: 0, pending: 1, precision: null }, unique: { owed: 0 }, drop_one: { blocking_lost: 1 } });
+      const c = r.recommendations.find((x) => x.seat === 'c');
+      expect(c).toMatchObject({ swap_candidate: false, eligible: true, evidence: null });
+      // Plan 8.3: the reason names the blocking findings dropping it would lose (council round 1 of PR #13).
+      expect(c?.reasons.slice(1)).toEqual([
+        `precision n/a: nothing it raised was adopted or refuted over 20 adjudicated round(s) ratified, but dropping it loses 1 blocking finding(s) it alone raised (a ruling not yet ruled on: round #${held} ${rulingIn(w, held)}), so it is not silent`,
+        'ratified rate 100% (20 of 20 round(s) seated) is at or above 80%',
+      ]);
+      w.close();
+    });
+
+    it('names every ruling it alone holds, in round order, and none it raised with another seat', () => {
+      const w = quietC(17);
+      const legs = three({ a: 'NEEDS-WORK', b: 'NEEDS-WORK', c: 'NEEDS-WORK' });
+      const first = w.round({ legs, findings: [{ outcome: 'ruling', by: ['c'] }] });
+      const shared = w.round({ legs, findings: [{ outcome: 'ruling', by: ['a', 'c'] }] });
+      const second = w.round({ legs, findings: [{ outcome: 'owed', by: ['a', 'b'] }, { outcome: 'ruling', by: ['c'] }] });
+      const r = report(w);
+      expect(seatCard(r, 'c')).toMatchObject({ adjudicated_ratified: 20, findings: { pending: 3, precision: null }, drop_one: { blocking_lost: 2 } });
+      const c = r.recommendations.find((x) => x.seat === 'c');
+      expect(c).toMatchObject({ swap_candidate: false, eligible: true });
+      expect(c?.reasons[1]).toBe(
+        `precision n/a: nothing it raised was adopted or refuted over 20 adjudicated round(s) ratified, but dropping it loses 2 blocking finding(s) it alone raised (rulings not yet ruled on: round #${first} ${rulingIn(w, first)}, round #${second} ${rulingIn(w, second)}), so it is not silent`,
+      );
+      expect(c?.reasons[1]).not.toContain(rulingIn(w, shared));
+      w.close();
+    });
+
+    it('takes N from the thresholds', () => {
+      const w = quietC(5);
+      const n5 = thresholdsOf({ swap_min_ratified_rounds: 5, swap_precision_below: 0.5, swap_ratified_rate_below: 0.8 }, 'config');
+      const c = report(w, { thresholds: n5 }).recommendations.find((x) => x.seat === 'c');
+      expect(c).toMatchObject({ swap_candidate: true });
+      expect(c?.reasons).toContain(SILENT(5));
+      w.close();
+    });
   });
 });
 

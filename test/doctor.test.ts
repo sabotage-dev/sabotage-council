@@ -29,7 +29,7 @@ afterEach(() => {
 
 async function doctor(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}): Promise<{ code: number; lines: string[] }> {
   const lines: string[] = [];
-  const code = await runDoctor({ configPath, dbPath, nodeVersion: 'v22.13.0', write: (l) => lines.push(l), ...overrides });
+  const code = await runDoctor({ configPath, dbPath, nodeVersion: 'v22.15.0', write: (l) => lines.push(l), ...overrides });
   return { code, lines };
 }
 
@@ -38,7 +38,7 @@ describe('doctor', () => {
     const { code, lines } = await doctor();
     expect(code).toBe(0);
     expect(lines).toEqual([
-      'ok    node v22.13.0 satisfies >=22.13',
+      'ok    node v22.15.0 satisfies >=22.15',
       `ok    config ${configPath} loaded`,
       'note  config-wide model and family checks are not run here; each seat is preflighted below',
       `ok    store ${dbPath} at schema version 5, applied migration(s) 1, 2, 3, 4, 5`,
@@ -75,9 +75,9 @@ describe('doctor', () => {
   });
 
   it('fails when Node is older than engines', async () => {
-    const { code, lines } = await doctor({ nodeVersion: 'v22.12.0' });
+    const { code, lines } = await doctor({ nodeVersion: 'v22.14.0' });
     expect(code).toBe(1);
-    expect(lines[0]).toBe('fail  node v22.12.0 does not satisfy >=22.13');
+    expect(lines[0]).toBe('fail  node v22.14.0 does not satisfy >=22.15');
   });
 
   it('fails when the store cannot be opened', async () => {
@@ -182,18 +182,19 @@ describe('doctor preflight per seat (plan 4.3)', () => {
 
 describe('node version check', () => {
   it.each([
-    ['v22.12.9', false],
-    ['v22.13.0', true],
+    ['v22.13.0', false],
+    ['v22.14.9', false],
+    ['v22.15.0', true],
     ['v22.22.2', true],
     ['v23.11.0', true],
     ['v24.0.0', true],
     ['v21.99.99', false],
-  ])('%s against >=22.13 -> %s', (version, ok) => {
-    expect(checkNodeVersion(version, '>=22.13').ok).toBe(ok);
+  ])('%s against >=22.15 -> %s', (version, ok) => {
+    expect(checkNodeVersion(version, '>=22.15').ok).toBe(ok);
   });
 
   it('reads the floor from package.json engines', () => {
-    expect(packageInfo().nodeRange).toBe('>=22.13');
+    expect(packageInfo().nodeRange).toBe('>=22.15');
   });
 
   it('fails closed on a range it cannot read', () => {

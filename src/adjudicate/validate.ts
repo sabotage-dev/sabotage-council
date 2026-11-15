@@ -166,9 +166,32 @@ export function validateAdjudicationText(text: string, ctx: AdjudicationContext)
   return validateAdjudication(raw, ctx);
 }
 
+/**
+ * The stable id of every finding whose `id` is not it, read from the raw document when the schema rejects it (P10B,
+ * from the live run): a schema error stops the cross-checks before the `[ids]` check, so a placeholder id that is not
+ * `f_` plus 12 hex (or any other schema error in the file) used to leave the first `--check` naming no stable id. The
+ * id is computed as the `[ids]` check computes it (the trimmed title and path, as the schema reads them); a finding
+ * whose title or path the schema would reject has no stable id yet and is left to its own schema error. The document
+ * is still rejected: these lines come after the schema errors.
+ */
+function stableIdsWhenRejected(raw: unknown, targetKey: string): string[] {
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+  if (!isRecord(raw) || !Array.isArray(raw['findings'])) return [];
+  const out: string[] = [];
+  raw['findings'].forEach((f: unknown, i: number) => {
+    if (!isRecord(f)) return;
+    const title = typeof f['title'] === 'string' ? f['title'].trim() : '';
+    const path = f['path'] === null ? null : typeof f['path'] === 'string' ? f['path'].trim() : '';
+    if (title === '' || path === '') return;
+    const expected = findingIdOf(targetKey, path, title);
+    if (f['id'] !== expected) out.push(`[ids] findings[${i}] ("${title}") must have the stable id ${expected} (sha256 of target, path and normalized title)`);
+  });
+  return out;
+}
+
 export function validateAdjudication(raw: unknown, ctx: AdjudicationContext): ValidationOutcome {
   const parsed = adjudicationSchema.safeParse(raw);
-  if (!parsed.success) return { ok: false, errors: zodErrors(parsed.error) };
+  if (!parsed.success) return { ok: false, errors: [...zodErrors(parsed.error), ...stableIdsWhenRejected(raw, ctx.targetKey)] };
   const a = parsed.data;
   const errors: string[] = [];
   const warnings: string[] = [];

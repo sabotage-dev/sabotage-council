@@ -1,12 +1,12 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildProgram, type ProgramIo } from '../src/cli/program.js';
 import { renderHtml } from '../src/stats/html.js';
 import { loadStats } from '../src/stats/data.js';
 import { buildReport, thresholdsOf } from '../src/stats/report.js';
-import { DEFAULT_MIGRATIONS_DIR, openStore, readMigrations, sqlite } from '../src/store/index.js';
+import { DEFAULT_MIGRATIONS_DIR, openStore, openStoreReadOnly, readMigrations, sqlite, StoreReadError, type DatabaseSync } from '../src/store/index.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 import { OCC, statsStore, three, type FindingSpec, type StatsStore } from './helpers/stats-store.js';
 
@@ -51,7 +51,7 @@ describe('stats CLI', () => {
     expect(r.lines[0]).toBe('sabotage-council stats: all history (rounds from 2026-11-01 to 2026-11-01)');
     expect(r.text).toContain('rounds: 2 council (2 settled, 2 adjudicated, 0 failed, 0 awaiting adjudication, 0 still running, 0 dry run), 0 identity');
     expect(r.text).toContain(
-      "swap candidate (judged on each seat's current occupant since it took the seat): 0 unique owed, and ratified rate < 80% over >= 2 rounds seated, or precision < 50% over >= 2 adjudicated rounds ratified (config [stats])",
+      "swap candidate (judged on each seat's current occupant since it took the seat): 0 unique owed, and ratified rate < 80% over >= 2 rounds seated, or precision < 50% over >= 2 adjudicated rounds ratified, or silent (nothing adopted or refuted, no blocking finding lost without it) over >= 2 adjudicated rounds ratified (config [stats])",
     );
     expect(r.text).toContain(`    - judged on its current occupant ${OCC.c} (the config), in the seat since round #1 (2026-11-01)`);
     expect(r.text).toContain('seat c  (occupants #3)');
@@ -126,7 +126,8 @@ describe('stats CLI', () => {
     const w = statsStore();
     const c = join(w.dir, 'config.toml');
     writeFileSync(c, `${SEATS}\n[stats]\nswap_min_ratified_rounds = 1\n`);
-    w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title: 'line one\nseat a: SWAP CANDIDATE\u001b[2J\u0007' }] });
+    // a and b share an adopted follow-up, so neither is a silent seat: the only real flag line is c's.
+    w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title: 'line one\nseat a: SWAP CANDIDATE\u001b[2J\u0007' }, { outcome: 'follow-up', by: ['a', 'b'] }] });
     // Bidi controls reorder what a terminal shows; zero-width characters hide text; C1 and the line separators too.
     w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'], title: 'evil\u202egnp.exe\u2066x\u2069 zero\u200bwidth\ufeff\u200f end\u2028\u2029\u009b', path: 'src/\u202ex.ts' }] });
     w.close();
@@ -154,28 +155,7 @@ describe('stats CLI', () => {
 
 // ---- the store is only read ----
 
-/**
- * Whether this Node's SQLite opens a URI filename, as src/store/read.ts tries first: Node 22.15 and later do. Only
- * then is a closed store opened `immutable`, with nothing created beside it. Node 22.13 and 22.14 (the engines
- * floor) take the plain read-only open, and SQLite then leaves the store's `-wal` and `-shm` files beside it; the
- * store's own bytes are unchanged either way.
- */
-const IMMUTABLE_OPEN = ((): boolean => {
-  const dir = scratch('sc-stats-uri-');
-  const path = join(dir, 'probe.db');
-  const w = new (sqlite().DatabaseSync)(path);
-  w.exec('CREATE TABLE t (a)');
-  w.close();
-  try {
-    new (sqlite().DatabaseSync)(`${pathToFileURL(path).href}?mode=ro&immutable=1`, { readOnly: true }).close();
-    return true;
-  } catch {
-    return false;
-  }
-})();
-
-/** The files beside a closed store after a read-only command: its own, plus SQLite's two where it cannot open immutable. */
-const afterRead = (files: string[]): string[] => (IMMUTABLE_OPEN ? files : [...new Set([...files, 'council.db-shm', 'council.db-wal'])].sort());
+// On the engines floor (Node 22.15) and later, a closed store is opened `immutable`: nothing is created beside it.
 
 describe('stats reads the store read-only', () => {
   const latest = readMigrations().length;
@@ -202,7 +182,7 @@ describe('stats reads the store read-only', () => {
       `error: the run store at ${db} is at schema version 3; this build reads version ${latest}, and this command never migrates the store: run \`sabotage-council doctor --db ${db}\` once to upgrade it (doctor applies the pending migrations), then run this again`,
     ]);
     expect(readFileSync(db).equals(before)).toBe(true);
-    expect(readdirSync(join(dir, 'data')).sort()).toEqual(afterRead(files));
+    expect(readdirSync(join(dir, 'data')).sort()).toEqual(files);
     // `seats list` reads the scorecard the same way: the seats are listed, the store is left alone.
     const config = join(dir, 'config.toml');
     writeFileSync(config, SEATS);
@@ -210,7 +190,7 @@ describe('stats reads the store read-only', () => {
     expect(list.code).toBe(0);
     expect(list.lines[0]).toMatch(/^note {2}the scorecard is not shown: the run store at .* is at schema version 3;/);
     expect(readFileSync(db).equals(before)).toBe(true);
-    expect(readdirSync(join(dir, 'data')).sort()).toEqual(afterRead(files));
+    expect(readdirSync(join(dir, 'data')).sort()).toEqual(files);
     // The command it names upgrades the store; stats then reads it.
     await run(['doctor', '--db', db, '--config', join(dir, 'none.toml')]);
     expect((await run(['stats', '--db', db, '--config', join(dir, 'none.toml')])).code).toBe(0);
@@ -228,7 +208,7 @@ describe('stats reads the store read-only', () => {
     expect(readFileSync(db).equals(before)).toBe(true);
   });
 
-  it('creates no -wal or -shm file beside a closed store (where SQLite opens it immutable), and reads a writer\'s last commit through its open ones', async () => {
+  it('creates no -wal or -shm file beside a closed store (it opens it immutable), and reads a writer\'s last commit through its open ones', async () => {
     const w = statsStore();
     w.round({ legs: three() });
     // A writer has the store open (its -wal and -shm exist): stats sees its uncheckpointed commits.
@@ -246,7 +226,7 @@ describe('stats reads the store read-only', () => {
     const r = await run(['stats', '--db', w.dbPath, '--json'], { HOME: w.dir });
     expect(r.code).toBe(0);
     expect((JSON.parse(r.text) as { window: { rounds: { council: number } } }).window.rounds.council).toBe(2);
-    expect(readdirSync(dataDir).sort()).toEqual(afterRead(files));
+    expect(readdirSync(dataDir).sort()).toEqual(files);
     expect(readFileSync(w.dbPath).equals(before)).toBe(true);
   });
 
@@ -256,8 +236,169 @@ describe('stats reads the store read-only', () => {
     writeFileSync(db, 'not a database');
     const r = await run(['stats', '--db', db, '--config', join(dir, 'none.toml')]);
     expect(r.code).toBe(1);
-    expect(r.lines[0]).toMatch(/^error: /);
+    expect(r.lines).toEqual([
+      `error: cannot read the run store at ${db}: SQLite could not open it immutable (file is not a database), and this command never falls back to an open that could create -wal and -shm files beside a closed store`,
+    ]);
     expect(readFileSync(db, 'utf8')).toBe('not a database');
+    expect(readdirSync(dir)).toEqual(['council.db']);
+  });
+
+  it('refuses a closed store it cannot open immutable, rather than fall back to an open that creates -wal and -shm', () => {
+    const w = statsStore();
+    w.round({ legs: three() });
+    w.close();
+    const dataDir = join(w.dir, 'data');
+    expect(readdirSync(dataDir)).toEqual(['council.db']);
+    const before = readFileSync(w.dbPath);
+    // An SQLite that refuses the immutable URI: every other open goes through as usual.
+    const tried: string[] = [];
+    const openDatabase = (filename: string, options: { readOnly: true }): DatabaseSync => {
+      tried.push(filename.startsWith('file:') ? 'uri' : 'plain');
+      if (filename.startsWith('file:')) throw new Error('URI filenames are not supported');
+      return new (sqlite().DatabaseSync)(filename, options);
+    };
+    let caught: unknown;
+    try {
+      openStoreReadOnly(w.dbPath, { openDatabase }).close();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(StoreReadError);
+    expect(caught).toMatchObject({ why: 'unreadable', message: expect.stringContaining('SQLite could not open it immutable (URI filenames are not supported)') });
+    expect(tried).toEqual(['uri']);
+    expect(readdirSync(dataDir)).toEqual(['council.db']);
+    expect(readFileSync(w.dbPath).equals(before)).toBe(true);
+    // The plain read-only open it refuses to fall back to would have created them (the reason for the refusal).
+    const plain = openDatabase(w.dbPath, { readOnly: true });
+    plain.prepare('SELECT count(*) FROM sqlite_master').get();
+    plain.close();
+    expect(readdirSync(dataDir).sort()).toEqual(['council.db', 'council.db-shm', 'council.db-wal']);
+  });
+
+  /** Every file in a directory, by name, with its bytes. */
+  const snapshot = (dir: string): Record<string, string> => Object.fromEntries(readdirSync(dir).sort().map((f) => [f, readFileSync(join(dir, f)).toString('base64')]));
+
+  // Council round 1 of PR #13: a lone -wal or -shm sent the read to the plain open, which created the other.
+  it.each(['-wal', '-shm'] as const)('refuses a store beside which only its %s file is left, names it, changes nothing, and the doctor it names clears it', async (kept) => {
+    const missing = kept === '-wal' ? '-shm' : '-wal';
+    // A partial copy of a store a writer has open: council.db and one of its two files.
+    const w = statsStore();
+    w.round({ legs: three() });
+    w.round({ legs: three() });
+    const dir = scratch('sc-stats-stray-');
+    const db = join(dir, 'council.db');
+    copyFileSync(w.dbPath, db);
+    copyFileSync(`${w.dbPath}${kept}`, `${db}${kept}`);
+    w.close();
+    const none = join(w.dir, 'none.toml');
+    const before = snapshot(dir);
+    expect(Object.keys(before)).toEqual(['council.db', `council.db${kept}`]);
+    const message = `cannot read the run store at ${db}: ${db}${kept} is there without ${db}${missing} (a writer that has the store open keeps both; a crash or a partial copy leaves one), and reading it would create ${db}${missing} beside it: run \`sabotage-council doctor --db ${db}\` once (it opens the store for writing, takes in any commits the -wal holds, and removes both files when it closes), then run this again`;
+    const r = await run(['stats', '--db', db, '--config', none]);
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual([`error: ${message}`]);
+    expect(snapshot(dir)).toEqual(before);
+    let caught: unknown;
+    try {
+      openStoreReadOnly(db).close();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(StoreReadError);
+    expect(caught).toMatchObject({ why: 'unreadable', message });
+    // `seats list` lists the seats without a scorecard and leaves the store alone too.
+    const config = join(w.dir, 'config.toml');
+    writeFileSync(config, SEATS);
+    const list = await run(['seats', 'list', '--config', config, '--db', db, '--no-preflight']);
+    expect(list.code).toBe(0);
+    expect(list.lines[0]).toBe(`note  the scorecard is not shown: ${message}`);
+    expect(snapshot(dir)).toEqual(before);
+    // The command it names clears the stray file (taking in what a -wal holds); stats then reads the store.
+    await run(['doctor', '--db', db, '--config', none]);
+    expect(readdirSync(dir)).toEqual(['council.db']);
+    const after = await run(['stats', '--db', db, '--config', none, '--json']);
+    expect(after.code).toBe(0);
+    if (kept === '-wal') expect((JSON.parse(after.text) as { window: { rounds: { council: number } } }).window.rounds.council).toBe(2);
+    expect(readdirSync(dir)).toEqual(['council.db']);
+  });
+
+  it('reads a store a writer has open through its -wal and -shm, and refuses with the reason (never a raw SQLite error) when that open fails', () => {
+    const w = statsStore();
+    w.round({ legs: three() });
+    expect([existsSync(`${w.dbPath}-wal`), existsSync(`${w.dbPath}-shm`)]).toEqual([true, true]);
+    const tried: string[] = [];
+    const opener =
+      (fail: boolean) =>
+      (filename: string, options: { readOnly: true }): DatabaseSync => {
+        tried.push(filename.startsWith('file:') ? 'uri' : 'plain');
+        if (fail) throw new Error('disk I/O error');
+        return new (sqlite().DatabaseSync)(filename, options);
+      };
+    const s = openStoreReadOnly(w.dbPath, { openDatabase: opener(false) });
+    expect(s.version).toBe(latest);
+    expect(s.db.prepare('SELECT count(*) AS n FROM rounds').get()).toEqual({ n: 1 });
+    s.close();
+    expect(tried).toEqual(['plain']);
+    tried.length = 0;
+    let caught: unknown;
+    try {
+      openStoreReadOnly(w.dbPath, { openDatabase: opener(true) }).close();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(StoreReadError);
+    expect(caught).toMatchObject({ why: 'unreadable', message: `cannot read the run store at ${w.dbPath}: SQLite could not open it read-only through its -wal and -shm (disk I/O error)` });
+    expect(tried).toEqual(['plain']);
+    w.close();
+    // A failure SQLite raises only at the first read is refused the same way.
+    const dir = scratch('sc-stats-notdb-wal-');
+    const db = join(dir, 'council.db');
+    writeFileSync(db, 'not a database');
+    writeFileSync(`${db}-wal`, '');
+    writeFileSync(`${db}-shm`, '');
+    caught = undefined;
+    try {
+      openStoreReadOnly(db).close();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(StoreReadError);
+    expect(caught).toMatchObject({ why: 'unreadable', message: `cannot read the run store at ${db}: SQLite could not open it read-only through its -wal and -shm (file is not a database)` });
+  });
+
+  // Council round 1 of PR #13: SQLite puts -wal and -shm beside a symlink's target, so the probe follows the link.
+  it('reads a store reached through a symlink through the -wal and -shm beside its target, never immutable', async () => {
+    const w = statsStore();
+    w.round({ legs: three() });
+    const linkDir = scratch('sc-stats-link-');
+    const link = join(linkDir, 'council.db');
+    symlinkSync(w.dbPath, link);
+    expect([existsSync(`${link}-wal`), existsSync(`${w.dbPath}-wal`), existsSync(`${w.dbPath}-shm`)]).toEqual([false, true, true]);
+    const tried: string[] = [];
+    const openDatabase = (filename: string, options: { readOnly: true }): DatabaseSync => {
+      tried.push(filename);
+      return new (sqlite().DatabaseSync)(filename, options);
+    };
+    const s = openStoreReadOnly(link, { openDatabase });
+    // The plain open of the target, which sees the writer's commit still in its -wal.
+    expect(tried).toEqual([w.dbPath]);
+    expect(s.path).toBe(link);
+    expect(s.db.prepare('SELECT count(*) AS n FROM rounds').get()).toEqual({ n: 1 });
+    s.close();
+    w.round({ legs: three() });
+    const live = await run(['stats', '--db', link, '--config', join(linkDir, 'none.toml'), '--json']);
+    expect((JSON.parse(live.text) as { window: { rounds: { council: number } } }).window.rounds.council).toBe(2);
+    w.close();
+    // Closed: the target is opened immutable, and nothing appears beside the link or the target.
+    tried.length = 0;
+    openStoreReadOnly(link, { openDatabase }).close();
+    expect(tried).toEqual([`${pathToFileURL(w.dbPath).href}?mode=ro&immutable=1`]);
+    expect(readdirSync(linkDir)).toEqual(['council.db']);
+    expect(readdirSync(dirname(w.dbPath))).toEqual(['council.db']);
+    // A stray file beside the target is found, and named where it is.
+    writeFileSync(`${w.dbPath}-shm`, '');
+    expect(() => openStoreReadOnly(link).close()).toThrow(`cannot read the run store at ${link}: ${w.dbPath}-shm is there without ${w.dbPath}-wal (`);
+    expect(readdirSync(linkDir)).toEqual(['council.db']);
   });
 });
 

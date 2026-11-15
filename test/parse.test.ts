@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   checkNonce,
@@ -428,6 +429,118 @@ describe('findings-block parser (plan 3.9)', () => {
 
   it('ignores fenced blocks with other tags', () => {
     expect(parseFindings(`${FENCE}json\n[{"id":"F1","title":"t"}]\n${FENCE}`)).toMatchObject({ extracted_by: 'adjudicator-needed' });
+  });
+
+  // Seen live (deepseek-3.2 through kiro): the fence, then the tag on its own line, then the findings.
+  it('reads an untagged fence whose first line is exactly "findings" as the findings block (the parse fixture)', () => {
+    const answer = readFileSync(new URL('./fixtures/parse/findings-tag-on-next-line.txt', import.meta.url), 'utf8');
+    const r = parseLegReply(answer, '0a1b2c3d4e5f');
+    expect(r.nonceOk).toBe(true);
+    expect(r.verdict).toMatchObject({ verdict: 'NEEDS-WORK', reason: 'ok' });
+    expect(r.findings).toEqual({
+      extracted_by: 'leg',
+      format: 'lines',
+      findings: [
+        f({ id: 'F1', severity: 'MEDIUM', severity_raw: 'MEDIUM', path: 'src/cache.ts', line: 42, title: 'the TTL is read as seconds but stored as milliseconds' }),
+        f({ id: 'F2', severity: 'LOW', severity_raw: 'LOW', path: 'src/retry.ts', line: 30, title: 'the retry count is logged before it is incremented' }),
+      ],
+    });
+  });
+
+  it.each<[string, string]>([
+    ['upper case', `${FENCE}\nFINDINGS\nF1 | HIGH | a.ts:1 | t\n${FENCE}`],
+    ['spaces and tabs around the word, blank lines before it', `${FENCE}\n\n \t\n  findings\t \nF1 | HIGH | a.ts:1 | t\n${FENCE}`],
+    ['a tilde fence', `~~~\nFindings\nF1 | HIGH | a.ts:1 | t\n~~~`],
+    ['a JSON body', `${FENCE}\nfindings\n[{"id": "F1", "severity": "HIGH", "path": "a.ts", "line": 1, "title": "t"}]\n${FENCE}`],
+  ])('takes the tag on the next line with %s', (_name, text) => {
+    expect(parseFindings(text)).toMatchObject({ extracted_by: 'leg', findings: [f({ id: 'F1', severity: 'HIGH', severity_raw: 'HIGH', path: 'a.ts', line: 1, title: 't' })] });
+  });
+
+  it('reads an untagged block with the tag and "none" as no findings, and holds it to the other blocks and to closing', () => {
+    expect(parseFindings(`${FENCE}\nfindings\nnone\n${FENCE}`)).toEqual({ findings: [], extracted_by: 'leg', format: 'empty' });
+    const tagged = `${FENCE}findings\nF1 | HIGH | a.ts:1 | t\n${FENCE}`;
+    expect(parseFindings(`${tagged}\n${FENCE}\nfindings\nF1 | HIGH | a.ts:1 | t\n${FENCE}`)).toMatchObject({ extracted_by: 'leg', findings: [{ id: 'F1' }] });
+    expect(parseFindings(`${tagged}\n${FENCE}\nfindings\nF1 | NIT | b.ts | another\n${FENCE}`)).toMatchObject({
+      extracted_by: 'adjudicator-needed',
+      reason: expect.stringMatching(/^2 findings blocks with different contents/),
+    });
+    expect(parseFindings(`${FENCE}\nfindings\nF1 | HIGH | a.ts | t\n`)).toMatchObject({ extracted_by: 'adjudicator-needed', reason: expect.stringMatching(/not closed/) });
+  });
+
+  // Council round 1 of PR #13: the next-line shape stands as the findings only as the reply's last block.
+  describe('the tag on the next line, only at the end of the reply', () => {
+    const NEXT = `${FENCE}\nfindings\nF1 | HIGH | a.ts:1 | t\n${FENCE}`;
+    const MIDWAY = /^an untagged fence with "findings" on its first line counts only when nothing but blank lines and the verdict line follow it/;
+
+    it.each<[string, string]>([
+      ['a blank line, then the verdict (the live shape)', `prose\n\n${NEXT}\n\nVERDICT: NEEDS-WORK`],
+      ['the verdict right after the fence', `${NEXT}\nVERDICT: SHIP-WITH-FIXES`],
+      ['blank lines of spaces and tabs, then a verdict in bold', `${NEXT}\n \t\n\n**VERDICT: SHIP**\n\n`],
+      ['a split verdict', `${NEXT}\n\nVERDICT:\n\nNEEDS-WORK`],
+      ['nothing after the fence', `prose\n${NEXT}`],
+    ])('stands with %s', (_name, text) => {
+      expect(parseFindings(text)).toMatchObject({ extracted_by: 'leg', findings: [f({ id: 'F1', severity: 'HIGH', severity_raw: 'HIGH', path: 'a.ts', line: 1, title: 't' })] });
+    });
+
+    it('goes to the adjudicator when it is quoted midway and the leg gives its own findings in prose after it', () => {
+      const reply = [
+        'NONCE: 0a1b2c3d4e5f',
+        '',
+        'Seat b wrote this in round 1:',
+        '',
+        NEXT,
+        '',
+        'I disagree with it. My findings:',
+        '',
+        'F1 MEDIUM src/cache.ts:42: the TTL is read as seconds but stored as milliseconds.',
+        '',
+        'VERDICT: NEEDS-WORK',
+      ].join('\n');
+      const r = parseFindings(reply);
+      expect(r).toMatchObject({ findings: [], extracted_by: 'adjudicator-needed', reason: expect.stringMatching(MIDWAY) });
+      expect(parseLegReply(reply, '0a1b2c3d4e5f').findings).toEqual(r);
+    });
+
+    it.each<[string, string]>([
+      ['more prose', `${NEXT}\n\nNot verified: the cache path.\n\nVERDICT: SHIP`],
+      ['prose and no verdict', `${NEXT}\nSee above.`],
+      ['a second verdict line', `${NEXT}\nVERDICT: SHIP\nVERDICT: SHIP`],
+      ['a quoted verdict line', `${NEXT}\n> VERDICT: SHIP`],
+      ['an indented verdict line', `${NEXT}\n    VERDICT: SHIP`],
+      ['another fence', `${NEXT}\n${FENCE}\nVERDICT: SHIP\n${FENCE}`],
+      ['a U+00A0 line before the verdict', `${NEXT}\n\u00a0\nVERDICT: SHIP`],
+    ])('goes to the adjudicator when followed by %s', (_name, text) => {
+      expect(parseFindings(text)).toMatchObject({ findings: [], extracted_by: 'adjudicator-needed', reason: expect.stringMatching(MIDWAY) });
+    });
+
+    it('leaves the tagged shape as it was: a tagged block midway still stands', () => {
+      const tagged = `${FENCE}findings\nF1 | HIGH | a.ts:1 | t\n${FENCE}`;
+      expect(parseFindings(`${tagged}\n\nMore prose after the block.\n\nVERDICT: SHIP`)).toMatchObject({ extracted_by: 'leg', findings: [{ id: 'F1' }] });
+    });
+
+    it('still holds a next-line block midway to agree with the block the leg wrote last', () => {
+      const tagged = `${FENCE}findings\nF1 | HIGH | a.ts:1 | t\n${FENCE}`;
+      expect(parseFindings(`${NEXT}\nmore prose\n${tagged}\nVERDICT: SHIP`)).toMatchObject({ extracted_by: 'leg', findings: [{ id: 'F1' }] });
+      const other = `${FENCE}\nfindings\nF1 | NIT | b.ts | quoted\n${FENCE}`;
+      expect(parseFindings(`${other}\nmore prose\n${tagged}\nVERDICT: SHIP`)).toMatchObject({
+        extracted_by: 'adjudicator-needed',
+        reason: expect.stringMatching(/^2 findings blocks with different contents/),
+      });
+      expect(parseFindings(`${other}\nmore prose\n${NEXT}\n\nVERDICT: SHIP`)).toMatchObject({ extracted_by: 'adjudicator-needed', reason: expect.stringMatching(/different contents/) });
+    });
+  });
+
+  it.each<[string, string]>([
+    ['the word after another line', `${FENCE}\nmy findings are:\nfindings\nF1 | HIGH | a.ts | t\n${FENCE}`],
+    ['the word with a colon', `${FENCE}\nfindings:\nF1 | HIGH | a.ts | t\n${FENCE}`],
+    ['more than the word on its line', `${FENCE}\nfindings block\nF1 | HIGH | a.ts | t\n${FENCE}`],
+    ['the first finding on the tag line', `${FENCE}\nfindings F1 | HIGH | a.ts | t\n${FENCE}`],
+    ['a fence tagged otherwise', `${FENCE}text\nfindings\nF1 | HIGH | a.ts | t\n${FENCE}`],
+    ['a U+00A0 before the word (not a blank)', `${FENCE}\n findings\nF1 | HIGH | a.ts | t\n${FENCE}`],
+    ['a line of U+00A0 before the word (text, not a blank line)', `${FENCE}\n \nfindings\nF1 | HIGH | a.ts | t\n${FENCE}`],
+    ['the word quoted in prose before an untagged fence', `findings\n${FENCE}\nF1 | HIGH | a.ts | t\n${FENCE}`],
+  ])('refuses anything looser: %s is no findings block', (_name, text) => {
+    expect(parseFindings(text)).toEqual({ findings: [], extracted_by: 'adjudicator-needed', reason: 'no fenced findings block' });
   });
 
   it.each<[string, string, RegExp]>([

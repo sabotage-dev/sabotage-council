@@ -5,9 +5,9 @@ const require = createRequire(import.meta.url);
 let loaded: typeof Sqlite | undefined;
 
 /**
- * Loads the built-in `node:sqlite` (no flag needed from Node 22.13). Node prints a one-time ExperimentalWarning
- * for it on 22.x and early 24.x; that single warning is dropped so command output stays clean. Every other
- * warning passes through.
+ * Loads the built-in `node:sqlite` (no flag needed on the engines floor, Node 22.15, and later). Node prints a
+ * one-time ExperimentalWarning for it on 22.x and early 24.x; that single warning is dropped so command output stays
+ * clean. Every other warning passes through.
  */
 export function sqlite(): typeof Sqlite {
   if (loaded) return loaded;

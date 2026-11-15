@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 export interface PackageInfo {
   name: string;
   version: string;
-  /** The `engines.node` range from package.json, e.g. `>=22.13`. */
+  /** The `engines.node` range from package.json, e.g. `>=22.15`. */
   nodeRange: string;
 }
 

@@ -86,7 +86,8 @@ the first round: the commands and flags this skill uses are the 0.1.0 engine's.
    ```
 
    A rejection lists every broken rule with its class: fix the file and check again. A wrong finding id is rejected
-   with the id it must have. If the check lists a majority override, show the user each one with its proof and wait
+   with the id it must have, even a placeholder that is not `f_` plus 12 hex, so any `f_` id can be a placeholder
+   for the first check. If the check lists a majority override, show the user each one with its proof and wait
    for their go before the storing call. Then store it:
 
    ```sh
@@ -133,8 +134,9 @@ narrow it, `--json` for the versioned JSON, `--html <file>` for a self-contained
 
 When the user asks which seat to swap, run `sabotage-council stats` and read its **recommendations**: a seat is a
 **swap candidate** when it found nothing owed that no other seat found and either its ratified rate is low over
-enough rounds seated or its precision is low over enough adjudicated rounds (20 by default; the `[stats]` thresholds
-in the config). The flag judges the seat's current occupant over its rounds since it took the seat, and names it.
+enough rounds seated, or its precision is low over enough adjudicated rounds, or it is silent over enough adjudicated
+rounds: nothing it raised was adopted or refuted and dropping it loses no blocking finding (20 by default; the
+`[stats]` thresholds in the config). A silent seat that alone raised a ruling still pending is not flagged. The flag judges the seat's current occupant over its rounds since it took the seat, and names it.
 Show the flag with the rounds and findings behind it, and the drop-one numbers. Say how many rounds the numbers stand on: with few rounds,
 say there is not enough data yet. The flag only informs: nothing swaps a seat by itself.
 

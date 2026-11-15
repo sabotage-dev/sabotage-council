@@ -23,9 +23,9 @@ its schema version. A new release may add migrations (the numbered SQL files in 
 - **Back up first** if you want a way back: stop anything using the store (`sabotage-council auto pause`, or `auto
   uninstall`), then copy `council.db` together with its `council.db-wal` and `council.db-shm` files if they exist.
 
-On Node 22.13 and 22.14, whose SQLite cannot open a URI filename, `stats` and `seats list` read a closed store through
-a plain read-only connection, which leaves SQLite's `-wal` and `-shm` files beside it; the store's contents are
-unchanged. From Node 22.15 a closed store is opened immutable and nothing is created.
+`stats` and `seats list` open a closed store immutable (Node 22.15, the floor, and later), so nothing is created beside
+it; a closed store SQLite cannot open that way is refused with the reason, never read through an open that would
+leave `-wal` and `-shm` files beside it.
 
 ## Moving from another council
 

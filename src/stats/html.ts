@@ -203,7 +203,7 @@ ${
   report.message === null
     ? h`<section>
 <h2>Recommendations</h2>
-<p class="muted">A seat is judged on its current occupant, over the rounds since that occupant took the seat. It is a swap candidate when its unique owed count is 0 and either its ratified rate is below ${pctText(t.ratified_rate_below)} over at least ${t.min_ratified_rounds} rounds seated, or its precision is below ${pctText(t.precision_below)} over at least ${t.min_ratified_rounds} adjudicated rounds it ratified in (${t.source === 'config' ? 'config [stats]' : 'defaults'}). A seat that raised nothing adopted or refuted is inconclusive on precision. The flag only informs: nothing swaps a seat by itself.</p>
+<p class="muted">A seat is judged on its current occupant, over the rounds since that occupant took the seat. It is a swap candidate when its unique owed count is 0 and either its ratified rate is below ${pctText(t.ratified_rate_below)} over at least ${t.min_ratified_rounds} rounds seated, or its precision is below ${pctText(t.precision_below)} over at least ${t.min_ratified_rounds} adjudicated rounds it ratified in, or it is silent over at least ${t.min_ratified_rounds} adjudicated rounds it ratified in (${t.source === 'config' ? 'config [stats]' : 'defaults'}). Silent: nothing it raised was adopted or refuted, and dropping it loses no blocking finding; a seat that alone raised a ruling still pending is not silent. The flag only informs: nothing swaps a seat by itself.</p>
 ${report.recommendations.map(recommendation)}
 </section>
 <section>
@@ -244,6 +244,7 @@ ${
 <dt>Fallback and relaunch</dt><dd>A fallback is a leg with the role fallback; a relaunch is a leg at attempt 2 or later. A fallback leg counts for its seat and for its own occupant.</dd>
 <dt>Adopted, refuted, precision</dt><dd>Adopted = owed + follow-up + ruling upheld; refuted = refuted + ruling overturned; precision = adopted / (adopted + refuted). Nits, noted findings and rulings not yet ruled on are in neither.</dd>
 <dt>Unique</dt><dd>Raised by this seat alone, whatever severity each seat gave it. Unique HIGH uses the adjudicator's final severity and counts only adopted findings.</dd>
+<dt>Silent</dt><dd>Over its adjudicated rounds, nothing it raised was adopted or refuted (precision n/a) and dropping it loses no blocking finding. A silent seat is a swap candidate (owner ruling, 2026-11-14); one that alone raised a blocking finding, such as a ruling still pending, is not silent.</dd>
 <dt>Drop-one</dt><dd>Blocking findings (owed, or a ruling that holds) it raised alone; rounds whose every blocking finding was its alone and that kept quorum without it would have been SHIP. A round left below quorum without it is counted as quorum lost, never as a flip.</dd>
 <dt>Dissent</dt><dd>Its raw verdict, NEEDS-WORK vs not, differed from the two other ratified legs, which agreed (SHIP and SHIP-WITH-FIXES are one position: only NEEDS-WORK blocks). Right: a lone NEEDS-WORK in a round that ended blocked or with one of its own findings owed, or a lone SHIP or SHIP-WITH-FIXES in a round that ended with nothing blocking.</dd>
 <dt>Cost</dt><dd>Every leg's cost, failed attempts included; units are never converted. Quota is the CLI's own rate-window snapshot (highest and latest). Durations are nearest-rank percentiles over ratified legs.</dd>

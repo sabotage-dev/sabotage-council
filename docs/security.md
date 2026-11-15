@@ -165,8 +165,8 @@ anything your account can. There is no container mode in 0.1.0.
   stream, records and answer, and the adjudication, and `auto` prunes them after 90 days. They hold excerpts of the
   code you reviewed: treat them like the repositories they came from.
 - `stats` and `seats list` never change the store's contents or schema: they open it read-only and never migrate it.
-  On Node 22.13 and 22.14 SQLite leaves its `-wal` and `-shm` files beside a closed store (its contents unchanged);
-  Node 22.15 and later open a closed store immutable and create nothing.
+  They open a closed store immutable and create nothing beside it; a closed store SQLite cannot open that way is
+  refused with the reason, never read through an open that would create `-wal` and `-shm` files.
 - `stats --html` writes one self-contained file, mode 0600, with no script, font, image or link; everything from a
   round is escaped, and bidi controls and zero-width characters are replaced.
 - `notify.command` (used by `auto`) runs the executable you configure, without a shell, with the event as JSON on

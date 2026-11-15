@@ -578,7 +578,13 @@ Last line: VERDICT: SHIP | SHIP-WITH-FIXES | NEEDS-WORK
 
 - **Findings block.** It makes attribution exact without a second model reading the prose. If a leg omits it or
   breaks its grammar, the adjudicator extracts the findings, and the record marks them `extracted_by:
-  adjudicator`.
+  adjudicator`. As built, the parser reads three shapes (the line grammar, a JSON array, a YAML list), and the tag
+  either on the opening fence or, as a live seat wrote it before 0.1.0 (deepseek-3.2 through kiro), on the first
+  non-blank line inside an untagged fence when that line is exactly `findings` (any case); nothing looser is a block.
+  That second shape stands as the findings only when nothing but blank lines and the verdict line follow its fence,
+  as in the live reply: one midway through the answer may be a block the leg quoted, so with no other block the leg
+  goes to the adjudicator, and beside another block it must still agree with it (council round 1 of PR #13). A
+  tagged block counts wherever it stands, as before.
 - **Question budget.** At most 3 questions per brief. Codex-family legs measurably time out or abort on broad,
   many-question asks over large roots.
 
@@ -936,8 +942,9 @@ or quota, duration, CLI version. That gives stats and audits the evidence, not j
 
 One repository, two deliverables:
 
-- **npm package `sabotage-council`** (TypeScript, Node >= 22.13, ESM). Binary: `sabotage-council`. It holds the
-  engine, every adapter, the run store, the daemon and the stats.
+- **npm package `sabotage-council`** (TypeScript, Node >= 22.15, ESM; the floor was raised from 22.13 before 0.1.0,
+  owner ruling 2026-11-14, so `stats` and `seats list` open a closed store immutable). Binary: `sabotage-council`. It
+  holds the engine, every adapter, the run store, the daemon and the stats.
 - **Claude Code plugin** in `plugin/`, with a marketplace manifest in the repo. Install with
   `/plugin marketplace add sabotage-dev/sabotage-council`. The plugin holds:
   - the skill `sabotage-council` (when and how to run each mode, and the interactive adjudication procedure);
@@ -1438,7 +1445,9 @@ Cross-checks enforced by code:
 
 Finding ids:
 - **Stable id:** `sha256(target + path + normalized title)[:12]`. The same issue re-raised in a later round keeps
-  its id.
+  its id. A wrong id is rejected (`[ids]`) with the id it must have; as built before 0.1.0 (the live run), a
+  document the schema rejects also names that id for every finding whose title and path the schema accepts, so a
+  placeholder that is not `f_` plus 12 hex still learns its real id on the first `--check`.
 - **Store key:** `(round_id, id)`, so rounds never collide.
 - **Earlier ids:** `same_as` links a finding to an earlier round's id when the adjudicator judges it the same
   issue under a changed title.
@@ -1485,11 +1494,17 @@ Per seat and per occupant, over a window:
 opens the store read-only and never migrates it: a store whose schema is behind this build is refused with the
 command that upgrades it (`sabotage-council doctor --db <path>`, which applies the pending migrations), and one ahead
 of this build is refused too. With no `-wal` or `-shm` file beside the store (no connection has it open) it opens it
-`immutable`, so SQLite creates nothing; with them it reads through them and sees a writer's last commit. The
-window is all history unless `--since` narrows it (a duration such as `30d`, a UTC date, or an ISO timestamp with a
-zone; rounds count by `started_at`). The filters choose which rows are shown, never what a metric reads (the
-drop-one counterfactual, dissent and agreement need every seat's legs). An empty store or window prints a message and
-exits 0, and no store is created. The choices the table leaves open:
+`immutable`, so SQLite creates nothing; with both it reads through them and sees a writer's last commit. With only one
+(a crash or a partial copy left it; a writer keeps both) the plain open would create the other, so the store is
+refused, naming the stray file and `doctor --db`, whose read-write open takes in what a `-wal` holds and removes both
+files when it closes. The probe and the open use the store's real path, since SQLite puts `-wal` and `-shm` beside a
+symlink's target. Both came from council round 1 of PR #13. Since the Node floor went to 22.15 before 0.1.0 (owner
+ruling, 2026-11-14), a closed store SQLite cannot open immutable is refused with the reason, never read through the
+plain read-only open that would leave `-wal` and `-shm` beside it. The window is all history unless `--since`
+narrows it (a duration such as `30d`, a UTC date, or an ISO timestamp with a zone; rounds count by `started_at`). The
+filters choose which rows are shown, never what a metric reads (the drop-one counterfactual, dissent and agreement
+need every seat's legs). An empty store or window prints a message and exits 0, and no store is created. The choices
+the table leaves open:
 
 - **Which rounds count.** Council rounds whose legs settled: dry-run rounds count (the shadow week is all dry runs),
   and failed, solo, awaiting-adjudication and superseded rounds count for the leg metrics (rounds seated, ratified
@@ -1552,8 +1567,10 @@ parsed strings are exact and the printed bytes hold none of them.
 ### 8.3 Recommendations
 
 The report flags a seat **"swap candidate"** when, over at least 20 ratified rounds (configurable), its unique
-owed count is 0 and either its precision is below 50% or its ratified rate is below 80%. It always shows the
-evidence rows behind the flag. It never swaps a seat by itself.
+owed count is 0 and either its precision is below 50%, or its ratified rate is below 80%, or it is silent: precision
+n/a (nothing it raised was adopted or refuted) and no blocking finding lost without it (the silent branch is the
+owner's ruling of 2026-11-14, below). It always shows the evidence rows behind the flag. It never swaps a seat by
+itself.
 
 **As built (P9, with council round 1 of PR #11).** N, P and R are `[stats] swap_min_ratified_rounds`,
 `swap_precision_below` and `swap_ratified_rate_below` (5.2).
@@ -1565,13 +1582,17 @@ evidence rows behind the flag. It never swaps a seat by itself.
   the evidence over, and the reasons (and the JSON's `occupant`) name the occupant and the round it took the seat.
   The seat's fallback legs in those rounds count, as they do on the seat card; changing only the fallback starts
   nothing over. The seat cards themselves still cover the whole window, every occupant included.
-- **Two branches, each with its own N.** The ratified-rate branch needs N rounds seated: a seat that fails every
-  attempt over N rounds is flagged, its failures the evidence. The precision branch needs N adjudicated rounds it
-  ratified in (a round with no adjudication has no outcome, so it is no evidence that the seat found nothing). Both
-  need unique owed 0.
-- **Precision n/a is inconclusive,** never "at or above P": the reason says nothing it raised was adopted or refuted,
-  with the rounds, the findings raised and the blocking findings lost without it. Such a seat is not flagged on
-  precision; whether it should be is the owner's call, and this rule stands until then.
+- **Three branches, each with its own N.** The ratified-rate branch needs N rounds seated: a seat that fails every
+  attempt over N rounds is flagged, its failures the evidence. The precision branch and the silent branch need N
+  adjudicated rounds it ratified in (a round with no adjudication has no outcome, so it is no evidence that the seat
+  found nothing). All three need unique owed 0.
+- **A silent seat is a swap candidate (the owner ruled it, 2026-11-14).** Precision n/a (nothing it raised was
+  adopted or refuted) is never "at or above P". Over N adjudicated rounds it ratified in, a seat with precision n/a,
+  0 unique owed and `drop_one.blocking_lost` 0 is flagged, with the reason "raised nothing adopted or refuted over K
+  adjudicated rounds, and dropping it loses no blocking finding" and its evidence rows. A silent seat that alone
+  raised a blocking finding (a ruling not yet ruled on, the only blocking finding that leaves precision n/a) is not
+  flagged; the reason names the blocking findings dropping it would lose. Until this ruling such a seat was reported
+  as inconclusive and never flagged.
 
 The evidence is every round of the tenure the seat sat in (with its verdict, or why it did not ratify) and every
 finding it raised in the adjudicated ones (outcome, severity, unique or not).

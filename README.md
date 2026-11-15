@@ -22,7 +22,7 @@ Four modes:
 
 ## Install
 
-Requirements: Node.js 22.13 or later, git, macOS or Linux, and the CLIs for your seats (each signed in). `pr` and
+Requirements: Node.js 22.15 or later, git, macOS or Linux, and the CLIs for your seats (each signed in). `pr` and
 `auto` also need the GitHub CLI `gh`, signed in. The adjudicator is Claude Code.
 
 ```sh
@@ -45,6 +45,10 @@ The plugin holds no engine logic: it calls the `sabotage-council` command you in
 2.1.325 (`claude auth login`) and Grok CLI 1.0.70 (`grok login`): three model families. Any three of the eight work;
 each [backend page](docs/backends/README.md) says how to install, sign in and choose a model, and what it can and
 cannot enforce.
+
+A grok seat fails if its grok home's config starts any MCP server (`doctor` refuses it in step 3). If your own grok
+config starts one, either give the seat an `auth_home`, its own grok home (a directory you log in to once with
+`GROK_HOME=<dir> grok login`, holding no MCP config; set it on the commented line in step 2), or choose another seat.
 
 **2. Write the config** at `~/.config/sabotage-council/config.toml`. This never overwrites a config you already
 have: if the file exists, the shell refuses (`noclobber`) and nothing is written, so back up or move your config
@@ -71,6 +75,7 @@ backend = "grok"
 model = "grok-4.7"
 effort = "high"
 sandbox = "off"   # grok's read-only sandbox does not start on a Mac with Docker Desktop
+# auth_home = "/abs/path/grok-home"   # its own grok home, when your grok config starts an MCP server (step 1)
 EOF
 ```
 
@@ -84,10 +89,10 @@ sabotage-council doctor
 ```
 
 It loads the config, creates the run store, and preflights every seat: binary, version, sign-in, model, and the
-isolation each backend can prove. Each seat line ends with its enforcement label. A `fail` line names what to fix; a
-`warn` line (for example grok's sandbox being off) is information. `round start` also runs the config-wide checks
-`doctor` skips: every model id against its adapter's list (an error), and two seats in one model family or a seat in
-the adjudicator's family (a `warn` line).
+isolation each backend can prove. Each seat line ends with its enforcement label. A `fail` line names what to fix (a
+grok seat whose grok home starts an MCP server is one; see step 1); a `warn` line (for example grok's sandbox being
+off) is information. `round start` also runs the config-wide checks `doctor` skips: every model id against its
+adapter's list (an error), and two seats in one model family or a seat in the adjudicator's family (a `warn` line).
 
 **4. Start a round** from a git repository that holds your plan (a Markdown file; it may be uncommitted):
 
@@ -120,8 +125,10 @@ sabotage-council adjudicate <round_id> ADJUDICATION.json
 ```
 
 `--check` validates and stores nothing; a rejection names the rule it broke (`[attribution]`, `[round-rule]`, ...).
-Finding ids are computed from the finding's path and title, so the first `--check` names the id each finding must
-have: copy it in and check again. The stored verdict is the round's.
+Finding ids are computed from the finding's path and title, so any `f_` id can be a placeholder (`f_1`, `f_2`, ...):
+`--check` names the real one each finding must have, even beside the schema error a placeholder that is not `f_` plus
+12 hex draws. Copy each in (and wherever you named it, in `fix_row` or `followups`) and check again. The stored
+verdict is the round's.
 
 **7. Fold and go again.** After you fix the owed findings, the same `round start` becomes round 2: the seats review
 only the change since the last adjudicated round, and the earlier owed findings come back as items each needing a
@@ -176,9 +183,9 @@ sabotage-council seats test codex:gpt-6.1-sol:high                     # ONE pai
 sabotage-council seats swap c --backend antigravity --model gemini-3.8-flash --effort high --dry-run
 ```
 
-`stats` and `seats list` never change the run store's contents or schema (on Node 22.13 and 22.14 SQLite leaves its
-`-wal` and `-shm` files beside a closed store), and nothing ever swaps a seat by itself. [Migration](docs/migration.md)
-explains why a swap starts the seat's evidence over.
+`stats` and `seats list` never change the run store's contents or schema and create nothing beside a closed store,
+and nothing ever swaps a seat by itself. [Migration](docs/migration.md) explains why a swap starts the seat's evidence
+over.
 
 ## Status: 0.1.0, what is measured and what is not
 
@@ -474,12 +481,12 @@ sabotage-council seats remove <seat> [--dry-run]
 ```
 
 `stats` reads the run store and never changes its contents or schema: it opens the store read-only and never migrates
-it (on Node 22.13 and 22.14 SQLite leaves its `-wal` and `-shm` files beside a closed store; see `seats list` below).
-A store whose schema is behind this build is refused with the command that upgrades it
-(`sabotage-council doctor --db <path>`), and one written by a newer build is refused too. It scores every seat and
-every occupant (a backend, model and effort) over a window: all history by default; `--since` takes `30d`, `12h`,
-`2w`, `90m`, a UTC date or an ISO timestamp. `--seat` and `--occupant` choose which rows are shown; every metric still
-reads every seat's legs. With no store or an empty window it says so and exits 0.
+it, and creates nothing beside a closed store (see `seats list` below). A store whose schema is behind this build is
+refused with the command that upgrades it (`sabotage-council doctor --db <path>`), and one written by a newer build is
+refused too. It scores every seat and every occupant (a backend, model and effort) over a window: all history by
+default; `--since` takes `30d`, `12h`, `2w`, `90m`, a UTC date or an ISO timestamp. `--seat` and `--occupant` choose
+which rows are shown; every metric still reads every seat's legs. With no store or an empty window it says so and
+exits 0.
 
 Which rounds count:
 
@@ -509,13 +516,15 @@ The metrics (plan 8.2), as built:
 A seat is a **swap candidate** (plan 8.3) when its unique owed count is 0 and either its ratified rate is below
 `swap_ratified_rate_below` over at least `swap_min_ratified_rounds` rounds seated (a seat that fails every attempt is
 flagged, its failures the evidence), or its precision is below `swap_precision_below` over at least that many
-adjudicated rounds it ratified in. The flag judges the seat's **current occupant**: the config's, else the one the
-latest round seated, over the rounds since it took the seat (from the first round whose roster snapshot seats it
-there after a different one). So a swap starts the evidence over, and the reasons name the occupant. The seat's
-fallback legs in those rounds count; changing only the fallback starts nothing over. A precision of n/a (nothing
-adopted or refuted) is reported as inconclusive, with the rounds, the findings raised and the blocking findings lost,
-and is not flagged (that is the owner's call). Every flag lists the rounds and findings behind it. Nothing ever swaps
-a seat by itself.
+adjudicated rounds it ratified in, or it is **silent** over at least that many adjudicated rounds it ratified in:
+nothing it raised was adopted or refuted (precision n/a) and dropping it loses no blocking finding. The reason then
+reads "raised nothing adopted or refuted over K adjudicated rounds, and dropping it loses no blocking finding" (the
+owner ruled this branch on 2026-11-14). A silent seat that alone raised a blocking finding (a ruling not yet ruled
+on) is not flagged, and its reasons name those findings by round and finding id. The flag judges the seat's **current
+occupant**: the config's, else the one the latest round seated, over the rounds since it took the seat (from the first
+round whose roster snapshot seats it there after a different one). So a swap starts the evidence over, and the reasons
+name the occupant. The seat's fallback legs in those rounds count; changing only the fallback starts nothing over. Every
+flag lists the rounds and findings behind it. Nothing ever swaps a seat by itself.
 
 `--json` prints the report with `"schema": "sabotage-council.stats"` and `"version": 1`. Top-level keys: `schema`,
 `version`, `generated_at`, `window` (`since`, `first_round_at`, `last_round_at`, `rounds` counts, `adjudicator_usd`),
@@ -534,8 +543,11 @@ is not a regular file is refused. Its agreement matrix shows every pair a filter
 
 `seats list` shows each seat and its fallback with the enforcement label its preflight gives (as `doctor` shows it;
 no model call) and a one-line scorecard, whose flag judges the config's occupant. It reads the store as `stats` does.
-On Node 22.13 and 22.14 both read a closed store through a plain read-only connection, which leaves SQLite's `-wal`
-and `-shm` files beside it (its contents unchanged); from Node 22.15 a closed store is opened immutable.
+Both open a closed store immutable, so SQLite creates nothing beside it, and read a store a writer has open through its
+`-wal` and `-shm` files. A closed store SQLite cannot open immutable is refused with the reason (`stats` exits 1,
+`seats list` shows no scorecard), never read through an open that would create those files. So is a store with only
+one of the two files beside it (a crash or a partial copy left it; a writer keeps both): the error names the stray
+file, and `sabotage-council doctor --db <path>` run once clears it.
 
 `seats test` qualifies an occupant before it is seated: it runs **one paid leg** on the planted-defect fixture that
 ships in the package (three defects planted in a small Python module), on a root built the normal way, and reports
@@ -561,8 +573,8 @@ a `[seats.x]` sub-table, is refused, never rewritten.
 
 ## Development
 
-Requirements: Node.js 22.13 or later (the run store uses the built-in `node:sqlite`, which needs no flag from 22.13),
-npm, macOS or Linux.
+Requirements: Node.js 22.15 or later (the run store uses the built-in `node:sqlite`, which from 22.15 opens a closed
+store immutable), npm, macOS or Linux.
 
 ```sh
 npm ci            # install the locked dependencies
@@ -574,7 +586,7 @@ npm run build     # compile to dist/
 
 Then `node dist/cli/index.js doctor` runs the build you just made: it checks Node, the config, the run store (applying
 pending migrations) and every seat's preflight, with no model call. CI runs lint, typecheck, test and build on Ubuntu
-and macOS, on Node 22.13.0, the newest 22 and 24.
+and macOS, on Node 22.15.0, the newest 22 and 24.
 
 ## License
 
