@@ -8,7 +8,7 @@ import { applySeatEdit, SeatApplyError } from '../seats/apply.js';
 import type { SeatEdit } from '../seats/edit.js';
 import { loadFixture } from '../seats/fixture.js';
 import { exitCodeOf, recordSeatTest, runSeatTest, type SeatTestResult } from '../seats/run.js';
-import { loadStats } from '../stats/data.js';
+import { loadStats, occupantKey } from '../stats/data.js';
 import { buildReport, thresholdsOf, type SeatCard, type Recommendation } from '../stats/report.js';
 import { durationText, money, pctText } from '../stats/text.js';
 import { openStore } from '../store/index.js';
@@ -76,10 +76,20 @@ function labelText(backend: string, l: Label | null): string {
   return `enforcement ${l.enforcement}${version}${failed}`;
 }
 
-/** One line of the scorecard for a seat (all history). */
+/**
+ * One line of the scorecard for a seat: the card covers all history (every occupant it had); the flag judges its
+ * current occupant (the config's) over its rounds since it took the seat, as `stats` does.
+ */
 export function scorecardLine(card: SeatCard | undefined, rec: Recommendation | undefined): string {
   if (!card) return 'scorecard  no rounds recorded for this seat yet';
-  const flag = rec?.swap_candidate === true ? 'SWAP CANDIDATE (see `sabotage-council stats`)' : rec?.eligible === false ? 'not enough rounds for the swap flag yet' : 'keep';
+  const who = rec?.occupant ? ` ${rec.occupant.occupant}` : '';
+  const since = rec?.occupant?.since_round != null ? ` since round #${rec.occupant.since_round}` : '';
+  const flag =
+    rec?.swap_candidate === true
+      ? `SWAP CANDIDATE:${who}${since} (see \`sabotage-council stats\`)`
+      : rec?.eligible === false
+        ? `not enough rounds under${who || ' it'} for the swap flag yet`
+        : `keep${who}`;
   return `scorecard  seated ${card.rounds_seated}, ratified ${pctText(card.ratified_rate)}, raised ${card.findings.raised}, precision ${pctText(card.findings.precision)}, unique owed ${card.unique.owed}, blocking lost without it ${card.drop_one.blocking_lost}: ${flag}`;
 }
 
@@ -97,7 +107,8 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
   if (existsSync(paths.dbPath)) {
     const store = openStore(paths.dbPath);
     try {
-      const report = buildReport(loadStats(store.db, null), thresholdsOf(config.config.stats, 'config'), { seat: null, occupant: null });
+      const current = new Map(seats.map((seat) => [seat.id, occupantKey(seat)]));
+      const report = buildReport(loadStats(store.db, null), thresholdsOf(config.config.stats, 'config'), { seat: null, occupant: null }, undefined, current);
       cards = report.seats;
       recs = report.recommendations;
     } finally {
@@ -152,6 +163,7 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
                     blocking_lost: c.drop_one.blocking_lost,
                     swap_candidate: r?.swap_candidate ?? false,
                     eligible: r?.eligible ?? false,
+                    judged_occupant: r?.occupant ?? null,
                   }
                 : null,
             };

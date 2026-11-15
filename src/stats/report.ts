@@ -87,14 +87,36 @@ export interface EvidenceFinding {
   owed: boolean;
 }
 
+/**
+ * Whom the flag judges: the seat's current primary occupant, over the seat's rounds since that occupant took the seat
+ * (its tenure). Current is the config's occupant for the seat when a config loads, else the occupant the latest round
+ * in the window seated there. The tenure starts at the first round whose roster snapshot seats it there after a
+ * different occupant (or at the window's start); a round whose snapshot does not name the seat reads its primary leg.
+ * The seat's fallback legs in those rounds count, as they do on the seat card: changing only the fallback does not
+ * start the evidence over.
+ */
+export interface Tenure {
+  /** `backend:model[:effort]`. */
+  occupant: string;
+  source: 'config' | 'roster';
+  /** The first round of its tenure in the window; null when no round in the window seated it. */
+  since_round: number | null;
+  since_at: string | null;
+}
+
 export interface Recommendation {
   seat: string;
   swap_candidate: boolean;
-  /** Enough evidence: adjudicated_ratified >= min_ratified_rounds. */
+  /**
+   * Enough evidence for at least one branch: rounds seated under the current occupant >= N (the ratified-rate
+   * branch). The precision branch also needs N adjudicated rounds ratified.
+   */
   eligible: boolean;
+  /** The occupant judged; null when the seat has no known occupant. */
+  occupant: Tenure | null;
   /** Why it is flagged, or why it is not. */
   reasons: string[];
-  /** Present when flagged: every round it sat in and every finding it raised in the window. */
+  /** Present when flagged: every round of the tenure it sat in and every finding it raised in them. */
   evidence: { rounds: EvidenceRound[]; findings: EvidenceFinding[] } | null;
 }
 
@@ -141,7 +163,45 @@ export function occupantMatches(o: Pick<StatsOccupant, 'backend' | 'model' | 'ef
   return last > 0 && rest.slice(0, last) === o.model && rest.slice(last + 1) === (o.effort ?? '');
 }
 
-export function buildReport(data: StatsData, thresholds: Thresholds, filters: Filters, generatedAt: string = new Date().toISOString()): StatsReport {
+/** The seat's primary occupant in a round: its roster snapshot's, else its primary leg's; null when neither names one. */
+export function primaryOccupantOf(data: StatsData, r: StatsData['rounds'][number], seat: string): string | null {
+  const fromRoster = r.roster.get(seat);
+  if (fromRoster !== undefined) return fromRoster;
+  const leg = r.legs.find((l) => l.seat === seat && l.role === 'primary');
+  return leg === undefined ? null : (data.occupants.get(leg.occupantId)?.key ?? null);
+}
+
+/** The seat's current occupant and the window's rounds of its tenure (see Tenure). */
+export function tenureOf(data: StatsData, seat: string, current: string | undefined): { tenure: Tenure | null; rounds: StatsData['rounds'] } {
+  const keys = data.rounds.map((r) => primaryOccupantOf(data, r, seat));
+  const occupant = current ?? [...keys].reverse().find((k): k is string => k !== null);
+  if (occupant === undefined) return { tenure: null, rounds: [] };
+  let start = data.rounds.length;
+  for (let i = data.rounds.length - 1; i >= 0; i--) {
+    const k = keys[i];
+    if (k === null || k === undefined) continue; // the round does not name the seat: no change of occupant
+    if (k !== occupant) break;
+    start = i;
+  }
+  const rounds = data.rounds.slice(start);
+  const first = rounds[0];
+  return {
+    tenure: { occupant, source: current !== undefined ? 'config' : 'roster', since_round: first?.id ?? null, since_at: first?.startedAt ?? null },
+    rounds,
+  };
+}
+
+/**
+ * Builds the report. `current` maps a seat id to its current primary occupant (`backend:model[:effort]`, from the
+ * config); a seat it does not name is judged on the occupant the latest round seated there.
+ */
+export function buildReport(
+  data: StatsData,
+  thresholds: Thresholds,
+  filters: Filters,
+  generatedAt: string = new Date().toISOString(),
+  current: ReadonlyMap<string, string> = new Map(),
+): StatsReport {
   const seatIds = [...new Set(data.rounds.flatMap((r) => r.legs.map((l) => l.seat)))].sort();
   const seatsOf = new Map<number, Set<string>>();
   const occupantsOf = new Map<string, Set<number>>();
@@ -194,34 +254,63 @@ export function buildReport(data: StatsData, thresholds: Thresholds, filters: Fi
     seats,
     occupants,
     agreement: { seats: seatPairs, occupants: occupantPairs },
-    recommendations: seats.map((s) => recommend(data, s, thresholds)),
+    recommendations: seats.map((s) => recommendFor(data, s.seat, thresholds, current.get(s.seat))),
     seat_tests: data.seatTests,
   };
 }
 
 const pct = (x: number): string => `${Math.round(x * 1000) / 10}%`;
 
+/** The recommendation for a seat, judged on its current occupant's tenure in the window. */
+export function recommendFor(data: StatsData, seat: string, t: Thresholds, current: string | undefined): Recommendation {
+  const { tenure, rounds } = tenureOf(data, seat, current);
+  const scoped: StatsData = { ...data, rounds };
+  const rec = recommend(cardOf(scoped, { kind: 'seat', seat }), t, tenure, seat);
+  return rec.swap_candidate ? { ...rec, evidence: evidenceOf(scoped, seat) } : rec;
+}
+
 /**
- * Plan 8.3: a seat is a swap candidate when, over at least N adjudicated rounds it ratified in, its unique owed count
- * is 0 and either its precision is below P or its ratified rate is below R. A precision of null (nothing adopted or
- * refuted) is not below P. The flag never swaps anything; it shows the rounds and findings behind it.
+ * Plan 8.3, two branches, judged on the seat's current occupant (its tenure, `card` computed over those rounds). A seat
+ * is a swap candidate when its unique owed count is 0 and either
+ * - its ratified rate is below R over at least N rounds seated (a seat that fails every attempt is flagged, its
+ *   failures the evidence), or
+ * - its precision is below P over at least N adjudicated rounds it ratified in.
+ * A precision of null (nothing adopted or refuted) is not below P: it is reported as inconclusive, and whether such a
+ * seat should be flagged is the owner's call. The flag never swaps anything.
  */
-export function recommend(data: StatsData, card: SeatCard, t: Thresholds): Recommendation {
-  const eligible = card.adjudicated_ratified >= t.min_ratified_rounds;
-  const lowPrecision = card.findings.precision !== null && card.findings.precision < t.precision_below;
-  const lowRatified = card.ratified_rate !== null && card.ratified_rate < t.ratified_rate_below;
+export function recommend(card: Card, t: Thresholds, tenure: Tenure | null, seat: string): Recommendation {
+  const n = t.min_ratified_rounds;
+  const seated = card.rounds_seated;
+  const adjudicated = card.adjudicated_ratified;
+  const rateEligible = seated >= n;
+  const precisionEligible = adjudicated >= n;
+  const lowPrecision = precisionEligible && card.findings.precision !== null && card.findings.precision < t.precision_below;
+  const lowRatified = rateEligible && card.ratified_rate !== null && card.ratified_rate < t.ratified_rate_below;
   const reasons: string[] = [];
-  if (!eligible) {
-    reasons.push(`${card.adjudicated_ratified} adjudicated round(s) ratified, below the ${t.min_ratified_rounds} the flag needs`);
-    return { seat: card.seat, swap_candidate: false, eligible, reasons, evidence: null };
+  if (tenure !== null) {
+    reasons.push(
+      tenure.since_round === null
+        ? `judged on its current occupant ${tenure.occupant} (${tenure.source === 'config' ? 'the config' : 'the latest round'}): no round in the window seated it yet`
+        : `judged on its current occupant ${tenure.occupant} (${tenure.source === 'config' ? 'the config' : 'the latest round'}), in the seat since round #${tenure.since_round} (${(tenure.since_at ?? '').slice(0, 10)})`,
+    );
   }
-  if (card.unique.owed > 0) reasons.push(`${card.unique.owed} unique owed finding(s): it found what no other seat did`);
-  if (lowPrecision) reasons.push(`precision ${pct(card.findings.precision ?? 0)} is below ${pct(t.precision_below)}`);
-  if (lowRatified) reasons.push(`ratified rate ${pct(card.ratified_rate ?? 0)} is below ${pct(t.ratified_rate_below)}`);
+  if (!rateEligible) {
+    reasons.push(`${seated} round(s) seated and ${adjudicated} adjudicated round(s) ratified under it, below the ${n} the flag needs`);
+    return { seat, swap_candidate: false, eligible: false, occupant: tenure, reasons, evidence: null };
+  }
   const flagged = card.unique.owed === 0 && (lowPrecision || lowRatified);
-  if (flagged) reasons.unshift(`0 unique owed over ${card.adjudicated_ratified} adjudicated round(s) ratified`);
-  else if (card.unique.owed === 0) reasons.push(`precision ${card.findings.precision === null ? 'n/a' : pct(card.findings.precision)} and ratified rate ${card.ratified_rate === null ? 'n/a' : pct(card.ratified_rate)} are at or above the thresholds`);
-  return { seat: card.seat, swap_candidate: flagged, eligible, reasons, evidence: flagged ? evidenceOf(data, card.seat) : null };
+  if (flagged) reasons.push(`0 unique owed over ${seated} round(s) seated (${adjudicated} adjudicated and ratified)`);
+  if (card.unique.owed > 0) reasons.push(`${card.unique.owed} unique owed finding(s): it found what no other seat did`);
+  if (!precisionEligible) reasons.push(`precision not judged: ${adjudicated} adjudicated round(s) ratified, below the ${n} that branch needs`);
+  else if (card.findings.precision === null) {
+    reasons.push(
+      `precision inconclusive: nothing it raised was adopted or refuted over ${adjudicated} adjudicated round(s) ratified (${card.findings.raised} finding(s) raised, ${card.drop_one.blocking_lost} blocking lost without it)`,
+    );
+  } else reasons.push(`precision ${pct(card.findings.precision)} is ${lowPrecision ? 'below' : 'at or above'} ${pct(t.precision_below)}`);
+  reasons.push(
+    `ratified rate ${card.ratified_rate === null ? 'n/a' : pct(card.ratified_rate)} (${card.rounds_ratified} of ${seated} round(s) seated) is ${lowRatified ? 'below' : 'at or above'} ${pct(t.ratified_rate_below)}`,
+  );
+  return { seat, swap_candidate: flagged, eligible: true, occupant: tenure, reasons, evidence: null };
 }
 
 /** Every settled round the seat sat in, and every finding it raised in the adjudicated ones. */

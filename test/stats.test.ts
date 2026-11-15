@@ -445,7 +445,14 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
     expect(c).toMatchObject({ adjudicated_ratified: 25, ratified_rate: 1, unique: { owed: 0 }, findings: { adopted: 10, refuted: 15, precision: 0.4 } });
     const rec = r.recommendations.find((x) => x.seat === 'c');
     expect(rec).toMatchObject({ swap_candidate: true, eligible: true });
-    expect(rec?.reasons).toEqual(['0 unique owed over 25 adjudicated round(s) ratified', 'precision 40% is below 50%']);
+    const first = loadStats(w.store.db, null).rounds[0];
+    expect(rec?.occupant).toEqual({ occupant: OCC.c, source: 'roster', since_round: first?.id, since_at: first?.startedAt });
+    expect(rec?.reasons).toEqual([
+      `judged on its current occupant ${OCC.c} (the latest round), in the seat since round #${String(first?.id)} (${first?.startedAt.slice(0, 10) ?? ''})`,
+      '0 unique owed over 25 round(s) seated (25 adjudicated and ratified)',
+      'precision 40% is below 50%',
+      'ratified rate 100% (25 of 25 round(s) seated) is at or above 80%',
+    ]);
     expect(rec?.evidence?.rounds).toHaveLength(25);
     expect(rec?.evidence?.findings).toHaveLength(25);
     expect(rec?.evidence?.findings.filter((f) => f.refuted && f.unique)).toHaveLength(15);
@@ -459,7 +466,7 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
     const rec = report(w, { thresholds: N25 }).recommendations.find((x) => x.seat === 'c');
     expect(seatCard(report(w, { thresholds: N25 }), 'c')).toMatchObject({ unique: { owed: 0 }, findings: { precision: 10 / 24 } });
     expect(rec).toMatchObject({ swap_candidate: false, eligible: false, evidence: null });
-    expect(rec?.reasons).toEqual(['24 adjudicated round(s) ratified, below the 25 the flag needs']);
+    expect(rec?.reasons.slice(1)).toEqual(['24 round(s) seated and 24 adjudicated round(s) ratified under it, below the 25 the flag needs']);
     // The default N (20) is reached by the same 24 rounds.
     expect(report(w).recommendations.find((x) => x.seat === 'c')?.swap_candidate).toBe(true);
     w.close();
@@ -479,17 +486,45 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
     w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'owed', by: ['c'] }] });
     const rec = report(w).recommendations.find((x) => x.seat === 'c');
     expect(rec?.swap_candidate).toBe(false);
-    expect(rec?.reasons[0]).toBe('1 unique owed finding(s): it found what no other seat did');
+    expect(rec?.reasons[1]).toBe('1 unique owed finding(s): it found what no other seat did');
     w.close();
   });
 
-  it('counts N in adjudicated rounds the seat ratified in, not in rounds it was seated in', () => {
+  it('judges precision only over N adjudicated rounds ratified, and the ratified rate over N rounds seated', () => {
     const w = statsStore();
+    // 19 adjudicated rounds with only refuted findings (precision 0), then 6 ratified rounds still awaiting adjudication.
     for (let i = 0; i < 19; i++) w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'] }] });
-    for (let i = 0; i < 6; i++) w.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: OCC.b }, { seat: 'c', occ: OCC.c, status: 'FAIL', failure: 'timeout' }] });
+    for (let i = 0; i < 6; i++) w.round({ status: 'awaiting-adjudication', legs: three() });
     const r = report(w);
-    expect(seatCard(r, 'c')).toMatchObject({ rounds_seated: 25, adjudicated_ratified: 19, findings: { precision: 0 } });
-    expect(r.recommendations.find((x) => x.seat === 'c')).toMatchObject({ swap_candidate: false, eligible: false });
+    expect(seatCard(r, 'c')).toMatchObject({ rounds_seated: 25, ratified_rate: 1, adjudicated_ratified: 19, findings: { precision: 0 } });
+    const c = r.recommendations.find((x) => x.seat === 'c');
+    expect(c).toMatchObject({ swap_candidate: false, eligible: true, evidence: null });
+    expect(c?.reasons.slice(1)).toEqual(['precision not judged: 19 adjudicated round(s) ratified, below the 20 that branch needs', 'ratified rate 100% (25 of 25 round(s) seated) is at or above 80%']);
+    // One more adjudicated round reaches N for the precision branch: flagged.
+    w.round({ legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'refuted', by: ['c'] }] });
+    expect(report(w).recommendations.find((x) => x.seat === 'c')).toMatchObject({ swap_candidate: true, eligible: true });
+    w.close();
+  });
+
+  it('flags a seat that fails every attempt over N rounds seated, with its failures as the evidence', () => {
+    const w = statsStore();
+    for (let i = 0; i < 20; i++) w.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: OCC.b }, { seat: 'c', occ: OCC.c, status: 'FAIL', failure: 'auth' }] });
+    const r = report(w);
+    expect(seatCard(r, 'c')).toMatchObject({ rounds_seated: 20, rounds_ratified: 0, ratified_rate: 0, adjudicated_ratified: 0 });
+    const c = r.recommendations.find((x) => x.seat === 'c');
+    expect(c).toMatchObject({ swap_candidate: true, eligible: true });
+    expect(c?.reasons.slice(1)).toEqual([
+      '0 unique owed over 20 round(s) seated (0 adjudicated and ratified)',
+      'precision not judged: 0 adjudicated round(s) ratified, below the 20 that branch needs',
+      'ratified rate 0% (0 of 20 round(s) seated) is below 80%',
+    ]);
+    expect(c?.evidence?.rounds.map((e) => e.said)).toEqual(Array(20).fill('not ratified: primary 1 FAIL auth'));
+    expect(c?.evidence?.findings).toEqual([]);
+    // 19 rounds seated is below N.
+    const w19 = statsStore();
+    for (let i = 0; i < 19; i++) w19.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: OCC.b }, { seat: 'c', occ: OCC.c, status: 'FAIL', failure: 'auth' }] });
+    expect(report(w19).recommendations.find((x) => x.seat === 'c')).toMatchObject({ swap_candidate: false, eligible: false });
+    w19.close();
     w.close();
   });
 
@@ -501,12 +536,32 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
     // a and b: 20 of 26 ratified (76.9%) with nothing raised (precision n/a): flagged by the rate.
     const a = r.recommendations.find((x) => x.seat === 'a');
     expect(a?.swap_candidate).toBe(true);
-    expect(a?.reasons).toEqual(['0 unique owed over 20 adjudicated round(s) ratified', 'ratified rate 76.9% is below 80%']);
+    expect(a?.reasons.slice(1)).toEqual([
+      '0 unique owed over 26 round(s) seated (20 adjudicated and ratified)',
+      'precision inconclusive: nothing it raised was adopted or refuted over 20 adjudicated round(s) ratified (0 finding(s) raised, 0 blocking lost without it)',
+      'ratified rate 76.9% (20 of 26 round(s) seated) is below 80%',
+    ]);
     expect(a?.evidence?.rounds.filter((e) => !e.ratified).map((e) => e.said)).toEqual(Array(6).fill('not ratified: primary 1 FAIL usage_limit'));
-    // c: 26 of 26 ratified, nothing raised: precision n/a is not below P.
+    // c: 26 of 26 ratified, nothing raised: precision n/a is inconclusive, never "at or above" P, and not flagged.
     const c = r.recommendations.find((x) => x.seat === 'c');
     expect(c?.swap_candidate).toBe(false);
-    expect(c?.reasons).toEqual(['precision n/a and ratified rate 100% are at or above the thresholds']);
+    expect(c?.reasons.slice(1)).toEqual([
+      'precision inconclusive: nothing it raised was adopted or refuted over 20 adjudicated round(s) ratified (0 finding(s) raised, 0 blocking lost without it)',
+      'ratified rate 100% (26 of 26 round(s) seated) is at or above 80%',
+    ]);
+    w.close();
+  });
+
+  it('reports a seat that raised nothing adopted or refuted as inconclusive, with the findings it raised and the blocking lost', () => {
+    const w = statsStore();
+    // b raises a nit and a noted finding in every round: raised, but neither adopted nor refuted.
+    for (let i = 0; i < 20; i++) w.round({ legs: three(), findings: [{ outcome: 'nit', by: ['b'] }, { outcome: 'noted', by: ['b'] }] });
+    const b = report(w).recommendations.find((x) => x.seat === 'b');
+    expect(b).toMatchObject({ swap_candidate: false, eligible: true });
+    expect(b?.reasons.slice(1)).toEqual([
+      'precision inconclusive: nothing it raised was adopted or refuted over 20 adjudicated round(s) ratified (40 finding(s) raised, 0 blocking lost without it)',
+      'ratified rate 100% (20 of 20 round(s) seated) is at or above 80%',
+    ]);
     w.close();
   });
 
@@ -522,6 +577,74 @@ describe('stats: the swap-candidate flag (plan 8.3)', () => {
       const rec = r.recommendations.find((x) => x.seat === seat);
       expect(rec, seat).toMatchObject({ swap_candidate: false, eligible: true, evidence: null });
     }
+    w.close();
+  });
+});
+
+describe('stats: the flag judges the seat\'s current occupant', () => {
+  const X = OCC.c;
+  const Y = 'grok:grok-5:high';
+  /** Seat c over n rounds with occupant `occ`: every finding of its own refuted (precision 0). */
+  function poorRounds(w: StatsStore, n: number, occ: string): number[] {
+    const ids: number[] = [];
+    for (let i = 0; i < n; i++) ids.push(w.round({ legs: three({ c: 'NEEDS-WORK' }, { c: { occ } }), findings: [{ outcome: 'refuted', by: ['c'] }] }));
+    return ids;
+  }
+
+  it('starts the evidence over at a swap: a seat flagged under X and swapped to Y is not flagged on X\'s history', () => {
+    const w = statsStore();
+    poorRounds(w, 25, X);
+    expect(report(w).recommendations.find((x) => x.seat === 'c')).toMatchObject({ swap_candidate: true, occupant: { occupant: X, source: 'roster' } });
+    // Swapped to Y: three rounds under Y (a fallback leg among them counts for the seat).
+    const [firstY] = poorRounds(w, 2, Y);
+    w.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: OCC.b }, { seat: 'c', occ: Y, status: 'FAIL', failure: 'usage_limit' }, { seat: 'c', occ: OCC.af, role: 'fallback' }] });
+    const r = report(w);
+    const c = r.recommendations.find((x) => x.seat === 'c');
+    expect(c).toMatchObject({ swap_candidate: false, eligible: false, evidence: null, occupant: { occupant: Y, source: 'roster', since_round: firstY } });
+    expect(c?.reasons[0]).toMatch(new RegExp(`^judged on its current occupant ${Y} \\(the latest round\\), in the seat since round #${String(firstY)} \\(2026-\\d\\d-\\d\\d\\)$`));
+    expect(c?.reasons[1]).toBe('3 round(s) seated and 3 adjudicated round(s) ratified under it, below the 20 the flag needs');
+    // The seat card still covers every occupant it had.
+    expect(seatCard(r, 'c')).toMatchObject({ rounds_seated: 28 });
+    w.close();
+  });
+
+  it('judges the config\'s occupant when one is given: no round under it yet is not a flag', () => {
+    const w = statsStore();
+    poorRounds(w, 25, X);
+    const data = loadStats(w.store.db, null);
+    const swapped = buildReport(data, DEFAULTS, { seat: null, occupant: null }, NOW, new Map([['c', Y]]));
+    const c = swapped.recommendations.find((x) => x.seat === 'c');
+    expect(c).toMatchObject({ swap_candidate: false, eligible: false, occupant: { occupant: Y, source: 'config', since_round: null, since_at: null } });
+    expect(c?.reasons).toEqual([`judged on its current occupant ${Y} (the config): no round in the window seated it yet`, '0 round(s) seated and 0 adjudicated round(s) ratified under it, below the 20 the flag needs']);
+    // The config naming X judges X over its whole tenure.
+    const same = buildReport(data, DEFAULTS, { seat: null, occupant: null }, NOW, new Map([['c', X]]));
+    expect(same.recommendations.find((x) => x.seat === 'c')).toMatchObject({ swap_candidate: true, occupant: { occupant: X, source: 'config', since_round: data.rounds[0]?.id } });
+    w.close();
+  });
+
+  it('takes the tenure from the last change back to the current occupant (X, Y, then X again)', () => {
+    const w = statsStore();
+    poorRounds(w, 25, X);
+    poorRounds(w, 1, Y);
+    const back = poorRounds(w, 2, X);
+    const c = report(w).recommendations.find((x) => x.seat === 'c');
+    expect(c).toMatchObject({ swap_candidate: false, eligible: false, occupant: { occupant: X, since_round: back[0] } });
+    w.close();
+  });
+
+  it('reads a round whose roster snapshot does not name the seat from its primary leg, and changing only the fallback starts nothing over', () => {
+    const w = statsStore();
+    const ids = poorRounds(w, 10, X);
+    // Ten more under X: no roster snapshot (its primary leg names X), and the fallback seen changes.
+    for (let i = 0; i < 10; i++) {
+      w.round({
+        roster: false,
+        legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: OCC.b }, { seat: 'c', occ: X, status: 'FAIL', failure: 'usage_limit' }, { seat: 'c', occ: i % 2 === 0 ? OCC.af : Y, role: 'fallback', verdict: 'NEEDS-WORK' }],
+        findings: [{ outcome: 'refuted', by: ['c'] }],
+      });
+    }
+    const c = report(w).recommendations.find((x) => x.seat === 'c');
+    expect(c).toMatchObject({ swap_candidate: true, occupant: { occupant: X, since_round: ids[0] } });
     w.close();
   });
 });

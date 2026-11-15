@@ -188,7 +188,7 @@ ${
   report.message === null
     ? h`<section>
 <h2>Recommendations</h2>
-<p class="muted">A seat is a swap candidate when, over at least ${t.min_ratified_rounds} adjudicated rounds it ratified in, its unique owed count is 0 and its precision is below ${pctText(t.precision_below)} or its ratified rate is below ${pctText(t.ratified_rate_below)} (${t.source === 'config' ? 'config [stats]' : 'defaults'}). The flag only informs: nothing swaps a seat by itself.</p>
+<p class="muted">A seat is judged on its current occupant, over the rounds since that occupant took the seat. It is a swap candidate when its unique owed count is 0 and either its ratified rate is below ${pctText(t.ratified_rate_below)} over at least ${t.min_ratified_rounds} rounds seated, or its precision is below ${pctText(t.precision_below)} over at least ${t.min_ratified_rounds} adjudicated rounds it ratified in (${t.source === 'config' ? 'config [stats]' : 'defaults'}). A seat that raised nothing adopted or refuted is inconclusive on precision. The flag only informs: nothing swaps a seat by itself.</p>
 ${report.recommendations.map(recommendation)}
 </section>
 <section>

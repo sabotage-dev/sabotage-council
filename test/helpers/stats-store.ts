@@ -57,6 +57,11 @@ export interface RoundSpec {
   adjudicatorUsd?: number;
   legs?: LegSpec[];
   findings?: FindingSpec[];
+  /**
+   * The roster snapshot: seat id -> its primary occupant (`backend:model[:effort]`). Default: each seat's primary leg's
+   * occupant. `false` writes an empty snapshot (`{}`), as a round with no seats would.
+   */
+  roster?: Record<string, string> | false;
 }
 
 export interface StatsStore {
@@ -108,16 +113,29 @@ export function statsStore(): StatsStore {
     const owed = findings.filter((f) => f.outcome === 'owed').length;
     const tid = targetId(spec.target ?? 'widget');
     const roundNo = Number((db.prepare('SELECT count(*) AS n FROM rounds WHERE target_id = ?').get(tid) as { n: number }).n) + 1;
+    const roster: Record<string, string> =
+      spec.roster === false ? {} : (spec.roster ?? Object.fromEntries((spec.legs ?? []).filter((l) => (l.role ?? 'primary') === 'primary').map((l) => [l.seat, l.occ])));
+    const rosterJson =
+      spec.roster === false
+        ? '{}'
+        : JSON.stringify({
+            seats: Object.entries(roster).map(([id, occ]) => {
+              const [backend, model, effort] = occ.split(':');
+              return { id, backend, model, ...(effort !== undefined ? { effort } : {}) };
+            }),
+            council: { leg_timeout_minutes: 25, high_only_from_round: 4 },
+          });
     const roundId = Number(
       db
         .prepare(
           `INSERT INTO rounds (target_id, round_no, mode, head_sha, roster_json, started_at, finished_at, verdict, owed_count, approve, needs_ruling, status, kind, dry_run, adjudicator_cost_usd)
-           VALUES (?, ?, 'pr', ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, 'pr', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           tid,
           roundNo,
           'a'.repeat(40),
+          rosterJson,
           at,
           at,
           verdict,

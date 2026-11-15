@@ -108,7 +108,7 @@ export function renderText(report: StatsReport): string[] {
   }
   const t = report.thresholds;
   out.push(
-    `swap candidate: >= ${t.min_ratified_rounds} adjudicated rounds ratified, 0 unique owed, and precision < ${pctText(t.precision_below)} or ratified rate < ${pctText(t.ratified_rate_below)} (${t.source === 'config' ? 'config [stats]' : 'defaults'})`,
+    `swap candidate (judged on each seat's current occupant since it took the seat): 0 unique owed, and ratified rate < ${pctText(t.ratified_rate_below)} over >= ${t.min_ratified_rounds} rounds seated, or precision < ${pctText(t.precision_below)} over >= ${t.min_ratified_rounds} adjudicated rounds ratified (${t.source === 'config' ? 'config [stats]' : 'defaults'})`,
   );
   if (w.adjudicator_usd > 0) out.push(`adjudicator: ${money(w.adjudicator_usd)} (headless runs)`);
   out.push('');

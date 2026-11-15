@@ -70,6 +70,11 @@ export interface StatsRound {
   /** A verdict is stored: the adjudication went in (plan 7.1 step 4). */
   adjudicated: boolean;
   adjudicatorUsd: number | null;
+  /**
+   * Each seat's primary occupant (`backend:model[:effort]`) as the round's roster snapshot recorded it; a seat the
+   * snapshot does not name (or a snapshot that does not parse) is absent.
+   */
+  roster: Map<string, string>;
   /** Settled legs only (a leg still RUNNING is left out). */
   legs: StatsLeg[];
   findings: StatsFinding[];
@@ -136,7 +141,7 @@ type Row = Record<string, unknown>;
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'bigint' ? Number(v) : null);
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 
-export function occupantKey(o: { backend: string; model: string; effort: string | null | undefined }): string {
+export function occupantKey(o: { backend: string; model: string; effort?: string | null | undefined }): string {
   return o.effort === null || o.effort === undefined ? `${o.backend}:${o.model}` : `${o.backend}:${o.model}:${o.effort}`;
 }
 
@@ -149,13 +154,33 @@ function targetLabel(r: Row): string {
 
 const asVerdict = (v: unknown): Verdict | null => (VERDICTS as readonly unknown[]).includes(v) ? (v as Verdict) : null;
 
+/** The roster snapshot's seats (plan 8.1: `rounds.roster_json`): seat id -> its primary occupant's key. */
+function rosterOf(json: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(json));
+  } catch {
+    return out;
+  }
+  const seats = typeof parsed === 'object' && parsed !== null ? (parsed as { seats?: unknown }).seats : undefined;
+  if (!Array.isArray(seats)) return out;
+  for (const s of seats as unknown[]) {
+    if (typeof s !== 'object' || s === null) continue;
+    const { id, backend, model, effort } = s as Record<string, unknown>;
+    if (typeof id !== 'string' || typeof backend !== 'string' || typeof model !== 'string') continue;
+    out.set(id, occupantKey({ backend, model, effort: typeof effort === 'string' ? effort : null }));
+  }
+  return out;
+}
+
 /** Reads the window's rounds with their legs, findings and sources, and the window's seat tests. */
 export function loadStats(db: DatabaseSync, since: string | null): StatsData {
   const inWindow = '(? IS NULL OR rounds.started_at >= ?)';
   const rows = db
     .prepare(
       `SELECT rounds.id, rounds.round_no, rounds.mode, rounds.started_at, rounds.status, rounds.kind, rounds.dry_run, rounds.verdict,
-              rounds.owed_count, rounds.needs_ruling, rounds.adjudicator_cost_usd,
+              rounds.owed_count, rounds.needs_ruling, rounds.adjudicator_cost_usd, rounds.roster_json,
               targets.kind AS target_kind, targets.repo, targets.number, targets.path, targets.branch
          FROM rounds JOIN targets ON targets.id = rounds.target_id
         WHERE ${inWindow}
@@ -190,6 +215,7 @@ export function loadStats(db: DatabaseSync, since: string | null): StatsData {
       needsRuling: r['needs_ruling'] === 1 || r['needs_ruling'] === 1n,
       adjudicated: verdict !== null,
       adjudicatorUsd: num(r['adjudicator_cost_usd']),
+      roster: rosterOf(r['roster_json']),
       legs: [],
       findings: [],
     };

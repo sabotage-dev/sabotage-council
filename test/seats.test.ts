@@ -352,9 +352,13 @@ describe('seats CLI', () => {
     expect(r.lines[0]).toBe(`seats in ${path}:`);
     expect(r.lines[1]).toMatch(/^a {2}codex \/ gpt-6\.1-sol \/ low {2}enforcement sandboxed-exec \(codex [0-9.]+\)$/);
     expect(r.lines[2]).toMatch(/^ {3}fallback {2}claude \/ claude-sonnet-5-5 \/ low on usage_limit, auth {2}enforcement strong \(claude [0-9.]+\)$/);
-    expect(r.lines[3]).toBe('   scorecard  seated 2, ratified 100%, raised 0, precision n/a, unique owed 0, blocking lost without it 0: keep');
-    expect(r.lines[5]).toBe('   scorecard  seated 2, ratified 100%, raised 0, precision n/a, unique owed 0, blocking lost without it 0: keep');
-    expect(r.lines[7]).toBe('   scorecard  seated 2, ratified 100%, raised 2, precision 0%, unique owed 0, blocking lost without it 0: SWAP CANDIDATE (see `sabotage-council stats`)');
+    expect(r.lines[3]).toBe('   scorecard  seated 2, ratified 100%, raised 0, precision n/a, unique owed 0, blocking lost without it 0: keep codex:gpt-6.1-sol:low');
+    expect(r.lines[5]).toBe('   scorecard  seated 2, ratified 100%, raised 0, precision n/a, unique owed 0, blocking lost without it 0: keep claude:claude-haiku-5-5:low');
+    expect(r.lines[7]).toBe('   scorecard  seated 2, ratified 100%, raised 2, precision 0%, unique owed 0, blocking lost without it 0: SWAP CANDIDATE: claude:claude-opus-5-5:low since round #1 (see `sabotage-council stats`)');
+    // After a swap (the config names a new occupant for c), the flag judges the new occupant: no round under it yet.
+    writeFileSync(path, readFileSync(path, 'utf8').replace('model = "claude-opus-5-5"\neffort = "low"', 'model = "claude-opus-5-5"\neffort = "high"'));
+    const swapped = await run(['seats', 'list', '--config', path, '--db', w.dbPath, '--no-preflight'], env, fakeAdapters);
+    expect(swapped.lines[7]).toBe('   scorecard  seated 2, ratified 100%, raised 2, precision 0%, unique owed 0, blocking lost without it 0: not enough rounds under claude:claude-opus-5-5:high for the swap flag yet');
     const json = JSON.parse((await run(['seats', 'list', '--config', path, '--db', join(dir, 'none.db'), '--no-preflight', '--json'], env, fakeAdapters)).text) as {
       seats: Array<{ id: string; label: unknown; fallback: { label: unknown } | null; scorecard: unknown }>;
     };

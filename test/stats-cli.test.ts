@@ -48,7 +48,10 @@ describe('stats CLI', () => {
     expect(r.code).toBe(0);
     expect(r.lines[0]).toBe('sabotage-council stats: all history (rounds from 2026-11-01 to 2026-11-01)');
     expect(r.text).toContain('rounds: 2 council (2 settled, 2 adjudicated, 0 failed, 0 awaiting adjudication, 0 still running, 0 dry run), 0 identity');
-    expect(r.text).toContain('swap candidate: >= 2 adjudicated rounds ratified, 0 unique owed, and precision < 50% or ratified rate < 80% (config [stats])');
+    expect(r.text).toContain(
+      "swap candidate (judged on each seat's current occupant since it took the seat): 0 unique owed, and ratified rate < 80% over >= 2 rounds seated, or precision < 50% over >= 2 adjudicated rounds ratified (config [stats])",
+    );
+    expect(r.text).toContain(`    - judged on its current occupant ${OCC.c} (the config), in the seat since round #1 (2026-11-01)`);
     expect(r.text).toContain('seat c  (occupants #3)');
     expect(r.text).toContain('  findings  raised 2, adopted 0, refuted 2; precision 0%');
     expect(r.text).toContain('  seat c: SWAP CANDIDATE');

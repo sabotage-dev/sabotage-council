@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { parse } from 'smol-toml';
 import { loadConfig, statsSchema, type ConfigIssue, type StatsConfig } from '../config/index.js';
 import { formatPath } from '../config/validate.js';
-import { loadStats } from '../stats/data.js';
+import { loadStats, occupantKey } from '../stats/data.js';
 import { writeHtmlReport } from '../stats/html.js';
 import { buildReport, thresholdsOf, type Filters, type StatsReport, type Thresholds } from '../stats/report.js';
 import { renderText } from '../stats/text.js';
@@ -38,17 +38,24 @@ function formatIssue(issue: ConfigIssue): string {
  * fails validation elsewhere (a seat, a model) still gives its [stats] section, with a warning; an invalid [stats]
  * section is an error.
  */
-export async function statsThresholds(configPath: string): Promise<{ thresholds: Thresholds; warnings: string[] } | { errors: string[] }> {
+export async function statsThresholds(
+  configPath: string,
+): Promise<{ thresholds: Thresholds; warnings: string[]; current: Map<string, string> } | { errors: string[] }> {
   if (!existsSync(configPath)) {
-    return { thresholds: thresholdsOf(statsSchema.parse({}), 'defaults'), warnings: [] };
+    return { thresholds: thresholdsOf(statsSchema.parse({}), 'defaults'), warnings: [], current: new Map() };
   }
   const loaded = await loadConfig(configPath);
-  if (loaded.ok) return { thresholds: thresholdsOf(loaded.config.stats, 'config'), warnings: [] };
+  // A config that loads names each seat's current occupant, which the swap flag judges (plan 8.3).
+  if (loaded.ok) return { thresholds: thresholdsOf(loaded.config.stats, 'config'), warnings: [], current: new Map(loaded.config.seats.map((seat) => [seat.id, occupantKey(seat)])) };
   let raw: unknown;
   try {
     raw = parse(readFileSync(configPath, 'utf8'));
   } catch {
-    return { thresholds: thresholdsOf(statsSchema.parse({}), 'defaults'), warnings: [`config ${configPath} does not parse (${loaded.errors.map(formatIssue).join('; ')}): the [stats] thresholds are the defaults`] };
+    return {
+      thresholds: thresholdsOf(statsSchema.parse({}), 'defaults'),
+      warnings: [`config ${configPath} does not parse (${loaded.errors.map(formatIssue).join('; ')}): the [stats] thresholds are the defaults`],
+      current: new Map(),
+    };
   }
   const table = typeof raw === 'object' && raw !== null && 'stats' in raw ? (raw as { stats: unknown }).stats : {};
   const stats = statsSchema.safeParse(table);
@@ -57,15 +64,23 @@ export async function statsThresholds(configPath: string): Promise<{ thresholds:
   return {
     thresholds: thresholdsOf(stats.data as StatsConfig, source),
     warnings: [`config ${configPath} has ${loaded.errors.length} error(s) outside [stats] (${loaded.errors.map(formatIssue).join('; ')}); its [stats] thresholds still apply`],
+    current: new Map(),
   };
 }
 
 /** Reads the store and builds the report; null when there is no store file (nothing recorded). */
-export function readReport(dbPath: string, since: string | null, thresholds: Thresholds, filters: Filters, generatedAt?: string): StatsReport | null {
+export function readReport(
+  dbPath: string,
+  since: string | null,
+  thresholds: Thresholds,
+  filters: Filters,
+  generatedAt?: string,
+  current?: ReadonlyMap<string, string>,
+): StatsReport | null {
   if (!existsSync(dbPath)) return null;
   const store = openStore(dbPath);
   try {
-    return buildReport(loadStats(store.db, since), thresholds, filters, generatedAt);
+    return buildReport(loadStats(store.db, since), thresholds, filters, generatedAt, current);
   } finally {
     store.close();
   }
@@ -79,7 +94,7 @@ export async function statsCommand(io: StatsIo, args: StatsArgs): Promise<void> 
     io.setExitCode(1);
     return;
   }
-  let report = readReport(args.dbPath, args.since, t.thresholds, args.filters, args.generatedAt);
+  let report = readReport(args.dbPath, args.since, t.thresholds, args.filters, args.generatedAt, t.current);
   if (report === null) {
     // No store yet: the same empty report a fresh store would give, without creating one.
     report = emptyReport(args, t.thresholds);
