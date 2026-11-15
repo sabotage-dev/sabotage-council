@@ -7,7 +7,7 @@ import { BACKENDS, loadConfig, type AdapterRegistry, type BackendId, type Config
 import { applySeatEdit, SeatApplyError } from '../seats/apply.js';
 import type { SeatEdit } from '../seats/edit.js';
 import { loadFixture } from '../seats/fixture.js';
-import { exitCodeOf, recordSeatTest, runSeatTest, type SeatTestResult } from '../seats/run.js';
+import { exitCodeOf, recordSeatTest, runSeatTest, SeatTestNotRun, type SeatTestResult } from '../seats/run.js';
 import { resolveOccupantSpec, splitBackend } from '../seats/spec.js';
 import { loadStats, occupantKey } from '../stats/data.js';
 import { buildReport, thresholdsOf, type SeatCard, type Recommendation } from '../stats/report.js';
@@ -22,6 +22,8 @@ import type { StorePaths } from './round.js';
 
 export interface SeatsIo {
   write: (line: string) => void;
+  /** Lines that are not the command's output (`seats test --json` keeps stdout for the JSON). Default: `write`. */
+  writeErr?: ((line: string) => void) | undefined;
   env: NodeJS.ProcessEnv;
   setExitCode: (code: number) => void;
   adapters?: SeatAdapters | undefined;
@@ -239,8 +241,10 @@ export interface TestArgs {
 }
 
 export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, args: TestArgs): Promise<void> {
+  // With --json, stdout carries only the JSON result: the notice, refusals and warnings go to stderr.
+  const say = args.json ? (io.writeErr ?? io.write) : io.write;
   const fail = (message: string): void => {
-    io.write(message);
+    say(message);
     io.setExitCode(1);
   };
   const config = existsSync(paths.configPath) ? await loadConfig(paths.configPath) : null;
@@ -270,8 +274,8 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
   } else {
     if (config === null) return fail(`no config file at ${paths.configPath}: name the candidate as backend:model[:effort] instead`);
     if (!config.ok) {
-      io.write(`config ${paths.configPath} has ${config.errors.length} error(s):`);
-      for (const e of config.errors) io.write(`  ${formatIssue(e)}`);
+      say(`config ${paths.configPath} has ${config.errors.length} error(s):`);
+      for (const e of config.errors) say(`  ${formatIssue(e)}`);
       io.setExitCode(1);
       return;
     }
@@ -286,20 +290,27 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
 
   const minutes = args.timeoutMinutes ?? (config?.ok === true ? config.config.council.leg_timeout_minutes : 25);
   const fixture = loadFixture();
-  // It spends money: say exactly what runs before anything launches.
-  io.write(
+  // It spends money: say exactly what runs before anything launches (on stderr with --json, still before the launch).
+  say(
     `seats test: about to run one paid leg: backend ${occupant.backend}, model ${occupant.model}, effort ${occupant.effort ?? '(the CLI default)'}${who.seat !== null ? ` (seat ${who.seat}, ${who.role})` : ' (a candidate, not in the config)'}; capped at ${minutes} min, on the planted-defect fixture (${fixture.defects.length} defects)`,
   );
-  const result = await runSeatTest(occupant, who, {
-    adapters: io.adapters,
-    rootsDir: join(paths.rootsPath, 'seat-tests'),
-    dataDir: dirname(paths.dbPath),
-    timeoutMs: Math.round(minutes * 60_000),
-    env: io.env,
-    pollMs: io.pollMs,
-    signal: args.signal,
-    fixture,
-  });
+  let result: SeatTestResult;
+  try {
+    result = await runSeatTest(occupant, who, {
+      adapters: io.adapters,
+      rootsDir: join(paths.rootsPath, 'seat-tests'),
+      dataDir: dirname(paths.dbPath),
+      timeoutMs: Math.round(minutes * 60_000),
+      env: io.env,
+      pollMs: io.pollMs,
+      signal: args.signal,
+      fixture,
+    });
+  } catch (error) {
+    // Cancelled before the launch, or the fixture could not be set up: nothing ran, so nothing is recorded.
+    if (!(error instanceof SeatTestNotRun)) throw error;
+    return fail(`seats test: ${error.message}; nothing was launched or recorded`);
+  }
   // The paid result is printed whatever happens to the record of it.
   const code = exitCodeOf(result);
   let recorded: string | null = null;
@@ -316,7 +327,7 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
   if (args.json) io.write(JSON.stringify({ ...result, exit_code: code, record_error: recorded }, null, 2));
   else {
     for (const line of resultLines(result, fixture.defects.map((d) => ({ id: d.id, severity: d.severity, title: d.title })))) io.write(line);
-    if (recorded !== null) io.write(`warn  ${recorded}`);
+    if (recorded !== null) say(`warn  ${recorded}`);
   }
   io.setExitCode(code);
 }

@@ -80,11 +80,13 @@ async function run(
   fake: Fake,
   paths: { config: string; db: string; roots: string },
   models: readonly string[] = CLAUDE_MODELS,
-): Promise<{ code: number; lines: string[]; text: string }> {
+): Promise<{ code: number; lines: string[]; text: string; err: string[] }> {
   const lines: string[] = [];
+  const err: string[] = [];
   let code = -1;
   const io: ProgramIo = {
     write: (l) => lines.push(l),
+    writeErr: (l) => err.push(l),
     env: fake.env,
     setExitCode: (c) => (code = c),
     adapters: fake.adapters,
@@ -94,7 +96,7 @@ async function run(
   const program = buildProgram(io);
   for (const c of [program, ...program.commands, ...program.commands.flatMap((c) => c.commands)]) c.exitOverride().configureOutput({ writeErr: () => undefined, writeOut: () => undefined });
   await program.parseAsync(['node', 'sabotage-council', ...args, '--config', paths.config, '--db', paths.db, '--roots', paths.roots]);
-  return { code, lines, text: lines.join('\n') };
+  return { code, lines, text: lines.join('\n'), err };
 }
 
 function places(): { config: string; db: string; roots: string; dir: string } {
@@ -285,7 +287,9 @@ describe('seats test: one leg end to end with the fake claude', () => {
     const p = places();
     const r = await run(['seats', 'test', 'claude:claude-haiku-5-5:low', '--json'], fake, p);
     expect(r.code).toBe(2);
-    const json = JSON.parse(r.text.slice(r.text.indexOf('{'))) as Record<string, unknown>;
+    // stdout is only the JSON; the paid-leg notice went to stderr.
+    const json = JSON.parse(r.text) as Record<string, unknown>;
+    expect(r.err).toEqual([expect.stringMatching(/^seats test: about to run one paid leg: backend claude, model claude-haiku-5-5, effort low /)]);
     expect(json).toMatchObject({ ratified: true, status: 'PASS', verdict: 'SHIP', exit_code: 2, defects: { found: [], missed: ['D1', 'D2', 'D3'], total: 3 } });
     expect(running(fake.bin)).toEqual([]);
     expect(storeRows(p.db)).toMatchObject({ rounds: 0, legs: 0, occupants: 0 });
@@ -296,7 +300,7 @@ describe('seats test: one leg end to end with the fake claude', () => {
     const p = places();
     const r = await run(['seats', 'test', 'claude:claude-haiku-5-5:low', '--json'], fake, p);
     expect(r.code).toBe(1);
-    expect(JSON.parse(r.text.slice(r.text.indexOf('{')))).toMatchObject({ ratified: false, status: 'FAIL', failure_class: 'empty', verdict: 'none' });
+    expect(JSON.parse(r.text)).toMatchObject({ ratified: false, status: 'FAIL', failure_class: 'empty', verdict: 'none' });
     expect(running(fake.bin)).toEqual([]);
   });
 
@@ -317,7 +321,7 @@ describe('seats test: one leg end to end with the fake claude', () => {
     const p = places();
     const r = await run(['seats', 'test', 'claude:claude-haiku-5-5:low', '--json'], fake, p);
     expect(r.code).toBe(1);
-    const json = JSON.parse(r.text.slice(r.text.indexOf('{'))) as Record<string, unknown>;
+    const json = JSON.parse(r.text) as Record<string, unknown>;
     expect(json).toMatchObject({ ratified: false, status: 'CONTAMINATED', failure_class: 'contaminated', root_unchanged: false });
     expect(running(fake.bin)).toEqual([]);
   });
@@ -349,6 +353,34 @@ describe('seats test: one leg end to end with the fake claude', () => {
       ['b', 'primary'],
       ['a', 'fallback'],
     ]);
+    expect(running(fake.bin)).toEqual([]);
+  });
+
+  it('with --json, sends refusals and the record warning to stderr: stdout holds the JSON or nothing', async () => {
+    const fake = fakeClaude({ answer: ALL_DEFECTS });
+    const p = places();
+    const refused = await run(['seats', 'test', 'claude:claude-nope-1', '--json'], fake, p);
+    expect([refused.code, refused.lines, refused.err]).toEqual([1, [], ['backend "claude" does not offer model "claude-nope-1"']]);
+    mkdirSync(join(p.dir, 'data'));
+    writeFileSync(p.db, 'not a database');
+    const r = await run(['seats', 'test', 'claude:claude-haiku-5-5:low', '--json'], fake, p);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.text)).toMatchObject({ exit_code: 0, record_error: expect.stringContaining('could not record the seat test') });
+    expect(r.err).toHaveLength(1);
+    expect(running(fake.bin)).toEqual([]);
+  });
+
+  it('a setup failure prints a clear error, exits 1, launches and records nothing, and leaves no leg dir', async () => {
+    const fake = fakeClaude({ answer: ALL_DEFECTS });
+    const p = places();
+    // The roots path is a regular file: the work dir cannot be made.
+    writeFileSync(p.roots, 'not a directory');
+    const r = await run(['seats', 'test', 'claude:claude-haiku-5-5:low'], fake, p);
+    expect(r.code).toBe(1);
+    expect(r.lines.at(-1)).toMatch(/^seats test: could not set up the seat test: .+; nothing was launched or recorded$/);
+    expect(existsSync(join(fake.home, 'claude-argv.json'))).toBe(false);
+    expect(existsSync(p.db)).toBe(false);
+    expect(existsSync(join(p.dir, 'data', 'seat-tests'))).toBe(false);
     expect(running(fake.bin)).toEqual([]);
   });
 
@@ -464,6 +496,79 @@ function stubAdapter(opts: { hang?: boolean; writeIntoRoot?: string }): { adapte
   };
   return { adapter, cancelled: () => cancels };
 }
+
+describe('seats test: cancellation and setup failures', () => {
+  /** The fake claude adapter, with its preflight followed by `after` (a Ctrl-C arriving during preflight). */
+  function withPreflightHook(fake: Fake, after: () => void): SeatAdapters {
+    const inner = fake.adapters('claude') as SeatAdapter;
+    const wrapped = new Proxy(inner, {
+      get(target, key, receiver) {
+        if (key === 'preflight') {
+          return async (o: Occupant, ctx: RoundCtx): Promise<Preflight> => {
+            const pre = await target.preflight(o, ctx);
+            after();
+            return pre;
+          };
+        }
+        return Reflect.get(target, key, receiver) as unknown;
+      },
+    });
+    return (b) => (b === 'claude' ? wrapped : undefined);
+  }
+
+  it('an abort before the launch starts nothing (the fake CLI is never run) and leaves no leg dir', async () => {
+    const fake = fakeClaude({ answer: ALL_DEFECTS });
+    const p = places();
+    const options = (signal: AbortSignal, adapters: SeatAdapters) => ({ adapters, rootsDir: p.roots, dataDir: join(p.dir, 'data'), timeoutMs: 60_000, pollMs: 20, env: fake.env, signal });
+    const occupant: Occupant = { backend: 'claude', model: 'claude-haiku-5-5', effort: 'low' };
+    // Already aborted: nothing is set up.
+    const before = new AbortController();
+    before.abort();
+    await expect(runSeatTest(occupant, { seat: null, role: null }, options(before.signal, fake.adapters))).rejects.toMatchObject({ name: 'SeatTestNotRun', why: 'cancelled' });
+    // Aborted during preflight: the preflight ran (no model call), the paid launch did not.
+    const during = new AbortController();
+    await expect(runSeatTest(occupant, { seat: null, role: null }, options(during.signal, withPreflightHook(fake, () => during.abort())))).rejects.toThrow(
+      'cancelled before the leg launched: nothing ran',
+    );
+    expect(existsSync(join(fake.home, 'claude-argv.json'))).toBe(false);
+    expect(existsSync(join(p.dir, 'data', 'seat-tests')) ? readdirSync(join(p.dir, 'data', 'seat-tests')) : []).toEqual([]);
+    expect(readdirSync(p.roots)).toEqual([]);
+    expect(running(fake.bin)).toEqual([]);
+  });
+
+  it('cancels at once a launch that returns after an abort', async () => {
+    const p = places();
+    const stub = stubAdapter({});
+    const events: string[] = [];
+    const ac = new AbortController();
+    const adapter = new Proxy(stub.adapter, {
+      get(target, key, receiver) {
+        const v = Reflect.get(target, key, receiver) as unknown;
+        if (key === 'launch' || key === 'cancel' || key === 'poll') {
+          return async (...a: unknown[]) => {
+            events.push(String(key));
+            const out = await (v as (...x: unknown[]) => Promise<unknown>).apply(target, a);
+            if (key === 'launch') ac.abort(); // the abort lands while the launch is in flight
+            return out;
+          };
+        }
+        return v;
+      },
+    });
+    await runSeatTest({ backend: 'claude', model: 'stub' }, { seat: null, role: null }, { adapters: () => adapter, rootsDir: p.roots, dataDir: join(p.dir, 'data'), timeoutMs: 5_000, pollMs: 20, signal: ac.signal });
+    expect(events.slice(0, 2)).toEqual(['launch', 'cancel']);
+  });
+
+  it('a fixture whose root cannot be built is a setup failure, and its leg dir is removed', async () => {
+    const p = places();
+    const fixture = { ...loadFixture(), repo: '_base' }; // a reserved root name: the root build refuses it
+    await expect(
+      runSeatTest({ backend: 'claude', model: 'stub' }, { seat: null, role: null }, { adapters: () => stubAdapter({}).adapter, rootsDir: p.roots, dataDir: join(p.dir, 'data'), timeoutMs: 5_000, pollMs: 20, fixture }),
+    ).rejects.toMatchObject({ name: 'SeatTestNotRun', why: 'setup', message: expect.stringMatching(/^could not build the fixture's repository and root: /) });
+    expect(readdirSync(join(p.dir, 'data', 'seat-tests'))).toEqual([]);
+    expect(readdirSync(p.roots)).toEqual([]);
+  });
+});
 
 describe('seats test: the runner behind the adapter', () => {
   it('cancels a leg the adapter never ends, once its cap and grace pass', async () => {

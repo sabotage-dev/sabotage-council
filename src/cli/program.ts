@@ -17,6 +17,8 @@ import { parseSince, WindowError } from '../stats/window.js';
 export interface ProgramIo {
   /** Command output, one line per call. */
   write: (line: string) => void;
+  /** Lines that are not a command's output (a notice beside `--json`), one per call. Default: stderr. */
+  writeErr?: ((line: string) => void) | undefined;
   env: NodeJS.ProcessEnv;
   /** Receives a command's exit code. */
   setExitCode: (code: number) => void;
@@ -48,6 +50,7 @@ export interface ProgramIo {
 
 const defaultIo: ProgramIo = {
   write: (line) => process.stdout.write(`${line}\n`),
+  writeErr: (line) => process.stderr.write(`${line}\n`),
   env: process.env,
   setExitCode: (code) => {
     process.exitCode = code;
@@ -376,7 +379,15 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     });
 
   // ---------- seats (plan 8.4) ----------
-  const seatsIo = { write: io.write, env: io.env, setExitCode: io.setExitCode, adapters: io.adapters, registry: io.registry, pollMs: io.seatTestPollMs };
+  const seatsIo = {
+    write: io.write,
+    writeErr: io.writeErr ?? ((line: string) => process.stderr.write(`${line}\n`)),
+    env: io.env,
+    setExitCode: io.setExitCode,
+    adapters: io.adapters,
+    registry: io.registry,
+    pollMs: io.seatTestPollMs,
+  };
   const seats = program.command('seats').description('list, add, remove, swap and test the three seats (plan 8.4); nothing ever swaps a seat by itself');
   storeOptions(
     seats
