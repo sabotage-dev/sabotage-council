@@ -235,6 +235,18 @@ describe('stats: the drop-one counterfactual', () => {
     w.close();
   });
 
+  it('never counts a stored SHIP as a flip, even with a held ruling the seat raised alone', () => {
+    const w = statsStore();
+    // The validator stores SHIP with a held ruling when nothing is owed: the ruling blocks, the stored verdict is SHIP.
+    w.round({ verdict: 'SHIP', legs: three({ c: 'SHIP-WITH-FIXES' }), findings: [{ outcome: 'ruling', by: ['c'] }] });
+    w.round({ verdict: 'SHIP', legs: three({ c: 'SHIP-WITH-FIXES' }), findings: [{ outcome: 'ruling', ruling: 'upheld', by: ['c'] }] });
+    // The same held ruling on a stored NEEDS-WORK round is a flip.
+    const flips = w.round({ verdict: 'NEEDS-WORK', legs: three({ c: 'NEEDS-WORK' }), findings: [{ outcome: 'ruling', by: ['c'] }] });
+    const c = seatCard(report(w), 'c');
+    expect(c.drop_one).toEqual({ rounds: 3, blocking_lost: 3, flipped_to_ship: 1, flipped_rounds: [flips], quorum_lost: 0 });
+    w.close();
+  });
+
   it('never counts a flip when dropping the seat leaves one leg (below quorum): that is quorum lost', () => {
     const w = statsStore();
     w.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'c', occ: OCC.c, verdict: 'NEEDS-WORK' }, { seat: 'b', occ: OCC.b, status: 'FAIL', failure: 'usage_limit' }], findings: [{ outcome: 'owed', by: ['c'] }] });
@@ -342,6 +354,20 @@ describe('stats: cost and duration', () => {
     expect(a.cost.credits_per_adopted).toBeNull();
     const b = seatCard(report(w), 'b');
     expect(b.cost).toMatchObject({ usd: 0, legs_with_usd: 0, quota_pct_max: null, duration_ms_p50: null, usd_per_adopted: null });
+    w.close();
+  });
+
+  it('has no cost per adopted finding when no leg in an adjudicated round recorded that unit', () => {
+    const w = statsStore();
+    // Adopted findings in an adjudicated round whose legs recorded no cost; USD and credits only in an unadjudicated one.
+    w.round({ legs: three({ a: 'NEEDS-WORK' }), findings: [{ outcome: 'owed', by: ['a'] }, { outcome: 'follow-up', by: ['a'] }] });
+    w.round({ status: 'awaiting-adjudication', legs: three({}, { a: { usd: 1.5, credits: 2 } }) });
+    const a = seatCard(report(w), 'a');
+    expect(a.cost).toMatchObject({ usd: 1.5, legs_with_usd: 1, credits: 2, legs_with_credits: 1, usd_per_adopted: null, credits_per_adopted: null });
+    expect(a.findings.adopted).toBe(2);
+    // Each unit on its own: credits recorded in an adjudicated round give credits per adopted, USD stays null.
+    w.round({ legs: three({}, { a: { credits: 3 } }) });
+    expect(seatCard(report(w), 'a').cost).toMatchObject({ usd_per_adopted: null, credits_per_adopted: 1.5 });
     w.close();
   });
 });

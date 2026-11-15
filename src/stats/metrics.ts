@@ -155,8 +155,9 @@ export interface Card {
     /** Blocking findings (owed, or a ruling that holds) it raised alone: lost had it been absent. */
     blocking_lost: number;
     /**
-     * Rounds that were not SHIP whose every blocking finding it raised alone, and that would still have had quorum
-     * (2 ratified legs) without it: they would have been SHIP.
+     * Rounds whose stored verdict was not SHIP, whose every blocking finding it raised alone, and that would still have
+     * had quorum (2 ratified legs) without it: they would have been SHIP. A stored SHIP is never a flip, even with a
+     * ruling of its alone held on it (the validator stores SHIP with a held ruling when nothing is owed).
      */
     flipped_to_ship: number;
     flipped_rounds: number[];
@@ -193,7 +194,10 @@ export interface Card {
     /** Nearest-rank percentiles over its ratified legs' durations. */
     duration_ms_p50: number | null;
     duration_ms_p90: number | null;
-    /** Its legs' USD (credits) in adjudicated rounds / adopted findings in those rounds; null with no adopted or no cost recorded. */
+    /**
+     * Its legs' USD (credits) in adjudicated rounds / adopted findings in those rounds. Null with nothing adopted, or when
+     * none of its legs in an adjudicated round recorded that unit (a cost recorded only outside them never reads as free).
+     */
     usd_per_adopted: number | null;
     credits_per_adopted: number | null;
   };
@@ -235,6 +239,8 @@ export function cardOf(data: StatsData, subject: Subject): Card {
   let creditLegs = 0;
   let usdAdj = 0;
   let creditsAdj = 0;
+  let usdAdjLegs = 0;
+  let creditsAdjLegs = 0;
   let adoptedAll = 0;
   let quotaMax: number | null = null;
   let quotaLast: { id: number; pct: number } | null = null;
@@ -255,12 +261,18 @@ export function cardOf(data: StatsData, subject: Subject): Card {
       if (l.costUsd !== null) {
         usd += l.costUsd;
         usdLegs += 1;
-        if (r.adjudicated) usdAdj += l.costUsd;
+        if (r.adjudicated) {
+          usdAdj += l.costUsd;
+          usdAdjLegs += 1;
+        }
       }
       if (l.credits !== null) {
         credits += l.credits;
         creditLegs += 1;
-        if (r.adjudicated) creditsAdj += l.credits;
+        if (r.adjudicated) {
+          creditsAdj += l.credits;
+          creditsAdjLegs += 1;
+        }
       }
       if (l.quotaPct !== null) {
         quotaMax = quotaMax === null ? l.quotaPct : Math.max(quotaMax, l.quotaPct);
@@ -304,7 +316,7 @@ export function cardOf(data: StatsData, subject: Subject): Card {
     const lost = blocking.filter((f) => f.sources.length > 0 && f.sources.every((s) => mine.has(s.legId)));
     blockingLost += lost.length;
     if (others.length < QUORUM) quorumLost += 1;
-    else if (blocking.length > 0 && lost.length === blocking.length) flipped.push(r.id);
+    else if (r.verdict !== 'SHIP' && blocking.length > 0 && lost.length === blocking.length) flipped.push(r.id);
 
     const said = position(pass.verdictRaw);
     const otherPositions = others.map((l) => position(l.verdictRaw)).filter((p): p is Position => p !== null);
@@ -348,8 +360,8 @@ export function cardOf(data: StatsData, subject: Subject): Card {
       quota_pct_last: (quotaLast as { pct: number } | null)?.pct ?? null,
       duration_ms_p50: percentile(durations, 50),
       duration_ms_p90: percentile(durations, 90),
-      usd_per_adopted: usdLegs > 0 && adoptedAll > 0 ? usdAdj / adoptedAll : null,
-      credits_per_adopted: creditLegs > 0 && adoptedAll > 0 ? creditsAdj / adoptedAll : null,
+      usd_per_adopted: usdAdjLegs > 0 && adoptedAll > 0 ? usdAdj / adoptedAll : null,
+      credits_per_adopted: creditsAdjLegs > 0 && adoptedAll > 0 ? creditsAdj / adoptedAll : null,
     },
   };
 }
