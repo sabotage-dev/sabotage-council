@@ -150,6 +150,58 @@ describe('stats: failure mix, fallbacks and relaunches', () => {
   });
 });
 
+describe('stats: one occupant in two seats of a round', () => {
+  it('counts every ratified leg of the occupant: verdicts, durations, findings, and uniqueness over both legs', () => {
+    const w = statsStore();
+    const kiro = 'kiro:deepseek-3.2';
+    const legs = (b: 'SHIP' | 'SHIP-WITH-FIXES' | 'NEEDS-WORK', c: 'SHIP' | 'SHIP-WITH-FIXES' | 'NEEDS-WORK') => [
+      { seat: 'a', occ: OCC.a, verdict: 'SHIP' as const, durationMs: 1000 },
+      { seat: 'b', occ: kiro, verdict: b, durationMs: 2000 },
+      { seat: 'c', occ: kiro, verdict: c, durationMs: 4000 },
+    ];
+    // Two kiro seats on one model (two logins) share one occupant row; their legs differ on NEEDS-WORK vs not.
+    w.round({
+      legs: legs('NEEDS-WORK', 'SHIP-WITH-FIXES'),
+      findings: [
+        { outcome: 'owed', severity: 'HIGH', by: ['b'] },
+        { outcome: 'follow-up', by: ['c'] },
+        { outcome: 'owed', by: ['b', 'c'] }, // raised by both of its legs: one finding, unique to the occupant
+        { outcome: 'refuted', by: ['a', 'c'] }, // shared with another occupant: not unique
+      ],
+    });
+    // Both its legs say NEEDS-WORK: one position, which disagrees with a.
+    w.round({ legs: legs('NEEDS-WORK', 'NEEDS-WORK'), findings: [{ outcome: 'owed', by: ['b', 'c'] }] });
+    const r = report(w);
+    const k = occCard(r, kiro);
+    expect(k).toMatchObject({ seats: ['b', 'c'], rounds_seated: 2, rounds_ratified: 2, adjudicated_ratified: 2 });
+    expect(k.verdicts).toEqual({ SHIP: 0, 'SHIP-WITH-FIXES': 1, 'NEEDS-WORK': 3, none: 0 });
+    expect(k.cost).toMatchObject({ duration_ms_p50: 2000, duration_ms_p90: 4000 });
+    expect(k.findings).toMatchObject({ raised: 5, adopted: 4, refuted: 1 });
+    expect(k.unique).toEqual({ raised: 4, adopted: 4, owed: 3, high: 1 });
+    // Dropping the occupant drops both its legs: one ratified leg is left, so both rounds lose quorum.
+    expect(k.drop_one).toMatchObject({ blocking_lost: 3, quorum_lost: 2, flipped_to_ship: 0 });
+    // Seat b alone: one leg per round.
+    expect(seatCard(r, 'b').verdicts).toEqual({ SHIP: 0, 'SHIP-WITH-FIXES': 0, 'NEEDS-WORK': 2, none: 0 });
+    expect(seatCard(r, 'b').unique).toMatchObject({ raised: 1, owed: 1 });
+    // Agreement by occupant: in round 1 its legs differ, so it has no position there; in round 2 it disagrees with a.
+    const pairs = agreementOf(loadStats(w.store.db, null), 'occupant');
+    expect(pairs).toEqual([{ a: String(w.occupantId(OCC.a)), b: String(w.occupantId(kiro)), rounds: 1, disagree: 1, disagree_rate: 1, always_agree: false }]);
+    w.close();
+  });
+
+  it('gives an occupant whose two legs differ no position for dissent in that round', () => {
+    const w = statsStore();
+    const kiro = 'kiro:deepseek-3.2';
+    const fourth = { seat: 'd', occ: 'grok:grok-4.7:high', verdict: 'SHIP' as const };
+    // a and d say SHIP; the kiro occupant's two legs say NEEDS-WORK and SHIP: no position, so no lone dissent.
+    w.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: kiro, verdict: 'NEEDS-WORK' }, { seat: 'c', occ: kiro }, fourth] });
+    // Both its legs say NEEDS-WORK against two SHIPs: a lone dissent, wrong (nothing blocked).
+    const lone = w.round({ legs: [{ seat: 'a', occ: OCC.a }, { seat: 'b', occ: kiro, verdict: 'NEEDS-WORK' }, { seat: 'c', occ: kiro, verdict: 'NEEDS-WORK' }, fourth] });
+    expect(occCard(report(w), kiro).dissent).toEqual({ lone: 1, right: 0, right_rate: 0, rounds: [{ round: lone, said: 'blocks', right: false }] });
+    w.close();
+  });
+});
+
 describe('stats: verdict mix', () => {
   it('counts each ratified leg by its raw verdict, none included', () => {
     const w = statsStore();

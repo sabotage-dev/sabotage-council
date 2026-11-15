@@ -5,6 +5,11 @@ import type { LegVerdict, StatsData, StatsFinding, StatsLeg, StatsRound } from '
  * The scorecard metrics (plan 8.2), per seat and per occupant. Each metric's definition sits beside it; the README's
  * stats section repeats them. A subject is a seat id or an occupant; a fallback leg belongs to its seat (seat_id) and
  * to its own occupant (occupant_id), so it counts for both, and never for the seat's primary occupant.
+ *
+ * An occupant can hold two seats in one round (two kiro seats on one model with two logins share an occupant row): its
+ * card counts every ratified leg of it in the round (verdicts, durations, findings), and a finding raised by both legs
+ * is one finding, unique to the occupant when no other occupant raised it. Its position in that round (dissent,
+ * agreement) is the one its legs share; when they differ (one NEEDS-WORK, one not) it has no position in that round.
  */
 
 export type Subject = { kind: 'seat'; seat: string } | { kind: 'occupant'; occupantId: number };
@@ -249,8 +254,9 @@ export function cardOf(data: StatsData, subject: Subject): Card {
     const legs = r.legs.filter((l) => matches(subject, l));
     if (legs.length === 0) continue;
     seated += 1;
-    const pass = legs.find((l) => l.status === 'PASS');
-    if (pass) ratified += 1;
+    // Every ratified leg of the subject in the round: one for a seat, two for an occupant that held two seats.
+    const passes = legs.filter((l) => l.status === 'PASS');
+    if (passes.length > 0) ratified += 1;
     for (const l of legs) {
       legsN += 1;
       if (l.status !== 'PASS') {
@@ -290,16 +296,18 @@ export function cardOf(data: StatsData, subject: Subject): Card {
       if (legs.some((l) => l.role === 'fallback')) asFallback += 1;
     }
     if (legs.some((l) => l.attempt >= 2)) relaunched += 1;
-    if (!pass) continue;
-    verdicts[pass.verdictRaw] += 1;
-    if (pass.durationMs !== null) durations.push(pass.durationMs);
+    if (passes.length === 0) continue;
+    for (const p of passes) {
+      verdicts[p.verdictRaw] += 1;
+      if (p.durationMs !== null) durations.push(p.durationMs);
+    }
     if (!r.adjudicated) continue;
     // Before adjudication no leg finding is mapped yet: only an adjudicated round's unmapped ones mean anything.
-    unmapped += pass.unmapped;
+    for (const p of passes) unmapped += p.unmapped;
 
     // ---- adjudicated rounds it ratified in: findings, drop-one, dissent ----
     adjRatified += 1;
-    const mine = new Set([pass.id]);
+    const mine = new Set(passes.map((p) => p.id));
     const others = r.legs.filter((l) => l.status === 'PASS' && !matches(subject, l));
     for (const f of r.findings) {
       if (!f.sources.some((s) => mine.has(s.legId))) continue;
@@ -318,7 +326,7 @@ export function cardOf(data: StatsData, subject: Subject): Card {
     if (others.length < QUORUM) quorumLost += 1;
     else if (r.verdict !== 'SHIP' && blocking.length > 0 && lost.length === blocking.length) flipped.push(r.id);
 
-    const said = position(pass.verdictRaw);
+    const said = sharedPosition(passes);
     const otherPositions = others.map((l) => position(l.verdictRaw)).filter((p): p is Position => p !== null);
     if (said !== null && otherPositions.length >= 2 && otherPositions.every((p) => p === otherPositions[0]) && otherPositions[0] !== said) {
       const end = finalPosition(r);
@@ -366,6 +374,13 @@ export function cardOf(data: StatsData, subject: Subject): Card {
   };
 }
 
+/** The position a subject's ratified legs in one round share; null when none has one or two of them differ. */
+function sharedPosition(legs: readonly StatsLeg[]): Position | null {
+  const own = legs.map((l) => position(l.verdictRaw)).filter((p): p is Position => p !== null);
+  const first = own[0];
+  return first !== undefined && own.every((p) => p === first) ? first : null;
+}
+
 // ---- agreement (plan 8.2) ----
 
 export interface AgreementPair {
@@ -385,10 +400,13 @@ export function agreementOf(data: StatsData, kind: 'seat' | 'occupant'): Agreeme
   const pairs = new Map<string, { a: string; b: string; rounds: number; disagree: number }>();
   const keyOf = (l: StatsLeg): string => (kind === 'seat' ? l.seat : String(l.occupantId));
   for (const r of data.rounds) {
+    // One position per key: an occupant whose two legs in the round differ has none there, and is left out of its pairs.
+    const legsOf = new Map<string, StatsLeg[]>();
+    for (const l of r.legs) if (l.status === 'PASS') legsOf.set(keyOf(l), [...(legsOf.get(keyOf(l)) ?? []), l]);
     const pos = new Map<string, Position>();
-    for (const l of r.legs) {
-      const p = l.status === 'PASS' ? position(l.verdictRaw) : null;
-      if (p !== null) pos.set(keyOf(l), p);
+    for (const [key, legs] of legsOf) {
+      const p = sharedPosition(legs);
+      if (p !== null) pos.set(key, p);
     }
     const keys = [...pos.keys()].sort(compareKeys);
     for (let i = 0; i < keys.length; i++) {
