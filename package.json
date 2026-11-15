@@ -25,7 +25,7 @@
   ],
   "type": "module",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.15"
   },
   "bin": {
     "sabotage-council": "dist/cli/index.js"

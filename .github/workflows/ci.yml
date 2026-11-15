@@ -11,16 +11,19 @@ jobs:
   test:
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
-    # macOS jobs take 7 to 10 minutes on Node 22 and 24. On the 22.13.0 floor a Node process starts about 1.6 times
-    # slower (measured), test/auto-pass.test.ts alone starts 3,760 of them (the fake gh and the fake CLIs), and a
-    # macOS 22.13.0 job was cancelled at the old 15-minute cap; 30 leaves room.
-    timeout-minutes: 30
+    # macOS jobs take 7 to 10 minutes on Node 22 and 24. The cap went to 30 for the old 22.13.0 floor, where a Node
+    # process started about 1.6 times slower (test/auto-pass.test.ts alone starts 3,760 of them) and a macOS job was
+    # cancelled at 15. The 22.15.0 floor starts as fast as the newest 22 and 24 (measured on macOS arm64, median of 40
+    # starts of `node -e 0`: 22.13.0 28.7 ms, 22.15.0 17.3 ms, 22.22.2 19.3 ms, 24.22.1 20.6 ms), so 30 is no longer
+    # needed and the cap is 15 again.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        # 22.13.0 is the engines floor (package.json): node:sqlite needs no flag from there.
-        node: ['22.13.0', '22', '24']
+        # 22.15.0 is the engines floor (package.json): its node:sqlite opens a closed store immutable, so stats and
+        # seats list create nothing beside it.
+        node: ['22.15.0', '22', '24']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

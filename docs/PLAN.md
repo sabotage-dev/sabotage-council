@@ -938,8 +938,9 @@ or quota, duration, CLI version. That gives stats and audits the evidence, not j
 
 One repository, two deliverables:
 
-- **npm package `sabotage-council`** (TypeScript, Node >= 22.13, ESM). Binary: `sabotage-council`. It holds the
-  engine, every adapter, the run store, the daemon and the stats.
+- **npm package `sabotage-council`** (TypeScript, Node >= 22.15, ESM; the floor was raised from 22.13 before 0.1.0,
+  owner ruling 2026-11-14, so `stats` and `seats list` open a closed store immutable). Binary: `sabotage-council`. It
+  holds the engine, every adapter, the run store, the daemon and the stats.
 - **Claude Code plugin** in `plugin/`, with a marketplace manifest in the repo. Install with
   `/plugin marketplace add sabotage-dev/sabotage-council`. The plugin holds:
   - the skill `sabotage-council` (when and how to run each mode, and the interactive adjudication procedure);
@@ -1489,7 +1490,9 @@ Per seat and per occupant, over a window:
 opens the store read-only and never migrates it: a store whose schema is behind this build is refused with the
 command that upgrades it (`sabotage-council doctor --db <path>`, which applies the pending migrations), and one ahead
 of this build is refused too. With no `-wal` or `-shm` file beside the store (no connection has it open) it opens it
-`immutable`, so SQLite creates nothing; with them it reads through them and sees a writer's last commit. The
+`immutable`, so SQLite creates nothing; with them it reads through them and sees a writer's last commit. Since the
+Node floor went to 22.15 before 0.1.0 (owner ruling, 2026-11-14), a closed store SQLite cannot open immutable is
+refused with the reason, never read through the plain read-only open that would leave `-wal` and `-shm` beside it. The
 window is all history unless `--since` narrows it (a duration such as `30d`, a UTC date, or an ISO timestamp with a
 zone; rounds count by `started_at`). The filters choose which rows are shown, never what a metric reads (the
 drop-one counterfactual, dissent and agreement need every seat's legs). An empty store or window prints a message and

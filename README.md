@@ -22,7 +22,7 @@ Four modes:
 
 ## Install
 
-Requirements: Node.js 22.13 or later, git, macOS or Linux, and the CLIs for your seats (each signed in). `pr` and
+Requirements: Node.js 22.15 or later, git, macOS or Linux, and the CLIs for your seats (each signed in). `pr` and
 `auto` also need the GitHub CLI `gh`, signed in. The adjudicator is Claude Code.
 
 ```sh
@@ -183,9 +183,9 @@ sabotage-council seats test codex:gpt-6.1-sol:high                     # ONE pai
 sabotage-council seats swap c --backend antigravity --model gemini-3.8-flash --effort high --dry-run
 ```
 
-`stats` and `seats list` never change the run store's contents or schema (on Node 22.13 and 22.14 SQLite leaves its
-`-wal` and `-shm` files beside a closed store), and nothing ever swaps a seat by itself. [Migration](docs/migration.md)
-explains why a swap starts the seat's evidence over.
+`stats` and `seats list` never change the run store's contents or schema and create nothing beside a closed store,
+and nothing ever swaps a seat by itself. [Migration](docs/migration.md) explains why a swap starts the seat's evidence
+over.
 
 ## Status: 0.1.0, what is measured and what is not
 
@@ -481,12 +481,12 @@ sabotage-council seats remove <seat> [--dry-run]
 ```
 
 `stats` reads the run store and never changes its contents or schema: it opens the store read-only and never migrates
-it (on Node 22.13 and 22.14 SQLite leaves its `-wal` and `-shm` files beside a closed store; see `seats list` below).
-A store whose schema is behind this build is refused with the command that upgrades it
-(`sabotage-council doctor --db <path>`), and one written by a newer build is refused too. It scores every seat and
-every occupant (a backend, model and effort) over a window: all history by default; `--since` takes `30d`, `12h`,
-`2w`, `90m`, a UTC date or an ISO timestamp. `--seat` and `--occupant` choose which rows are shown; every metric still
-reads every seat's legs. With no store or an empty window it says so and exits 0.
+it, and creates nothing beside a closed store (see `seats list` below). A store whose schema is behind this build is
+refused with the command that upgrades it (`sabotage-council doctor --db <path>`), and one written by a newer build is
+refused too. It scores every seat and every occupant (a backend, model and effort) over a window: all history by
+default; `--since` takes `30d`, `12h`, `2w`, `90m`, a UTC date or an ISO timestamp. `--seat` and `--occupant` choose
+which rows are shown; every metric still reads every seat's legs. With no store or an empty window it says so and
+exits 0.
 
 Which rounds count:
 
@@ -541,8 +541,9 @@ is not a regular file is refused. Its agreement matrix shows every pair a filter
 
 `seats list` shows each seat and its fallback with the enforcement label its preflight gives (as `doctor` shows it;
 no model call) and a one-line scorecard, whose flag judges the config's occupant. It reads the store as `stats` does.
-On Node 22.13 and 22.14 both read a closed store through a plain read-only connection, which leaves SQLite's `-wal`
-and `-shm` files beside it (its contents unchanged); from Node 22.15 a closed store is opened immutable.
+Both open a closed store immutable, so SQLite creates nothing beside it, and read a store a writer has open through its
+`-wal` and `-shm` files. A closed store SQLite cannot open immutable is refused with the reason (`stats` exits 1,
+`seats list` shows no scorecard), never read through an open that would create those files.
 
 `seats test` qualifies an occupant before it is seated: it runs **one paid leg** on the planted-defect fixture that
 ships in the package (three defects planted in a small Python module), on a root built the normal way, and reports
@@ -568,8 +569,8 @@ a `[seats.x]` sub-table, is refused, never rewritten.
 
 ## Development
 
-Requirements: Node.js 22.13 or later (the run store uses the built-in `node:sqlite`, which needs no flag from 22.13),
-npm, macOS or Linux.
+Requirements: Node.js 22.15 or later (the run store uses the built-in `node:sqlite`, which from 22.15 opens a closed
+store immutable), npm, macOS or Linux.
 
 ```sh
 npm ci            # install the locked dependencies
@@ -581,7 +582,7 @@ npm run build     # compile to dist/
 
 Then `node dist/cli/index.js doctor` runs the build you just made: it checks Node, the config, the run store (applying
 pending migrations) and every seat's preflight, with no model call. CI runs lint, typecheck, test and build on Ubuntu
-and macOS, on Node 22.13.0, the newest 22 and 24.
+and macOS, on Node 22.15.0, the newest 22 and 24.
 
 ## License
 

@@ -31,7 +31,7 @@ function config(seats: Array<[string, string, string, string?]>, extra = ''): vo
 
 async function doctor(adapters: SeatAdapters, deep = true): Promise<{ code: number; lines: string[] }> {
   const lines: string[] = [];
-  const code = await runDoctor({ configPath, dbPath, nodeVersion: 'v22.13.0', adapters, deep, env: { PATH: process.env['PATH'] ?? '', HOME: dir }, write: (l) => lines.push(l) });
+  const code = await runDoctor({ configPath, dbPath, nodeVersion: 'v22.15.0', adapters, deep, env: { PATH: process.env['PATH'] ?? '', HOME: dir }, write: (l) => lines.push(l) });
   return { code, lines };
 }
 

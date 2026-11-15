@@ -357,7 +357,7 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
   };
   program
     .command('stats')
-    .description('the seat scorecard (plan 8.2): per seat and per occupant, with swap candidates (8.3); reads the run store and never changes its contents or schema (on Node 22.13 and 22.14 SQLite leaves -wal and -shm files beside a closed store)')
+    .description('the seat scorecard (plan 8.2): per seat and per occupant, with swap candidates (8.3); reads the run store and never changes its contents or schema, and creates nothing beside a closed store (it opens one immutable)')
     .option('--config <path>', `config file, for the [stats] thresholds (default: $${CONFIG_ENV}, else ~/.config/sabotage-council/config.toml)`)
     .option('--db <path>', `run store (default: $${DB_ENV}, else ~/.local/share/sabotage-council/council.db)`)
     .option('--since <dur|date>', 'only rounds started since: 30d, 12h, 2w, 90m, a date (2026-11-01, UTC) or an ISO timestamp; default all history', since)
