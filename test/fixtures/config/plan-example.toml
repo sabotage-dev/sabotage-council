@@ -38,6 +38,7 @@ repos_allow = ["your-org/*"]
 repos_skip = []
 repos_hold = ["your-org/infra-*"]  # rounds run and post, approval always held for you
 include_assigned = false           # Q10
+include_team_requests = true       # Q11
 approve = true                     # D6
 ci_gate = "required-checks"        # or "all" | "off"
 max_rounds_per_day = 30            # Q8

@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { Command, InvalidArgumentError } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import { builtinAdapters, type SeatAdapters } from '../adapters/index.js';
 import type { AdapterRegistry } from '../config/index.js';
 import { CONFIG_ENV, DB_ENV, resolveConfigPath, resolveDbPath, resolveRootsPath, ROOTS_ENV } from '../paths.js';
@@ -8,6 +8,7 @@ import { runDoctor } from './doctor.js';
 import type { MirrorSource } from '../forge/mirror.js';
 import type { PrRef } from '../forge/pr.js';
 import { creditCommand, postCommand, roundStartPr } from './pr.js';
+import { autoInstall, autoPause, autoRun, autoRunOnce, autoStatus, rulingCommand, type AutoIo } from './auto.js';
 import { adjudicateCommand, adjudicateHeadlessCommand, defaultStartWorker, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
 
 export interface ProgramIo {
@@ -34,6 +35,8 @@ export interface ProgramIo {
   claudeBin?: string | undefined;
   /** `adjudicate --headless`: how often the run is polled (tests). Default 25 ms. */
   headlessPollMs?: number | undefined;
+  /** `auto`: tests set pass options the command line does not (the adjudication step, the notifier, caffeinate). */
+  auto?: Pick<AutoIo, 'passOverrides' | 'servicePlatform' | 'serviceLoader' | 'plutil'> | undefined;
 }
 
 const defaultIo: ProgramIo = {
@@ -224,14 +227,18 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     program
       .command('post')
       .argument('<id>', 'the round id of an adjudicated pr round (or an identity round)', roundId)
-      .description("render the round's GitHub review (--dry-run) or post it (--post): one review on the reviewed head (plan 3.7)")
+      .description("render the round's GitHub review (--dry-run), post it (--post), or reconcile an interrupted post (--reconcile): one review on the reviewed head (plan 3.7)")
       .option('--dry-run', 'print the exact body and event that would be posted; post nothing')
       .option('--post', 'post the review a dry run showed; refused if it changed since, the head moved, the round was started with --dry-run, or the body fails validation')
       .option('--expect <sha256>', 'with --post: the review sha256 (the event and the body) of the dry run the user approved; only that review posts', expectHash)
+      .option(
+        '--reconcile',
+        'reconcile a post of the round that recorded its intent and was interrupted: adopt its review if it landed (and run the guards it owes), or record that none did, so a held round can be released; posts nothing new',
+      )
       .option('--json', 'print the result as JSON'),
-  ).action(async (id: number, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; post?: boolean; expect?: string; json?: boolean }) => {
-    if ((opts.dryRun === true) === (opts.post === true)) {
-      io.write('error: give exactly one of --dry-run or --post');
+  ).action(async (id: number, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; post?: boolean; reconcile?: boolean; expect?: string; json?: boolean }) => {
+    if ([opts.dryRun, opts.post, opts.reconcile].filter((x) => x === true).length !== 1) {
+      io.write('error: give exactly one of --dry-run, --post or --reconcile');
       io.setExitCode(1);
       return;
     }
@@ -240,7 +247,7 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       io.setExitCode(1);
       return;
     }
-    await postCommand(prIo, pathsOf(opts), id, opts.post === true ? 'post' : 'dry-run', opts.json === true, opts.expect);
+    await postCommand(prIo, pathsOf(opts), id, opts.post === true ? 'post' : opts.reconcile === true ? 'reconcile' : 'dry-run', opts.json === true, opts.expect);
   });
 
   const reviewId = (value: string): number => {
@@ -256,6 +263,73 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .option('--note <text>', 'why the review is credited'),
   ).action(async (pr: string, id: number, opts: { config?: string; db?: string; roots?: string; note?: string }) => {
     await creditCommand(prIo, pathsOf(opts), pr, id, opts.note);
+  });
+
+  // ---------- auto (plan 9.4) and ruling (plan 3.8) ----------
+  const autoIo: AutoIo = { ...prIo, claudeBin: io.claudeBin, headlessPollMs: io.headlessPollMs, ...io.auto };
+  const autoCmd = program.command('auto').description('the auto-reviewer daemon: review every PR where you are requested, and post one review per round (plan 9.4)');
+  storeOptions(
+    autoCmd
+      .command('run-once')
+      .description('one pass: search, queue, rounds, the headless adjudicator, posts; exit 0 done or paused, 1 failed, 3 another pass is running')
+      .option('--dry-run', 'everything but the POST and the dismissals: rounds render their review and never post')
+      .option('--json', 'print the pass report as JSON'),
+  ).action(async (opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; json?: boolean }) => {
+    await autoRunOnce(autoIo, pathsOf(opts), opts.dryRun === true, opts.json === true);
+  });
+  storeOptions(
+    autoCmd
+      .command('run')
+      .description('the daemon loop the service runs: a pass every [auto] interval_minutes, the config re-read each pass; SIGTERM stops it')
+      .option('--dry-run', 'everything but the POST and the dismissals')
+      .addOption(new Option('--passes <n>', 'stop after n passes (tests)').hideHelp().argParser((v: string) => Number(v))),
+  ).action(async (opts: { config?: string; db?: string; roots?: string; dryRun?: boolean; passes?: number }) => {
+    await autoRun(autoIo, pathsOf(opts), opts.dryRun === true, opts.passes);
+  });
+  storeOptions(autoCmd.command('status').description('paused or not, the service, the ledger rows still open, the last pass, recent notifications').option('--json', 'as JSON')).action(
+    (opts: { config?: string; db?: string; roots?: string; json?: boolean }) => {
+      autoStatus(autoIo, pathsOf(opts), opts.json === true);
+    },
+  );
+  storeOptions(autoCmd.command('pause').description('passes do nothing until resume').option('--reason <text>', 'why, for status')).action(
+    (opts: { config?: string; db?: string; roots?: string; reason?: string }) => {
+      autoPause(autoIo, pathsOf(opts), true, opts.reason);
+    },
+  );
+  storeOptions(autoCmd.command('resume').description('passes run again')).action((opts: { config?: string; db?: string; roots?: string }) => {
+    autoPause(autoIo, pathsOf(opts), false, undefined);
+  });
+  storeOptions(
+    autoCmd
+      .command('install')
+      .description('write the launchd agent (macOS) or systemd user unit (Linux) that runs auto run, validate it, and load it')
+      .option('--shadow', 'install the shadow mode: the service runs auto run --dry-run, which renders reviews and posts nothing')
+      .option('--dry-run', 'preview only: print the file and the commands; write, create and load nothing')
+      .option('--dir <dir>', 'where the service file goes (default ~/Library/LaunchAgents or ~/.config/systemd/user)')
+      .option('--no-load', 'write and validate only; print the command that loads it'),
+  ).action(async (opts: { config?: string; db?: string; roots?: string; shadow?: boolean; dryRun?: boolean; dir?: string; load?: boolean }) => {
+    await autoInstall(autoIo, pathsOf(opts), { shadow: opts.shadow === true, preview: opts.dryRun === true, dir: opts.dir, load: opts.load !== false, uninstall: false });
+  });
+  storeOptions(
+    autoCmd
+      .command('uninstall')
+      .description('unload the service and remove its file')
+      .option('--dir <dir>', 'where the service file is')
+      .option('--no-load', 'remove the file only; print the command that unloads it'),
+  ).action(async (opts: { config?: string; db?: string; roots?: string; dir?: string; load?: boolean }) => {
+    await autoInstall(autoIo, pathsOf(opts), { shadow: false, preview: false, dir: opts.dir, load: opts.load !== false, uninstall: true });
+  });
+
+  storeOptions(
+    program
+      .command('ruling')
+      .argument('<id>', 'the round id', roundId)
+      .argument('<what>', 'a finding id (with uphold|overturn), or approve|post|skip to release the round')
+      .argument('[result]', 'uphold or overturn, for a finding')
+      .description('rule on a held round (plan 3.8): uphold or overturn each ruling finding, then release it with approve, post or skip')
+      .option('--note <text>', 'why, recorded with the ruling'),
+  ).action(async (id: number, what: string, result: string | undefined, opts: { config?: string; db?: string; roots?: string; note?: string }) => {
+    await rulingCommand(autoIo, pathsOf(opts), id, what, result, opts.note);
   });
 
   return program;

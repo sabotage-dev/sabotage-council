@@ -755,9 +755,16 @@ describe('pr rounds: post-step safety (P6 round 1)', { timeout: 60_000 }, () => 
     expect(ambiguous.outcome).toBe('refused');
     expect(ambiguous.problems.join()).toContain('2 reviews match what it meant to post (990051, 990052)');
     expect(postsSent(w)).toHaveLength(1);
-    // Another body under the same marker, or the same body with another event, is not ours: the post goes out.
+    // Another body under the same marker, or the same body with another event, is not ours: never adopted. On this
+    // head nothing posts (P8 round 1 row 2: one review per head); bound to another commit, the post goes out.
     reviews.splice(-2, 2, ours(990053, 'APPROVED', `${marker}\n\nanother run's body`), ours(990054, 'CHANGES_REQUESTED', intended));
     routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990060, login: 'repo-owner' } };
+    w.gh.setRoutes(routes);
+    const onHead = post(w, id, 'post');
+    expect(onHead.outcome).toBe('refused');
+    expect(onHead.problems.join()).toContain("with this round's marker is already on this head (review 990053, APPROVED; review 990054, CHANGES_REQUESTED)");
+    expect(postsSent(w)).toHaveLength(1);
+    for (const r of reviews.slice(-2)) r['commit_id'] = w.src.shas['C7'];
     w.gh.setRoutes(routes);
     expect(post(w, id, 'post')).toMatchObject({ outcome: 'posted', reviewId: 990060 });
     expect(postsSent(w)).toHaveLength(2);
@@ -898,7 +905,9 @@ describe('pr rounds: post-step safety (P6 round 1)', { timeout: 60_000 }, () => 
       const routes = pr2Routes(w.src.shas);
       approvable(routes, w.src);
       const before = [...jsonList(routes, `GET ${API_PULL}/reviews`), ...pending];
-      routes[`GET ${API_PULL}/reviews`] = { seq: [{ json: before }, { json: [...jsonList(routes, `GET ${API_PULL}/reviews`), ...landed(w.src, marker)] }] };
+      // The render's read and the last read before the POST (P8 round 1 row 2) see `before`; the review lands while the
+      // approval is posted, so the race's re-read sees it.
+      routes[`GET ${API_PULL}/reviews`] = { seq: [{ json: before }, { json: before }, { json: [...jsonList(routes, `GET ${API_PULL}/reviews`), ...landed(w.src, marker)] }] };
       routes[DISMISS_OURS] = { json: {} };
       w.gh.setRoutes(routes);
       return post(w, id, 'post');
@@ -1102,8 +1111,16 @@ describe('pr rounds: post-step safety (P6 round 2)', { timeout: 60_000 }, () => 
     w.gh.setRoutes(routes);
     expect(() => post(w, id, 'post')).toThrow(/connection reset/);
     const intended = (postsSent(w)[0]!.body as { body: string }).body;
-    jsonList(routes, `GET ${API_PULL}/reviews`).push(ourReview(990070, 'DISMISSED', w.src.shas['D']!, intended));
+    const dismissed = ourReview(990070, 'DISMISSED', w.src.shas['D']!, intended);
+    jsonList(routes, `GET ${API_PULL}/reviews`).push(dismissed);
     routes[`POST ${API_PULL}/reviews`] = { echoReview: { id: 990071, login: 'repo-owner' } };
+    w.gh.setRoutes(routes);
+    // Not adopted; on this head it still refuses a second review (P8 round 1 row 2); bound elsewhere, the post goes out.
+    const onHead = post(w, id, 'post');
+    expect(onHead.outcome).toBe('refused');
+    expect(onHead.problems.join()).toContain("with this round's marker is already on this head (review 990070, DISMISSED)");
+    expect(postsSent(w)).toHaveLength(1);
+    dismissed['commit_id'] = w.src.shas['C7'];
     w.gh.setRoutes(routes);
     expect(post(w, id, 'post')).toMatchObject({ outcome: 'posted', event: 'COMMENT', reviewId: 990071 });
     expect(postsSent(w)).toHaveLength(2);

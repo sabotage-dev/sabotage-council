@@ -9,6 +9,11 @@ import type { PrRef } from './pr.js';
  * reported each check run. A required check bound to an app is satisfied only by a check of that name from that app
  * (P6 round 1 row 11): a same-name check from another app, or a commit status (which names no app), leaves it
  * pending. A read that fails, or a rollup for another commit, is `unknown`, which never approves.
+ *
+ * P8 round 2 row 5: a private repository on GitHub's free plan cannot use branch protection or rulesets, so it can
+ * require no check, and GitHub refuses those reads with HTTP 403 and FREE_PLAN_REFUSAL. On exactly that refusal the
+ * requirements are read as none and every reported check is judged (a red or pending one still blocks); the CI note
+ * says which reading applied. Any other refusal or error stays `unknown`.
  */
 
 export type CiGate = 'required-checks' | 'all' | 'off';
@@ -118,35 +123,74 @@ function boundApp(v: unknown): number | null {
   return typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null;
 }
 
+/** GitHub's message when a private repository's plan has no branch protection or rulesets (with HTTP 403). */
+export const FREE_PLAN_REFUSAL = 'Upgrade to GitHub Pro or make this repository public to enable this feature';
+
+/**
+ * Whether a read failed with exactly the free plan's refusal (P8 round 2 row 5): HTTP 403 with FREE_PLAN_REFUSAL, as
+ * `gh` reports it. Any other 403 ("Resource not accessible by integration", say), a 404, or any other error is not.
+ */
+export function freePlanRefusal(error: unknown): boolean {
+  const m = error instanceof Error ? error.message : String(error);
+  return /\(HTTP 403\)/.test(m) && m.includes(FREE_PLAN_REFUSAL);
+}
+
+/** What the base branch requires, and which of its two sources the free plan's refusal made unavailable. */
+export interface Requirements {
+  checks: RequiredCheck[];
+  /** `branch protection`, `rulesets`: refused with FREE_PLAN_REFUSAL, so read as requiring nothing. */
+  unavailable: string[];
+}
+
 /**
  * The checks the base branch's protection and rulesets require, each with the app it is bound to (classic
  * protection's `checks[].app_id`, a ruleset's `integration_id`; a bare classic `contexts` name binds none). Classic
- * protection is read from the branch object (readable without admin); rulesets from `rules/branches`. A read that
+ * protection is read from the branch object (readable without admin); rulesets from `rules/branches`. A read refused
+ * with the free plan's 403 (P8 round 2 row 5) contributes nothing and is named in `unavailable`; any other read that
  * fails throws: the gate is then unknown, never green.
  */
-export function readRequiredChecks(api: GitHubApi, ref: PrRef, baseRef: string): RequiredCheck[] {
+export function readRequirements(api: GitHubApi, ref: PrRef, baseRef: string): Requirements {
   const out = new Map<string, RequiredCheck>();
+  const unavailable: string[] = [];
   const add = (name: unknown, appId: number | null): void => {
     if (typeof name === 'string') out.set(`${name}\u0000${String(appId)}`, { name, appId });
   };
-  const branch = api.get(`${restPath('repos', ref.owner, ref.repo)}/branches/${encodeURIComponent(baseRef)}`) as Obj;
+  const read = <T>(what: string, fn: () => T, none: T): T => {
+    try {
+      return fn();
+    } catch (error) {
+      if (!freePlanRefusal(error)) throw error;
+      unavailable.push(what);
+      return none;
+    }
+  };
+  const branch = read('branch protection', () => api.get(`${restPath('repos', ref.owner, ref.repo)}/branches/${encodeURIComponent(baseRef)}`) as Obj, {} as Obj);
   const protection = (branch['protection'] as Obj | undefined)?.['required_status_checks'] as Obj | undefined;
   const checks = (protection?.['checks'] as Obj[] | undefined) ?? [];
   for (const c of checks) add(c['context'], boundApp(c['app_id']));
   // `contexts` repeats the names of `checks` without their apps: a name already bound there is not loosened.
   for (const c of (protection?.['contexts'] as unknown[] | undefined) ?? []) if (!checks.some((k) => k['context'] === c)) add(c, null);
-  const rules = api.list(`${restPath('repos', ref.owner, ref.repo)}/rules/branches/${encodeURIComponent(baseRef)}`) as Obj[];
+  const rules = read('rulesets', () => api.list(`${restPath('repos', ref.owner, ref.repo)}/rules/branches/${encodeURIComponent(baseRef)}`) as Obj[], []);
   for (const rule of rules) {
     if (rule['type'] !== 'required_status_checks') continue;
     for (const c of (((rule['parameters'] as Obj | undefined)?.['required_status_checks'] as Obj[] | undefined) ?? [])) add(c['context'], boundApp(c['integration_id']));
   }
-  return [...out.values()];
+  return { checks: [...out.values()], unavailable };
 }
 
-/** Judges the contexts under the gate. Pure. */
-export function judgeCi(gate: CiGate, contexts: readonly CiContext[], required: readonly RequiredCheck[] = []): CiState {
+/** The checks the base branch requires (see readRequirements). */
+export function readRequiredChecks(api: GitHubApi, ref: PrRef, baseRef: string): RequiredCheck[] {
+  return readRequirements(api, ref, baseRef).checks;
+}
+
+/**
+ * Judges the contexts under the gate. Pure. `everyReported`: judge every reported check, as `all` does, beside the
+ * requirements (a repository that can require none, P8 round 2 row 5).
+ */
+export function judgeCi(gate: CiGate, contexts: readonly CiContext[], required: readonly RequiredCheck[] = [], o: { everyReported?: boolean } = {}): CiState {
   if (gate === 'off') return { gate, state: 'off', failing: [], pending: [], note: 'the CI gate is off' };
-  const judged = gate === 'all' ? [...contexts] : contexts.filter((c) => c.required || required.some((r) => satisfies(r, c)));
+  const every = gate === 'all' || o.everyReported === true;
+  const judged = every ? [...contexts] : contexts.filter((c) => c.required || required.some((r) => satisfies(r, c)));
   const missing = gate === 'all' ? [] : required.filter((r) => !contexts.some((c) => satisfies(r, c)));
   const failing = [...new Set(judged.filter((c) => c.result === 'red').map((c) => c.name))];
   const pending = [
@@ -157,7 +201,7 @@ export function judgeCi(gate: CiGate, contexts: readonly CiContext[], required: 
   ];
   const state = failing.length > 0 ? 'red' : pending.length > 0 ? 'pending' : 'green';
   const note =
-    judged.length === 0 && missing.length === 0 ? (gate === 'all' ? 'no checks on this head' : 'no required checks on this head') : `${judged.length + missing.length} check(s) judged`;
+    judged.length === 0 && missing.length === 0 ? (every ? 'no checks on this head' : 'no required checks on this head') : `${judged.length + missing.length} check(s) judged`;
   return { gate, state, failing, pending, note };
 }
 
@@ -166,8 +210,15 @@ export function readCi(api: GitHubApi, ref: PrRef, head: string, baseRef: string
   if (gate === 'off') return judgeCi('off', []);
   try {
     const contexts = readCiContexts(api, ref, head);
-    const required = gate === 'required-checks' ? readRequiredChecks(api, ref, baseRef) : [];
-    return judgeCi(gate, contexts, required);
+    if (gate !== 'required-checks') return judgeCi(gate, contexts);
+    const req = readRequirements(api, ref, baseRef);
+    if (req.unavailable.length === 0) return judgeCi(gate, contexts, req.checks);
+    // P8 round 2 row 5: the repository's plan has no branch protection or rulesets, so it can require no check.
+    const s = judgeCi(gate, contexts, req.checks, { everyReported: true });
+    return {
+      ...s,
+      note: `${s.note}; ${req.unavailable.join(' and ')} not available to this private repository on GitHub's free plan (HTTP 403), so it can require no check and every reported check was judged`,
+    };
   } catch (error) {
     return { gate, state: 'unknown', failing: [], pending: [], note: `CI could not be read: ${error instanceof Error ? error.message : String(error)}` };
   }

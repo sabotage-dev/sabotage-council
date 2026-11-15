@@ -75,6 +75,26 @@ export interface PrPrepare {
   detail: (numbering: RoundNumbering) => PrDetail;
   /** `round start pr --dry-run`: the round can render its post but never post. */
   dryRun: boolean;
+  /**
+   * Runs in the transaction that inserts the round row (P8 round 1 row 4: the auto daemon links the round to its
+   * ledger row there, so no crash leaves a round the ledger does not know). A throw rolls the insert back.
+   */
+  onInsert?: ((db: DatabaseSync, roundId: number, roundNo: number) => void) | undefined;
+}
+
+/** Runs `fn` in one IMMEDIATE transaction when a caller hook needs it, else directly. */
+export function inTransaction<T>(db: DatabaseSync, wanted: boolean, fn: () => T): T {
+  if (!wanted) return fn();
+  db.exec('BEGIN IMMEDIATE');
+  let value: T;
+  try {
+    value = fn();
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  db.exec('COMMIT');
+  return value;
 }
 
 export interface PrepareOptions {
@@ -122,13 +142,17 @@ export function prepareRound(store: Store, options: PrepareOptions): PreparedRou
   const asks = pr?.humanAsks ?? [];
   const roster = rosterOf(options.config);
   const startedAt = now();
-  const insert = db
-    .prepare(
-      `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, baseline_sha, nonce, roster_json, started_at, status, kind, marker, dry_run)
-       VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, 'running', 'council', ?, ?)`,
-    )
-    .run(targetId, numbering.roundNo, t.mode, t.head, numbering.baseline, JSON.stringify(roster), startedAt, pr ? pr.marker(numbering.roundNo) : null, pr?.dryRun === true ? 1 : 0);
-  const roundId = Number(insert.lastInsertRowid);
+  const roundId = inTransaction(db, pr?.onInsert !== undefined, () => {
+    const insert = db
+      .prepare(
+        `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, baseline_sha, nonce, roster_json, started_at, status, kind, marker, dry_run)
+         VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, 'running', 'council', ?, ?)`,
+      )
+      .run(targetId, numbering.roundNo, t.mode, t.head, numbering.baseline, JSON.stringify(roster), startedAt, pr ? pr.marker(numbering.roundNo) : null, pr?.dryRun === true ? 1 : 0);
+    const id = Number(insert.lastInsertRowid);
+    pr?.onInsert?.(db, id, numbering.roundNo);
+    return id;
+  });
   const roundDir = roundDirOf(options.layout, roundId);
   let rootDir: string | null = null;
   let gitDirOwned = false;

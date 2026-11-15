@@ -28,7 +28,10 @@ engine logic.
   table with your login. A PR whose author lacks write access is refused unless the user set
   `pr.interactive_adjudication = "untrusted-too"`: its text is untrusted and you read it.
 
-The unattended reviewer (`auto`) is a later phase; it is not in this version.
+The unattended reviewer (`auto`) is a separate daemon, not this skill's flow. `sabotage-council auto install
+--shadow` runs it in the shadow mode (it renders reviews and posts nothing), `auto install --dry-run` only previews
+the install (it writes and loads nothing), and `auto install` posts reviews as the user. Install, run, pause or rule
+for it only when the user asks in this turn; `auto status` only reads.
 
 ## Before the first round
 

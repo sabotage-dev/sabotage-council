@@ -50,6 +50,8 @@ export interface EventFacts {
    * an approval, council or identity, until a re-run adjudicates its asks (P6 round 1 row 12). One line each.
    */
   unadjudicated: string[];
+  /** Other holds on an approval, one line each: a ruling's release with `post` holds it (P8, plan 3.8). */
+  held?: readonly string[] | undefined;
 }
 
 export interface EventDecision {
@@ -88,6 +90,7 @@ export function identityHolds(f: EventFacts): string[] {
   if (f.userChangeRequest) why.push('your own change request stands (needs-ruling, plan 3.8)');
   if (f.identityRecheck !== null) why.push(f.identityRecheck);
   why.push(...f.unadjudicated);
+  why.push(...(f.held ?? []));
   return why;
 }
 
@@ -105,6 +108,7 @@ export function councilHolds(f: EventFacts): string[] {
   if (f.tests.state === 'failed' || f.tests.state === 'held') why.push(`tests ${f.tests.state}: ${f.tests.why}`);
   if (f.onHoldList) why.push('the repository is on the hold list');
   why.push(...f.unadjudicated);
+  why.push(...(f.held ?? []));
   return why;
 }
 

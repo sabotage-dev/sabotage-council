@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
+import { syncBeat } from '../beat.js';
 import { GitError, runGit, type ShadowRepo } from './git.js';
 import { decodeName, FileNameError, splitNul } from './names.js';
 
@@ -48,6 +49,7 @@ export function extractTree(shadow: ShadowRepo, sha: string, dest: string, tarFi
   const env: NodeJS.ProcessEnv = { LC_ALL: 'C' };
   if (process.env['PATH'] !== undefined) env['PATH'] = process.env['PATH'];
   const result = spawnSync('tar', ['-x', '-f', tarFile, '-C', dest], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  syncBeat();
   if (result.error || result.status !== 0) {
     const detail = result.error?.message ?? result.stderr.toString('utf8').trim();
     throw new GitError(`extracting ${sha} failed: ${detail}`, [], result.status, detail);

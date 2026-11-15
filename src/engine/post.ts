@@ -18,6 +18,7 @@ import { preparedDetail } from './facts.js';
 import { autoOf, markerConfig, participantsOf } from './pr.js';
 import { roundDirOf, type DataLayout } from './prepare.js';
 import { getEvents, getLegs, getRound, insertEvent, now, sha256, type RoundRow } from './records.js';
+import { applyRulings, archivedReviews, latestRelease, latestReleaseId, sinceRelease } from './ruling.js';
 
 /*
  * `sabotage-council post <round> --dry-run | --post` (plan 7.1 step 5, 3.7, 3.10): the post step after adjudication.
@@ -39,6 +40,9 @@ import { getEvents, getLegs, getRound, insertEvent, now, sha256, type RoundRow }
  * P6 round 2: an interrupted post is reconciled before a moved head or a closed PR ends the call, and a review GitHub
  * bound to another commit is adopted too, with its withdrawal recorded in the same transaction as the posted state
  * (row 1).
+ *
+ * P8 round 2 row 1: a caller may hold the post claim across several calls (`holdPost`, `held`), and a refusal because
+ * another post holds or took over the claim says so (`busy`): that post may still land.
  */
 
 export interface PostOptions {
@@ -55,10 +59,34 @@ export interface PostOptions {
   expect?: string | undefined;
   /**
    * Tests only: stand-ins for another process or a crash at a fixed point of a post. `afterClaim` runs once the
-   * claim is taken (a second `post` at that moment); `afterPost` runs once the POST returned and before the store
-   * records it (a crash there, when it throws).
+   * claim is taken (a second `post` at that moment); `beforeFinalRead` runs after the render and before the last read
+   * of the pull request that precedes the intent (a release or a review landing then); `afterPost` runs once the POST
+   * returned and before the store records it (a crash there, when it throws).
    */
-  hooks?: { afterClaim?: (() => void) | undefined; afterPost?: (() => void) | undefined } | undefined;
+  hooks?: { afterClaim?: (() => void) | undefined; beforeFinalRead?: (() => void) | undefined; afterPost?: (() => void) | undefined } | undefined;
+  /**
+   * With `--post`: only reconcile an interrupted post (plan 9.4 resume, P8): adopt a review of this round that landed,
+   * and run the guards it owes; if none landed, post nothing and say so (outcome `refused`, `notLanded`).
+   */
+  reconcileOnly?: boolean | undefined;
+  /**
+   * The auto daemon's rule (plan 9.4, P8 round 1 row 3): the last read before the POST refuses a draft, after any
+   * interrupted post was reconciled. A post by hand may still review a draft the user chose to.
+   */
+  refuseDraft?: boolean | undefined;
+  /**
+   * With `--post`: a post claim the caller already holds (`holdPost`, P8 round 2 row 1). The call works under it and
+   * leaves it held, so the daemon's resume reconciles, checks its records and re-posts under one claim, and no other
+   * post can start between those steps. A held claim that is no longer the caller's refuses the call as `busy`.
+   */
+  held?: HeldPost | undefined;
+}
+
+/** A post claim held across several `postRound` calls (P8 round 2 row 1): the owner and the release it was taken under. */
+export interface HeldPost {
+  roundId: number;
+  owner: string;
+  releaseAtClaim: number | null;
 }
 
 export type PostOutcome = 'rendered' | 'posted' | 'superseded' | 'refused' | 'already-posted';
@@ -96,6 +124,16 @@ export interface PostResult {
   ci: CiState | null;
   /** The command that comes next, when there is one: a rendered dry run names the `--post --expect` that sends it. */
   next: string | null;
+  /** The event-mapping decision carries the "Ruling needed" section (plan 3.8): the round holds. */
+  ruling: boolean;
+  /** A reconcile-only call found no landed review of this round (P8 resume). */
+  notLanded: boolean;
+  /**
+   * Refused because another post of the round holds its post claim, or took over the claim this one held (P8 round 2
+   * row 1). That post may still land, so a caller that recorded a post of its own keeps that record for a later
+   * reconciliation instead of clearing it.
+   */
+  busy: boolean;
 }
 
 /** `owner/name` against `auto.repos_hold` patterns (`*` matches any run of characters), case-insensitively. */
@@ -145,7 +183,7 @@ export function staleChangeRequests(reviews: readonly Review[], login: string, r
 }
 
 function base(roundId: number, mode: PostOptions['mode'], commitId: string): PostResult {
-  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, reviewSha256: null, problems: [], reviewId: null, guards: [], ci: null, next: null };
+  return { roundId, mode, outcome: 'refused', event: null, row: null, commitId, body: null, bodySha256: null, reviewSha256: null, problems: [], reviewId: null, guards: [], ci: null, next: null, ruling: false, notLanded: false, busy: false };
 }
 
 /**
@@ -191,7 +229,6 @@ function claimLive(ownerJson: string, claimedAt: string | null): boolean {
   return true;
 }
 
-/** Claims a round for posting, atomically; the owner token, or why another post holds it. */
 /** Runs `fn` inside one IMMEDIATE transaction: committed when it returns, rolled back when it throws. */
 function immediate<T>(db: DatabaseSync, fn: () => T): T {
   db.exec('BEGIN IMMEDIATE');
@@ -206,8 +243,11 @@ function immediate<T>(db: DatabaseSync, fn: () => T): T {
   return value;
 }
 
-/** Claims a round for posting, atomically; the owner token, or why another post holds it. */
-export function claimPost(db: DatabaseSync, roundId: number): { owner: string } | { why: string } {
+/**
+ * Claims a round for posting, atomically: the owner token and the latest release it was taken under (P8 round 1 row
+ * 1), or why another post holds it.
+ */
+export function claimPost(db: DatabaseSync, roundId: number): { owner: string; releaseAtClaim: number | null } | { why: string } {
   return immediate(db, () => {
     const r = db.prepare('SELECT post_owner, post_claimed_at FROM rounds WHERE id = ?').get(roundId) as { post_owner: string | null; post_claimed_at: string | null } | undefined;
     if (r === undefined) throw new ForgeError(`no round ${roundId} in the store`);
@@ -218,12 +258,25 @@ export function claimPost(db: DatabaseSync, roundId: number): { owner: string } 
     const owner = JSON.stringify({ host: hostname(), pid: process.pid, token: randomUUID() } satisfies ClaimOwner);
     db.prepare('UPDATE rounds SET post_owner = ?, post_claimed_at = ? WHERE id = ?').run(owner, now(), roundId);
     if (r.post_owner !== null) insertEvent(db, 'post-claim-taken-over', roundId, { previous_claimed_at: r.post_claimed_at });
-    return { owner };
+    return { owner, releaseAtClaim: latestReleaseId(db, roundId) };
   });
 }
 
 function releaseClaim(db: DatabaseSync, roundId: number, owner: string): void {
   db.prepare('UPDATE rounds SET post_owner = NULL, post_claimed_at = NULL WHERE id = ? AND post_owner = ?').run(roundId, owner);
+}
+
+/**
+ * Takes the round's post claim for several `postRound` calls (P8 round 2 row 1): the daemon's resume holds it from
+ * its reconciliation to its re-post. Released with `releasePost`, which leaves a claim another post took over alone.
+ */
+export function holdPost(db: DatabaseSync, roundId: number): HeldPost | { why: string } {
+  const c = claimPost(db, roundId);
+  return 'why' in c ? c : { roundId, owner: c.owner, releaseAtClaim: c.releaseAtClaim };
+}
+
+export function releasePost(db: DatabaseSync, held: HeldPost): void {
+  releaseClaim(db, held.roundId, held.owner);
 }
 
 /* ---------- the intent and the guards (rows 2, 4) ---------- */
@@ -239,8 +292,9 @@ interface Intent {
   reviews_seen?: number[];
 }
 
+/** The latest intent since the round's latest release (P8: a release posts afresh; the ruling COMMENT's is history). */
 function latestIntent(db: DatabaseSync, roundId: number): Intent | undefined {
-  return getEvents(db, roundId)
+  return sinceRelease(getEvents(db, roundId))
     .filter((e) => e.kind === 'posting')
     .at(-1)?.detail as Intent | undefined;
 }
@@ -263,9 +317,12 @@ function bodyMatches(landed: string, intent: Intent): boolean {
  */
 function adoptable(db: DatabaseSync, round: RoundRow, pr: PrSnapshot, login: string, intent: Intent): Review[] {
   const storedElsewhere = db.prepare('SELECT 1 FROM rounds WHERE review_id = ? AND id <> ?');
+  // A ruling COMMENT the round posted before its release (P8) is history, never the release's post.
+  const archived = archivedReviews(db, round.id);
   return pr.reviews.filter(
     (r) =>
       r.state !== 'PENDING' &&
+      !archived.has(r.id) &&
       sameLogin(r.login, login) &&
       firstLine(r.body) === round.marker &&
       (intent.event === undefined || (r.state === 'DISMISSED' ? intent.event !== 'COMMENT' : EVENT_OF_STATE[r.state] === intent.event)) &&
@@ -460,7 +517,7 @@ function unadjudicatedRequests(store: Store, round: RoundRow, pr: PrSnapshot, cf
 
 /** The renders the round's dry runs printed, oldest first: what the user can have seen and approved. */
 function dryRuns(db: DatabaseSync, roundId: number): Array<{ event: string; sha: string; review: string | null }> {
-  return getEvents(db, roundId)
+  return sinceRelease(getEvents(db, roundId))
     .filter((e) => e.kind === 'post-dry-run')
     .map((e) => e.detail as { outcome?: string; event?: string; body_sha256?: string; review_sha256?: string } | null)
     .filter((d) => d?.outcome === 'rendered' && typeof d.event === 'string' && typeof d.body_sha256 === 'string')
@@ -489,6 +546,58 @@ function notApproved(db: DatabaseSync, roundId: number, event: string, sha: stri
   return null;
 }
 
+/* ---------- opt-in tests (P8, plan 6.6) ---------- */
+
+/** What the round's opt-in tests say for the event mapping (3.7 row 5: tests allow): only a PASS allows. */
+export function testsFact(db: DatabaseSync, roundId: number): EventFacts['tests'] {
+  const e = getEvents(db, roundId)
+    .filter((x) => x.kind === 'auto-tests')
+    .at(-1)?.detail as { result?: string | null; note?: string; gate?: string | null } | undefined;
+  if (e === undefined) return { state: 'held', why: 'no opt-in test ran for this round (they run in auto mode only)' };
+  if (e.result === 'PASS') return { state: 'pass', why: e.note ?? 'PASS' };
+  if (e.result === null || e.result === undefined) return { state: 'held', why: `not run: ${e.gate ?? 'unknown'}` };
+  return { state: 'failed', why: `${e.result}: ${e.note ?? ''}`.trim() };
+}
+
+/* ---------- one review per head (P8 round 1 row 2) ---------- */
+
+/** What a refusal says when the PR is a draft (refuseDraft): the daemon keeps the row for when it is ready. */
+export const IS_DRAFT = 'is a draft';
+
+/** What a refusal says when the head already has our review with this round's marker: the daemon skips the row. */
+export const ALREADY_ON_HEAD = 'is already on this head';
+
+/**
+ * The final pre-POST read of the reviews: ours (github.login), submitted, first line this round's marker, bound to this
+ * head, held by no other round of this store (that round's own post, P6 round 1 row 4), and not the ruling COMMENT
+ * the round archived at its release. One that is exactly the review this post would send (its event and body) is
+ * adopted; any other refuses the post, a dismissed one included. Two stores on one account are serialized only by this
+ * read (N116): there is no GitHub-side reservation, so two posts that both read before either lands can still both
+ * send.
+ */
+function alreadyOnHead(db: DatabaseSync, api: GitHubApi, round: RoundRow, ref: PrRef, login: string, event: ReviewEvent, body: string): { adopt: Review | null; refuse: string | null } {
+  const reviews = api.list(`${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number)}/reviews`).map(normalizeReview);
+  const archived = archivedReviews(db, round.id);
+  const heldElsewhere = db.prepare('SELECT 1 FROM rounds WHERE review_id = ? AND id <> ?');
+  const found = reviews.filter(
+    (r) =>
+      r.state !== 'PENDING' &&
+      !archived.has(r.id) &&
+      sameLogin(r.login, login) &&
+      firstLine(r.body) === round.marker &&
+      r.commitId.toLowerCase() === round.head_sha.toLowerCase() &&
+      heldElsewhere.get(r.id, round.id) === undefined,
+  );
+  const only = found[0];
+  if (only === undefined) return { adopt: null, refuse: null };
+  if (found.length === 1 && EVENT_OF_STATE[only.state] === event && bodyMatches(only.body, { body })) return { adopt: only, refuse: null };
+  const list = found.map((r) => `review ${r.id}, ${r.state}`).join('; ');
+  return {
+    adopt: null,
+    refuse: `a review by ${login} with this round's marker ${ALREADY_ON_HEAD} (${list}), sent by another store on this account or by hand, and it is not the one review this post would send: nothing posts, so the head never gets a second review`,
+  };
+}
+
 /* ---------- the post step ---------- */
 
 type Refuse = (why: string) => PostResult;
@@ -508,22 +617,44 @@ export function postRound(store: Store, o: PostOptions): PostResult {
   if (round.status !== 'adjudicated' && round.status !== 'identity') return refuse(`round ${round.id} is ${round.status}: a council round posts only once it is adjudicated`);
   if (o.mode === 'post' && round.dry_run === 1) return refuse(`round ${round.id} was started with --dry-run: it can render its post but never post`);
   if (round.marker === null) return refuse(`round ${round.id} has no marker`);
+  // P8, plan 3.8: a round released with skip posts nothing more.
+  if (latestRelease(db, round.id)?.decision === 'skip') return refuse(`round ${round.id} was released with skip by a ruling: nothing more posts`);
   if (o.mode === 'dry-run') return step(store, o, round, result, refuse, null);
 
-  // Row 9: one POST per round. The claim is taken before any network call; the round is read again under it.
-  const claim = claimPost(db, round.id);
-  if ('why' in claim) return refuse(claim.why);
+  // Row 9: one POST per round. The claim is taken before any network call; the round is read again under it. P8 round
+  // 1 row 1: the claim records the release it was taken under. One recorded after it means the user ruled while this
+  // post ran; the intent step re-checks it, and this post then sends nothing (the next post maps the release).
+  let claim: { owner: string; releaseAtClaim: number | null };
+  if (o.held !== undefined) {
+    // P8 round 2 row 1: a claim the caller holds across several calls. Another post that took it over (it was held
+    // over an hour) may be posting now: this call is refused as busy and sends nothing.
+    if (o.held.roundId !== round.id) throw new ForgeError(`the post claim held for round ${o.held.roundId} is not round ${round.id}'s`);
+    const holder = db.prepare('SELECT post_owner FROM rounds WHERE id = ?').get(round.id) as { post_owner: string | null } | undefined;
+    if (holder?.post_owner !== o.held.owner) {
+      result.busy = true;
+      return refuse(`another post of round ${round.id} took over the post claim this one held (it was held over an hour): nothing posts; that post may land, and the next reconciliation adopts it`);
+    }
+    claim = o.held;
+  } else {
+    const c = claimPost(db, round.id);
+    if ('why' in c) {
+      result.busy = true;
+      return refuse(c.why);
+    }
+    claim = c;
+  }
   try {
     o.hooks?.afterClaim?.();
-    return step(store, o, getRound(db, round.id) ?? round, result, refuse, claim.owner);
+    return step(store, o, getRound(db, round.id) ?? round, result, refuse, claim);
   } finally {
-    releaseClaim(db, round.id, claim.owner);
+    if (o.held === undefined) releaseClaim(db, round.id, claim.owner);
   }
 }
 
-/** `owner` is the claim `--post` took (null for a dry run, which takes none). */
-function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult, refuse: Refuse, owner: string | null): PostResult {
+/** `claim` is the claim `--post` took and the release it was taken under (null for a dry run, which takes none). */
+function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult, refuse: Refuse, claim: { owner: string; releaseAtClaim: number | null } | null): PostResult {
   const { db } = store;
+  const owner = claim?.owner ?? null;
   const marker = round.marker ?? '';
   const ref = refOf(store, round);
   const cfg = markerConfig(o.config);
@@ -586,6 +717,13 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
       return result;
     }
   }
+  if (o.reconcileOnly === true) {
+    // P8 resume: nothing of this round landed, so nothing is adopted, and a reconcile-only call posts nothing.
+    result.notLanded = true;
+    result.problems.push(`no review of round ${round.id} landed on GitHub${intent === undefined ? ' (no post of it began)' : ''}`);
+    insertEvent(db, 'post-reconcile', round.id, { landed: false, intent: intent !== undefined });
+    return result;
+  }
   // Guard: head moved (plan 3.7). The round is superseded and nothing posts.
   if (pr.headSha.toLowerCase() !== head.toLowerCase()) return superseded(pr.headSha);
   if (pr.state === 'closed' && o.mode === 'post') return refuse(`${ref.owner}/${ref.repo}#${ref.number} is closed: nothing posts`);
@@ -594,7 +732,11 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   result.ci = ci;
   const fullName = `${ref.owner}/${ref.repo}`;
   const configuredTests = Object.keys(auto.tests).some((k) => k.toLowerCase() === fullName.toLowerCase());
-  const cr = userChangeRequest(pr.reviews, cfg, head);
+  // P8, plan 3.8: a released round maps with the user's rulings applied, and the release stands in for the hold.
+  const release = latestRelease(db, round.id);
+  const releaseHolds = release?.decision === 'post' ? [`released by a ruling of ${release.by} without an approval (ruling ${round.id} post)`] : [];
+  const userCr = userChangeRequest(pr.reviews, cfg, head);
+  const cr = release !== null ? null : userCr;
   const participants = new Set(participantsOf(pr, cfg));
   const identity = round.kind === 'identity';
   const unadjudicated = unadjudicatedRequests(store, round, pr, cfg);
@@ -604,9 +746,10 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     autoApprove: auto.approve,
     ci,
     ciRedEvent: auto.ci_red_event,
-    tests: configuredTests ? { state: 'held' as const, why: 'opt-in test runs are not built yet (P8)' } : { state: 'off' as const, why: 'no tests configured' },
+    tests: configuredTests ? testsFact(db, round.id) : { state: 'off' as const, why: 'no tests configured' },
     onHoldList: onList(auto.repos_hold, fullName),
     unadjudicated,
+    held: releaseHolds,
   };
 
   let facts: EventFacts;
@@ -626,7 +769,7 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     }
     // Row 14: on the user's own PR the author row matches first; its comment still carries "Ruling needed" when the
     // round recorded one or the user's change request stands now (N10). Elsewhere the identity rows decide (N2).
-    const authorRuling = common.isAuthor && (round.needs_ruling === 1 || cr !== null);
+    const authorRuling = common.isAuthor && release === null && (round.needs_ruling === 1 || cr !== null);
     const holds = cr !== null ? [`Your own change request (review ${cr.review.id}) stands (plan 3.8).`] : [];
     facts = { ...common, needsRuling: authorRuling, verdict: null, owed: 0, legsClear: false, council: false, adjudicatorApprove: false, userChangeRequest: cr !== null, identityRecheck: recheck };
     decision = decideEvent(facts);
@@ -637,18 +780,22 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     owed = null;
     holdsDismissal = cr !== null || unadjudicated.length > 0;
   } else {
-    const { doc, legsClear, quorum } = adjudicationOf(store, round.id);
+    const stored = adjudicationOf(store, round.id);
+    const quorum = stored.quorum;
+    const applied = release !== null ? applyRulings(store, round, stored.doc, release) : null;
+    const doc = applied?.doc ?? stored.doc;
     const rulings = doc.findings.some((f) => f.outcome === 'ruling');
     const holdLive = cr !== null && cr.onHead;
     const holds = holdLive ? [`Your own change request (review ${cr.review.id}) stands on this head (plan 3.8).`] : [];
     facts = {
       ...common,
-      needsRuling: round.needs_ruling === 1 || doc.needs_ruling || rulings || holdLive,
-      verdict: round.verdict as EventFacts['verdict'],
-      owed: round.owed_count ?? 0,
-      legsClear,
+      needsRuling: applied !== null ? false : round.needs_ruling === 1 || doc.needs_ruling || rulings || holdLive,
+      verdict: (applied?.verdict ?? round.verdict) as EventFacts['verdict'],
+      owed: applied?.owed ?? round.owed_count ?? 0,
+      legsClear: applied?.legsClear ?? stored.legsClear,
       council: quorum === 'council',
-      adjudicatorApprove: round.approve === 1,
+      // The validator forced the adjudicator's approve off while a ruling stood; a release with approve stands in for it.
+      adjudicatorApprove: applied !== null ? release?.decision === 'approve' && applied.owed === 0 : round.approve === 1,
       userChangeRequest: cr !== null,
       identityRecheck: null,
     };
@@ -660,8 +807,8 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
         marker,
         decision,
         adjudication: doc,
-        verdict: round.verdict ?? doc.verdict,
-        owed: round.owed_count ?? 0,
+        verdict: applied?.verdict ?? round.verdict ?? doc.verdict,
+        owed: applied?.owed ?? round.owed_count ?? 0,
         legs: bodyLegs(store, round.id),
         quorum: quorum === 'council' ? 'council' : 'solo',
         ci,
@@ -670,12 +817,13 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
       },
       { nonce: round.nonce, participants },
     );
-    owed = round.owed_count ?? 0;
+    owed = applied?.owed ?? round.owed_count ?? 0;
     // A request the round never adjudicated means its "owes nothing" is not final: our stale request stands too.
     holdsDismissal = facts.needsRuling || unadjudicated.length > 0;
   }
   result.event = decision.event;
   result.row = decision.row;
+  result.ruling = decision.ruling;
   result.body = body;
   result.bodySha256 = sha256(body);
   result.reviewSha256 = reviewSha256(decision.event, body);
@@ -725,23 +873,32 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
   // Row 5: the CI and identity reads take time; read the pull request once more right before the POST, and keep all
   // of it (P6 round 2 row 2): a moved head supersedes the round, a close posts nothing, and an identity round whose
   // base left the default branch since its render posts nothing (its approval was re-checked on the old base).
+  o.hooks?.beforeFinalRead?.();
   const last = readPull(o.api, ref);
   if (last.headSha.toLowerCase() !== head.toLowerCase()) return superseded(last.headSha);
   if (last.state === 'closed') return refuse(`${ref.owner}/${ref.repo}#${ref.number} was closed since the post began: nothing posts`);
+  if (o.refuseDraft === true && last.draft) return refuse(`${ref.owner}/${ref.repo}#${ref.number} ${IS_DRAFT}: nothing posts until it is ready for review`);
   if (identity && pr.baseRef === pr.defaultBranch && last.baseRef !== last.defaultBranch) {
     result.next = `sabotage-council post ${round.id} --dry-run`;
     return refuse(
       `the base of ${ref.owner}/${ref.repo}#${ref.number} is now ${last.baseRef}, not the default branch ${last.defaultBranch}, and this identity review was rendered on ${pr.baseRef}: nothing posts; run post ${round.id} --dry-run to show the user the review that applies now`,
     );
   }
+  // P8 round 1 row 2: one review per head, across stores. A review by github.login with this round's marker already on
+  // this head (another store on the same account, or a post by hand) is adopted when it is exactly the review this post
+  // would send and no other round of this store holds it; any other is a refusal. A second POST never goes out.
+  const twin = alreadyOnHead(db, o.api, round, ref, cfg.login, decision.event, body);
+  if (twin.refuse !== null) return refuse(twin.refuse);
 
   // The intent and the guards it owes, in one transaction before the POST (plan 9.4, row 2). A re-post after an
   // interrupted POST that did not land replaces the guards that never ran. The same transaction checks that this
   // process still holds the claim (P6 round 2 row 4): a claim taken over while it ran (it was held over an hour, so
-  // another post found it stale) fences it, and it posts nothing.
-  const holds = immediate(db, () => {
+  // another post found it stale) fences it, and it posts nothing. It also checks that no ruling release was recorded
+  // since the claim (P8 round 1 row 1): this render predates that ruling, so it posts nothing.
+  const fenced = immediate(db, (): 'claim' | 'release' | null => {
     const holder = db.prepare('SELECT post_owner FROM rounds WHERE id = ?').get(round.id) as { post_owner: string | null } | undefined;
-    if (owner === null || holder?.post_owner !== owner) return false;
+    if (owner === null || holder?.post_owner !== owner) return 'claim';
+    if (latestReleaseId(db, round.id) !== (claim?.releaseAtClaim ?? null)) return 'release';
     db.prepare("DELETE FROM post_guards WHERE round_id = ? AND status = 'pending'").run(round.id);
     insertEvent(db, 'posting', round.id, {
       event: decision.event,
@@ -753,10 +910,31 @@ function step(store: Store, o: PostOptions, round: RoundRow, result: PostResult,
     } satisfies Intent);
     if (decision.event === 'APPROVE') addGuard(db, round.id, 'approval-race', null);
     for (const r of stale) addGuard(db, round.id, 'dismiss-stale', r.id);
-    return true;
+    return null;
   });
-  if (!holds) {
+  if (fenced === 'claim') {
+    result.busy = true;
     return refuse(`another post of round ${round.id} took over this one's claim (it was held over an hour): this one records no intent and posts nothing; run post ${round.id} --post again once that one ends`);
+  }
+  if (fenced === 'release') {
+    return refuse(`a ruling released round ${round.id} after this post began: this one records no intent and posts nothing, since its render predates that ruling; the next post maps the release (post ${round.id} --dry-run)`);
+  }
+  if (twin.adopt !== null) {
+    // Recorded as this round's post with its intent and guards, as a review that landed after a crash is (row 4).
+    const a = twin.adopt;
+    recordPosted(
+      db,
+      round,
+      { event: decision.event, reviewId: a.id, commitId: a.commitId, postedAt: a.submittedAt === '' ? now() : a.submittedAt, bodySha256: result.bodySha256 ?? sha256(body) },
+      'post-adopted',
+      { review_id: a.id, state: a.state, commit_id: a.commitId, preexisting: true },
+    );
+    result.outcome = 'already-posted';
+    result.reviewId = a.id;
+    result.problems.push(`review ${a.id} by ${a.login} with this round's marker, event and body was already on this head: adopted as this round's post, and no second review was sent`);
+    runGuards(store, o.api, getRound(db, round.id) ?? round, ref, cfg);
+    result.guards = reports(db, round.id);
+    return result;
   }
   const posted = normalizeReview(o.api.send('POST', `${restPath('repos', ref.owner, ref.repo, 'pulls', ref.number)}/reviews`, { commit_id: head, event: decision.event, body }));
   o.hooks?.afterPost?.();

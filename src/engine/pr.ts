@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { CouncilConfig } from '../config/schema.js';
 import { autoSchema } from '../config/schema.js';
@@ -13,8 +13,8 @@ import { commitExists, type ShadowRepo } from '../root/git.js';
 import type { Store } from '../store/open.js';
 import type { DatabaseSync } from '../store/sqlite.js';
 import type { PrDetail } from './facts.js';
-import { prepareRound, roundDirOf, rosterOf, type DataLayout, type PreparedRound } from './prepare.js';
-import { carriedItems, insertEvent, now, sha256, upsertTarget, type CarriedItem, type RoundNumbering } from './records.js';
+import { inTransaction, prepareRound, roundDirOf, rosterOf, type DataLayout, type PreparedRound } from './prepare.js';
+import { carriedItems, getEvents, getRound, insertEvent, now, sha256, upsertTarget, type CarriedItem, type RoundNumbering } from './records.js';
 import { safeName, type ResolvedTarget } from './target.js';
 
 /*
@@ -28,6 +28,17 @@ export class PrRoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PrRoundError';
+  }
+}
+
+/** The PR's head is not the one the caller expected (P8: it moved since the ledger claimed it). */
+export class HeadMovedError extends PrRoundError {
+  constructor(
+    message: string,
+    readonly head: string,
+  ) {
+    super(message);
+    this.name = 'HeadMovedError';
   }
 }
 
@@ -49,6 +60,20 @@ export interface PrRoundOptions {
   facts?: readonly string[] | undefined;
   questions?: readonly string[] | undefined;
   nonce?: string | undefined;
+  /**
+   * P8 auto: the round is adjudicated by the restricted headless adjudicator (plan 6.3, 6.4), so an author without write
+   * access is not refused; the seats still follow `council.untrusted_seat_policy`.
+   */
+  headless?: boolean | undefined;
+  /** P8 auto: the round number the ledger fixed when it claimed the head (plan 9.4); the count is still recorded. */
+  roundNo?: number | undefined;
+  /** P8 auto: the head the ledger claimed; a PR whose head moved since is refused before anything is written. */
+  expectHead?: string | undefined;
+  /**
+   * P8 auto (round 1 row 4): runs in the transaction that inserts the round row, council or identity, so the daemon
+   * links the round to its ledger row atomically with its creation. A throw rolls the round back.
+   */
+  onRound?: ((db: DatabaseSync, roundId: number, roundNo: number, kind: 'council' | 'identity') => void) | undefined;
 }
 
 export type PrRoundResult =
@@ -173,19 +198,25 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
   const wrongLogin = loginMismatch(o.api, cfg.login);
   if (wrongLogin !== null) throw new PrRoundError(wrongLogin);
   const pr = readPr(o.api, o.ref);
+  if (o.expectHead !== undefined && pr.headSha.toLowerCase() !== o.expectHead.toLowerCase()) {
+    throw new HeadMovedError(`${prLabel(o.ref)} moved from ${o.expectHead.slice(0, 7)} to ${pr.headSha.slice(0, 7)} since it was queued`, pr.headSha);
+  }
+  if (pr.draft && o.expectHead !== undefined) throw new PrRoundError(`${prLabel(o.ref)} is a draft: auto skips drafts`);
   if (pr.state === 'closed' && !o.dryRun) throw new PrRoundError(`${prLabel(o.ref)} is ${pr.merged ? 'merged' : 'closed'}: a closed pull request takes only --dry-run`);
   const trusted = authorTrusted(pr);
   let untrusted: PrDetail['untrusted'] = null;
   if (!trusted) {
     // Plan 6.3: leg text on someone else's PR is attacker-influenced, and the interactive adjudicator is this session.
-    if (o.config.pr.interactive_adjudication === 'trusted-only') {
+    if (o.headless !== true && o.config.pr.interactive_adjudication === 'trusted-only') {
       throw new PrRoundError(
         `${pr.author} has no write access to ${pr.baseRepo} (permission: ${pr.authorPermission ?? 'unknown'}), so this PR's text is untrusted. The restricted headless adjudicator (plan 6.4) is not built yet (P7); to adjudicate it in this session anyway, accepting that leg text reaches it, set pr.interactive_adjudication = "untrusted-too"`,
       );
     }
-    untrusted = { policy: o.config.council.untrusted_seat_policy, interactive_adjudication: o.config.pr.interactive_adjudication };
+    untrusted = { policy: o.config.council.untrusted_seat_policy, interactive_adjudication: o.headless === true ? 'headless' : o.config.pr.interactive_adjudication };
     warnings.push(
-      `${pr.author} has no write access (permission: ${pr.authorPermission ?? 'unknown'}): this session adjudicates untrusted text (pr.interactive_adjudication = "untrusted-too"), and seats below strong follow council.untrusted_seat_policy = "${untrusted.policy}"`,
+      o.headless === true
+        ? `${pr.author} has no write access (permission: ${pr.authorPermission ?? 'unknown'}): the restricted headless adjudicator reads this round (plan 6.4), and seats below strong follow council.untrusted_seat_policy = "${untrusted.policy}"`
+        : `${pr.author} has no write access (permission: ${pr.authorPermission ?? 'unknown'}): this session adjudicates untrusted text (pr.interactive_adjudication = "untrusted-too"), and seats below strong follow council.untrusted_seat_policy = "${untrusted.policy}"`,
     );
   }
 
@@ -199,7 +230,9 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
 
   const target = prTarget(o.ref, mirror, pr);
   const targetId = upsertTarget(db, target);
-  const count = countRounds({ ref: o.ref, head: pr.headSha, reviews: pr.reviews, credits: creditsOf(db, o.ref), cfg });
+  const computed = countRounds({ ref: o.ref, head: pr.headSha, reviews: pr.reviews, credits: creditsOf(db, o.ref), cfg });
+  // Plan 9.4: the ledger fixes the number when it claims the head, so a retry never counts our own posted review.
+  const count: RoundCount = o.roundNo === undefined ? computed : { ...computed, roundNo: o.roundNo };
   const cr = userChangeRequest(pr.reviews, cfg, pr.headSha);
   const participants = participantsOf(pr, cfg);
 
@@ -237,6 +270,7 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
     baseline_fetch: baselineFetch,
     files: { listed: pr.files.length, checked: files.checked, note: files.note },
     participants,
+    head_repo: pr.headRepo,
     untrusted,
   });
   const prepared = prepareRound(store, {
@@ -254,26 +288,26 @@ export function preparePrRound(store: Store, o: PrRoundOptions): PrRoundResult {
       marker: (roundNo) => roundMarker(o.ref, roundNo, pr.headSha),
       detail,
       dryRun: o.dryRun,
+      onInsert: o.onRound === undefined ? undefined : (d, id, roundNo) => o.onRound?.(d, id, roundNo, 'council'),
     },
   });
   for (const i of count.ignored) insertEvent(db, 'marker-ignored', prepared.inputs.roundId, i);
+  if (o.roundNo !== undefined && o.roundNo !== computed.roundNo) insertEvent(db, 'round-number-fixed', prepared.inputs.roundId, { fixed: o.roundNo, computed: computed.roundNo });
   if (cr?.onHead === true) insertEvent(db, 'needs-ruling', prepared.inputs.roundId, { why: 'user-change-request', review_id: cr.review.id });
   return { kind: 'council', prepared, count, warnings };
 }
 
-/** The identity path (plan 3.10): a round row with no seats, held when the user's own change request stands. */
+/**
+ * The identity path (plan 3.10): a round row with no seats, held when the user's own change request stands. The round,
+ * its `identity-prepared` record (and its `needs-ruling` event) and the caller's `onRound` (the daemon's ledger link)
+ * commit in one transaction (P8 round 2 row 4), so no crash leaves an identity round without the record its post
+ * reads; `identity.json` is written after the commit and rebuilt from that record when missing.
+ */
 function identityRound(store: Store, o: PrRoundOptions, pr: PrSnapshot, count: RoundCount, match: IdentityMatch, userCr: boolean, participants: string[], warnings: string[]): PrRoundResult {
   const { db } = store;
   const target = { mode: 'pr' as const, repoKey: repoKeyOf(o.ref), planPath: null, branch: null, prNumber: o.ref.number };
   const targetId = upsertTarget(db, target);
   const marker = identityMarker(o.ref, pr.headSha);
-  const r = db
-    .prepare(
-      `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, roster_json, started_at, status, kind, marker, dry_run, needs_ruling)
-       VALUES (?, ?, 'pr', ?, ?, ?, ?, 'identity', 'identity', ?, ?, ?)`,
-    )
-    .run(targetId, count.roundNo, pr.headSha, pr.baseSha, JSON.stringify(rosterOf(o.config)), now(), marker, o.dryRun ? 1 : 0, userCr ? 1 : 0);
-  const roundId = Number(r.lastInsertRowid);
   const detail = {
     match,
     pr: { owner: o.ref.owner, repo: o.ref.repo, number: o.ref.number, author: pr.author, base_ref: pr.baseRef, default_branch: pr.defaultBranch, head_sha: pr.headSha },
@@ -282,11 +316,41 @@ function identityRound(store: Store, o: PrRoundOptions, pr: PrSnapshot, count: R
     user_change_request: userCr,
     round_count: { round_no: count.roundNo, count: count.count },
   };
-  insertEvent(db, 'identity-prepared', roundId, detail);
-  if (userCr) insertEvent(db, 'needs-ruling', roundId, { why: 'user-change-request' });
-  const dir = roundDirOf(o.layout, roundId);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(dir, 'identity.json'), `${JSON.stringify({ round_id: roundId, marker, ...detail }, null, 2)}\n`, { flag: 'wx' });
+  const roundId = inTransaction(db, true, () => {
+    const r = db
+      .prepare(
+        `INSERT INTO rounds (target_id, round_no, mode, head_sha, base_sha, roster_json, started_at, status, kind, marker, dry_run, needs_ruling)
+         VALUES (?, ?, 'pr', ?, ?, ?, ?, 'identity', 'identity', ?, ?, ?)`,
+      )
+      .run(targetId, count.roundNo, pr.headSha, pr.baseSha, JSON.stringify(rosterOf(o.config)), now(), marker, o.dryRun ? 1 : 0, userCr ? 1 : 0);
+    const id = Number(r.lastInsertRowid);
+    insertEvent(db, 'identity-prepared', id, detail);
+    if (userCr) insertEvent(db, 'needs-ruling', id, { why: 'user-change-request' });
+    o.onRound?.(db, id, count.roundNo, 'identity');
+    return id;
+  });
+  writeIdentityFile(o.layout, roundId, marker, detail);
   warnings.push(`identity path: this head's tree equals ${match.commitId.slice(0, 7)}, approved on #${match.number}; no seats run (plan 3.10)`);
   return { kind: 'identity', roundId, roundNo: count.roundNo, match, warnings };
+}
+
+/** `identity.json` in the round dir: a copy of the stored `identity-prepared` record (the store decides). */
+function writeIdentityFile(layout: DataLayout, roundId: number, marker: string, detail: unknown): void {
+  const dir = roundDirOf(layout, roundId);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, 'identity.json'), `${JSON.stringify({ round_id: roundId, marker, ...(detail as Record<string, unknown>) }, null, 2)}\n`, { flag: 'wx' });
+}
+
+/**
+ * P8 round 2 row 4: rebuilds an identity round's `identity.json` from its stored `identity-prepared` record when the
+ * file is missing (a crash between the commit and the write), byte for byte what the preparation writes. True when the
+ * file is there afterwards; false for a round with no such record.
+ */
+export function ensureIdentityFile(store: Store, layout: DataLayout, roundId: number): boolean {
+  if (existsSync(join(roundDirOf(layout, roundId), 'identity.json'))) return true;
+  const round = getRound(store.db, roundId);
+  const detail = getEvents(store.db, roundId).find((e) => e.kind === 'identity-prepared')?.detail;
+  if (round?.kind !== 'identity' || round.marker === null || detail === undefined || detail === null) return false;
+  writeIdentityFile(layout, roundId, round.marker, detail);
+  return true;
 }

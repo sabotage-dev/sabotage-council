@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { judgeCi, readCiContexts, readRequiredChecks, type CiState } from '../src/forge/ci.js';
-import type { GitHubApi } from '../src/forge/github.js';
+import { FREE_PLAN_REFUSAL, judgeCi, readCi, readCiContexts, readRequiredChecks, type CiState } from '../src/forge/ci.js';
+import { ghApi, type GitHubApi } from '../src/forge/github.js';
 import { changeRequestAsks, countRounds, reviewItems, userChangeRequest, type Credit, type MarkerConfig } from '../src/forge/count.js';
 import { decideEvent, type EventFacts } from '../src/forge/events.js';
 import { firstLine, identityMarker, parseMarker, roundMarker, stripWrapper } from '../src/forge/markers.js';
-import { parsePrRef, type Review, type ReviewComment } from '../src/forge/pr.js';
+import { loginMismatch, parsePrRef, readLogin, type Review, type ReviewComment } from '../src/forge/pr.js';
 import { BODY_MAX_BYTES, renderBody, validateBody, type CouncilBody } from '../src/forge/render.js';
 import { FULLWIDTH_AT, FULLWIDTH_HASH, neutralize, textProblems } from '../src/forge/text.js';
 import type { Adjudication } from '../src/adjudicate/schema.js';
+import { cleanScratchAfterAll } from './helpers/fixtures.js';
+import { FAKE_GH, fakeGh, type Route } from './helpers/github.js';
+
+cleanScratchAfterAll();
 
 /*
  * P6's pure rules: the round count of plan 3.6 (with N14, N19, N20), the user's change request (3.8), the earlier
@@ -281,6 +285,47 @@ describe('the CI gate', () => {
   });
 });
 
+describe('the CI gate on a private repository on GitHub\'s free plan (P8 round 2 row 5)', () => {
+  const FREE = `gh: ${FREE_PLAN_REFUSAL}. (HTTP 403)`;
+  const run = (name: string, conclusion: string | null) => ({ __typename: 'CheckRun', name, status: conclusion === null ? 'IN_PROGRESS' : 'COMPLETED', conclusion, isRequired: false });
+  /** CI for head A through the stub gh: the branch read, the rulesets read, and the head's (unrequired) checks. */
+  const ci = (o: { branch?: Route; rules?: Route; nodes?: unknown[]; gate?: 'required-checks' | 'all' }): CiState => {
+    const gh = fakeGh({
+      'GET repos/acme/widget/branches/main': o.branch ?? { json: { name: 'main', protected: false } },
+      'GET repos/acme/widget/rules/branches/main': o.rules ?? { json: [] },
+      graphql: { json: { data: { repository: { pullRequest: { commits: { nodes: [{ commit: { oid: A, statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: o.nodes ?? [run('build', 'SUCCESS')] } } } }] } } } } } },
+    });
+    return readCi(ghApi({ bin: FAKE_GH, env: gh.env }), REF, A, 'main', o.gate ?? 'required-checks');
+  };
+
+  it('reads that refusal as no required checks and judges every reported check, saying so; a red or pending one still blocks', () => {
+    expect(ci({ rules: { fail: FREE } })).toMatchObject({
+      state: 'green',
+      note: "1 check(s) judged; rulesets not available to this private repository on GitHub's free plan (HTTP 403), so it can require no check and every reported check was judged",
+    });
+    expect(ci({ branch: { fail: FREE }, rules: { fail: FREE }, nodes: [] })).toMatchObject({
+      state: 'green',
+      note: expect.stringMatching(/^no checks on this head; branch protection and rulesets not available to this private repository on GitHub's free plan/),
+    });
+    expect(ci({ rules: { fail: FREE }, nodes: [run('build', 'SUCCESS'), run('lint', 'FAILURE')] })).toMatchObject({ state: 'red', failing: ['lint'] });
+    expect(ci({ rules: { fail: FREE }, nodes: [run('build', null)] })).toMatchObject({ state: 'pending', pending: ['build'] });
+    // A repository that can require checks and requires none still judges only required ones (unchanged).
+    expect(ci({ nodes: [run('lint', 'FAILURE')] })).toMatchObject({ state: 'green', note: 'no required checks on this head' });
+  });
+
+  it('any other refusal or error still reads unknown: another 403, the free message with another status, a 404', () => {
+    for (const fail of [
+      'gh: Resource not accessible by integration (HTTP 403)',
+      `gh: ${FREE_PLAN_REFUSAL}. (HTTP 404)`,
+      `gh: ${FREE_PLAN_REFUSAL}.`,
+      'gh: Not Found (HTTP 404)',
+    ]) {
+      expect(ci({ rules: { fail } })).toMatchObject({ state: 'unknown', note: expect.stringContaining(fail) });
+      expect(ci({ branch: { fail } }).state).toBe('unknown');
+    }
+  });
+});
+
 const GREEN: CiState = { gate: 'required-checks', state: 'green', failing: [], pending: [], note: '2 check(s) judged' };
 const BASE: EventFacts = {
   isAuthor: false,
@@ -530,5 +575,21 @@ describe('the review body (plan 3.7)', () => {
     expect(body).not.toContain('- item 50 ');
     expect(body).toContain('- (350 more in the round record)');
     expect(validateBody(body, { marker: roundMarker(REF, 2, A), rules: RULES, owed: 1, ruling: false })).toEqual([]);
+  });
+});
+
+describe('the account check without GET user (P6 follow-up, P8)', () => {
+  it('names an App token account through the GraphQL viewer, and refuses plainly when neither can', () => {
+    const app = fakeGh({ 'GET user': { fail: 'gh: Resource not accessible by integration (HTTP 403)' }, 'graphql#viewer': { json: { data: { viewer: { login: 'council-bot[bot]' } } } } });
+    const api = ghApi({ bin: FAKE_GH, env: app.env });
+    expect(readLogin(api)).toBe('council-bot[bot]');
+    expect(loginMismatch(api, 'council-bot[bot]')).toBeNull();
+    expect(loginMismatch(api, 'someone')).toMatch(/gh is logged in as council-bot\[bot\]/);
+    const none = fakeGh({ 'GET user': { fail: 'gh: Resource not accessible by integration (HTTP 403)' }, 'graphql#viewer': { fail: 'gh: Resource not accessible by integration' } });
+    expect(() => readLogin(ghApi({ bin: FAKE_GH, env: none.env }))).toThrow(/GitHub refused GET user for this token .* the GraphQL viewer could not name the account either/);
+    // Any other failure is not guessed around.
+    const down = fakeGh({ 'GET user': { fail: 'gh: Server Error (HTTP 502)' } });
+    expect(() => readLogin(ghApi({ bin: FAKE_GH, env: down.env }))).toThrow(/HTTP 502/);
+    expect(down.requests().map((r) => r.key)).toEqual(['GET user']);
   });
 });

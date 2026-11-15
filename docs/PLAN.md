@@ -353,11 +353,17 @@ stale change request of ours (P6 round 1 row 12).
 
 `pr` mode follows the `[auto]` settings for one PR (9.3): `approve`, `ci_gate`, `ci_red_event`, `repos_hold`,
 `identity_approval` and `tests`, with their defaults when there is no `[auto]` table. The council approval row
-checks `auto.approve` too, as the identity row does (P6). Opt-in tests run in P8; until then a repository with
-`auto.tests` configured is held ("tests held"). CI is read for the reviewed head in one GraphQL query: under
+checks `auto.approve` too, as the identity row does (P6). Opt-in tests run in `auto` (P8, 6.6): only a PASS allows
+an approval; a FAIL, SETUPFAIL, TIMEOUT or CANTRUN holds it ("tests failed"), and so does a round on a repository with
+`auto.tests` configured where none ran (an interactive `pr` round, a fork, an author without write access: "tests
+held"). CI is read for the reviewed head in one GraphQL query: under
 `required-checks` the checks GitHub marks required for the PR, plus any check the base branch's protection or
 rulesets require that has not reported (pending, never green); a read that fails is "CI unknown" and never
-approves. A required check keeps the GitHub App it is bound to (classic protection's `checks[].app_id`, a ruleset's
+approves. A private repository on GitHub's free plan has no branch protection or rulesets: GitHub refuses those reads
+with HTTP 403 and "Upgrade to GitHub Pro or make this repository public to enable this feature". On exactly that
+refusal the source is read as requiring nothing, and since such a repository can require no check, every reported
+check is judged (a red or pending one blocks; none reported is green); the CI note, and so the body, says which
+reading applied. Any other 403, a 404, or any other failure stays "CI unknown" (P8 round 2 row 5). A required check keeps the GitHub App it is bound to (classic protection's `checks[].app_id`, a ruleset's
 `integration_id`; `-1`, none or a bare `contexts` name binds none), each reported check run keeps the app that ran it,
 and a requirement is satisfied only by a check of its name from its app: a same-name check from another app, or a
 commit status (which names no app), leaves it pending (P6 round 1 row 11).
@@ -450,7 +456,7 @@ A `needs-ruling` round posts a COMMENT (when anything can be posted), notifies t
 head until the user rules or a new head arrives. On the user's own PR the author row (3.7 row 1) matches first;
 its COMMENT still carries the "Ruling needed" section, and the round is still held (N10). In P6 the round records
 `needs_ruling`, and the validator rejects an adjudication of a round whose user change request stands on its head
-unless `needs_ruling` is true; the ledger hold and the `ruling` commands below are P8.
+unless `needs_ruling` is true. P8 built the ledger hold and the `ruling` commands below.
 
 Rulings are recorded per finding, not just per round, so the scorecard knows which seats were right:
 
@@ -459,6 +465,37 @@ Rulings are recorded per finding, not just per round, so the scorecard knows whi
 - `sabotage-council ruling <round> approve|post|skip` then releases the round.
 
 A held round never resumes into an APPROVE without that release (9.4).
+
+As built (P8):
+- A finding ruling is refused on a finding whose outcome is not `ruling`, and after the round's release (rulings are
+  final then).
+- `approve` and `post` need every `ruling` finding ruled and an adjudication to post (a round held because its
+  headless adjudication failed twice is adjudicated by the user first, `adjudicate <id> <file>`, then released);
+  `approve` is refused while any ruling is upheld (that review requests changes: `post` it). `skip` needs neither.
+- The release maps the round's review again with the rulings applied: an upheld finding is owed, an overturned one
+  refuted with the ruling as its proof, `needs_ruling` false, the summary names the release; effective leg verdicts
+  and legs clear are recomputed from the legs' own findings (3.2). `approve` stands in for the adjudicator's
+  approve, which the validator forced off while a ruling stood, and every other gate still applies (CI, the hold
+  list, `auto.approve`, tests, a council, change requests the round never carried). `post` holds the approval
+  ("released by a ruling ... without an approval"). The release also stands in for the user's own change request
+  that held the round.
+- A round that already posted its "Ruling needed" COMMENT posts its release as one more review on the same head (the
+  same round, so the count is unchanged): the COMMENT's post record moves into a `ruling-comment-archived` event in the
+  release's transaction, so the round can post again, and a resumed post never adopts the COMMENT for the release
+  (the intents and dry runs a release post reads are the ones after it).
+- The release sets the round's ledger row back to `running` (or `skipped`) with its post fields cleared, so the
+  daemon's next pass posts it through the same guarded post step (or the user runs `post <id> --dry-run` and
+  `--post` for a round outside the ledger). A release while the daemon holds the row's claim is refused.
+- A release is also refused while a post of the round may be on GitHub, whatever the claim's age (P8 round 1 row 1):
+  the ledger row is `posting`, holds `records_sha` of a post never recorded, or the round has a post intent nothing
+  reconciled (no review recorded posted or adopted since, and no reconciliation that found nothing landed). The
+  daemon's next pass (or `post <id> --reconcile` for a round outside the ledger, P8 round 2 row 3: it adopts a review
+  that landed, or records that none did, and posts nothing new) reconciles it first; a resume that finds
+  nothing landed and fails the row for good clears its post fields, so a ruling can release it then. A dry round is
+  never released, and says why: it renders and never posts, and a real pass reviews its head afresh.
+- A post in flight records the release it was claimed under and checks it again in the transaction that records its
+  intent: a release recorded after its claim means its render predates that ruling, so it records no intent and posts
+  nothing (the next post maps the release).
 
 ### 3.10 Identity approval
 
@@ -985,6 +1022,7 @@ repos_allow = ["your-org/*"]
 repos_skip = []
 repos_hold = ["your-org/infra-*"]  # rounds run and post, approval always held for you
 include_assigned = false           # Q10
+include_team_requests = true       # Q11: team review requests count; false keeps direct ones only
 approve = true                     # D6
 ci_gate = "required-checks"        # or "all" | "off"
 ci_red_event = "REQUEST_CHANGES"   # or "COMMENT": what red CI posts when nothing is owed (3.7 row 7)
@@ -1090,7 +1128,9 @@ inputs, `sealed.json`, the worker's record and log, one dir per leg with its str
 `ratification.json` and `reply.json`, then `summary.json` and `ADJUDICATION.json`). Rows are written as the round
 goes: the round at `running`, each leg at `RUNNING` and then its final status, `awaiting-adjudication` (or `failed`
 with no ratified leg) when the legs settle, and `adjudicated` once `adjudicate` stores the verdict. The root is
-deleted when the adjudication is stored; pruning of round dirs and failed rounds' roots is P8.
+deleted when the adjudication is stored. The `auto` pass prunes (P8): round dirs of settled rounds (adjudicated,
+identity, failed, superseded) started over 90 days ago, by name as direct children of the rounds dir, the rows kept;
+and the roots of failed and superseded rounds started over 2 days ago, through the roots dir's owned-name removal.
 
 ## 6. Security model
 
@@ -1285,6 +1325,17 @@ canary (14) put its tool in front of the real claude with a wrapper instead of i
 - Results use one vocabulary: `PASS`, `FAIL`, `NOTESTS`, `CANTRUN`, `SETUPFAIL`, `TIMEOUT`.
 - The adjudicator decides whether a FAIL is caused by the PR (owed) or by the environment (not verified).
 
+As built (P8): `[auto.tests."owner/repo"]` (matched case-insensitively) runs in `auto` only, for a PR whose author has
+write access and whose head repository is the base repository (a fork, or a deleted head repository, never runs).
+The head is extracted from the engine's mirror into `rounds/<id>/tests/work/` (never the review root), and the setup
+and command run there through `/bin/sh -c`, each in its own process group, with PATH, LANG, LC_ALL and TZ from the
+engine's environment and nothing else but a HOME and TMPDIR of their own and `CI=true`, under the repository's one
+wall-clock cap for both. They run beside the legs. The result (`PASS`, `FAIL`, `SETUPFAIL`, `TIMEOUT`, `CANTRUN`; or
+why none ran) is an `auto-tests` event on the round and `_council/TESTS.md` for the headless adjudicator, with
+labelled tails of the command's standard output and standard error as `DATA:` (the last 80 lines and at most 16,000
+characters of each; P8 round 1 row 10). Only a PASS allows an approval (3.7). `NOTESTS` is in the vocabulary but has no host
+signal yet, so P8 never reports it; container mode (Q12) is not built.
+
 ### 6.7 Supply chain
 
 - Adapters declare tested CLI version ranges; every leg records the CLI version.
@@ -1324,8 +1375,8 @@ and the earlier items. If the output fails validation, the engine re-prompts onc
 second failure makes the round `needs-ruling` (3.8).
 
 As built (P7): the inputs are files in the working copy (`_council/`, 6.4), the earlier items and the user's asks
-in `ROUND.json` and the root's own `PREVIOUS-REVIEWS.md` and brief; the test result says none ran until P8's
-opt-in tests. `ADJUDICATE.md` has a "Headless runs" section for what differs (no commands, no user, one Edit,
+in `ROUND.json` and the root's own `PREVIOUS-REVIEWS.md` and brief; the test result is `_council/TESTS.md` (and
+`ROUND.json`'s `tests`), which P8's opt-in tests fill (6.6) and which otherwise says none ran. `ADJUDICATE.md` has a "Headless runs" section for what differs (no commands, no user, one Edit,
 placeholder ids, overrides as rulings, the Glob and Grep pattern rule). The re-prompt is a fresh session given the
 validator's errors, against the document the first launch wrote (with its ids already made stable). With no user in
 the loop a majority override (3.4 rule 3) is stored only as outcome `ruling`: a refuted, follow-up, noted, nit or
@@ -1474,7 +1525,10 @@ posts its review (3.7). A round started with `--dry-run` never posts, and a clos
 `--dry-run`. `post --post` sends only the review a dry run of the round showed the user (`--expect <review sha256>`
 names it, one hash of its event and its body; P6 round 1 row 8, round 2 row 3); the PR closing, or an identity
 round's base leaving the default branch, between the CI read and the POST posts nothing (round 2 row 2), and an
-interrupted post is reconciled before a moved head or a close ends the call (round 2 row 1). `round start pr` reads
+interrupted post is reconciled before a moved head or a close ends the call (round 2 row 1). `post <round>
+--reconcile` (P8 round 2 row 3) runs that reconciliation alone: a review of the round that landed is adopted as its
+post with its guards, and when none landed that is recorded, so a held round whose post never landed (a closed PR's
+included) can be released; it posts nothing new. `round start pr` reads
 the PR through the user's `gh` login, which must be the `github.login` account (`gh api user`, checked before a
 round is prepared and before a post; P6 round 1 row 10). The engine never reads, stores or logs the token: the
 mirror's fetch runs `gh auth git-credential` as git's only credential helper in the same environment as the API
@@ -1536,6 +1590,133 @@ Pruning:
 - round dirs are kept 90 days;
 - roots are deleted at round end;
 - closed-PR reads are bounded per pass, newest first, to avoid the private council's starvation gap.
+
+As built (P8), `src/auto/`:
+- **Commands.** `auto run-once [--dry-run] [--json]` is one pass (exit 0 done or paused, 1 failed, 3 another pass
+  is running); `auto run [--dry-run]` loops passes every `interval_minutes`, re-reading the config each pass, until
+  SIGTERM; `auto status [--json]`, `auto pause [--reason]`, `auto resume`; `auto install [--shadow] [--dry-run]
+  [--dir] [--no-load]` and `auto uninstall [--dir] [--no-load]`; `ruling` (3.8). On `run-once` and `run`,
+  `--dry-run` runs everything but the POST and the dismissals: its rounds are prepared dry (P6: they render and never
+  post), its rows end `rendered`, and a dry pass never touches a real row (a real pass starts a dry row's head over,
+  since a dry round can never post). On `install`, `--shadow` installs that mode (the service runs
+  `auto run --dry-run`) and `--dry-run` only previews: it prints the service file, the log dir it would create and the
+  commands, and writes, creates and loads nothing (P8 round 1 row 13).
+- **One pass.** Refused without `[github]`, `[auto]` or `[adjudicator] model`. Paused: nothing at all; a pause made
+  while a pass runs stops it at its next round, since the paused state is read before every claim, of a resumed row or
+  a new head (P8 round 1 row 8). One pass per store at a time (P8 round 1 row 6, round 2 row 2): the pass lock is an
+  owner-checked lease in the store, the `pass_lock` row of `auto_state` holding pid, host and a token, with its
+  heartbeat in `updated_at`, refreshed on a timer, before every claim and across synchronous work (below). It is held
+  while fresh and, on this host, while its pid runs; a dead pid frees it at once, and one older than the stale limit
+  (10 minutes, the ledger's) is free whatever its pid or host. Taking it reads and writes the row in one `BEGIN
+  IMMEDIATE` transaction, so of two takers of one stale lease the second reads the first's fresh lease and is busy, and
+  a takeover never removes a fresh owner's lease; the beat and the release name the owner, so a pass whose heartbeat
+  finds the lease no longer its own claims nothing more. A busy pass is saved as the last pass, and three busy passes
+  in a row notify.
+- **Beats across synchronous work** (P8 round 2 row 2). The engine stays synchronous (git and `gh` through
+  `spawnSync`, as P1-P7 built it), so no timer fires while `prepare`, `fetchPr`, the root build or `postRound` runs. A
+  pass registers a beat that the engine runs before and after every git, `gh` and `tar` process it starts (throttled
+  to 5 seconds): it refreshes the lease and the claim of the row being worked, and records either found taken over; a
+  forced beat on each side of the prepare stops a row whose claim was lost during it before its legs start. What stays
+  unbeaten is one process (a `gh` call is capped at 120 s) or one computation. The round's `auto-round` event names
+  its preparer (the claim's owner): a pass that finds a linked round unfinished (no `runner.json`, no
+  `round-prepared`) while that preparer's pid runs on this host leaves the round and the row alone, and the pass after
+  the prepare ends runs its legs; a dead preparer, another host's whose claim went stale, or a live pid trusted longer
+  than six hours (taken as a reused pid) fails the round as `daemon-died`, as before.
+- **The pass, in order.** The account check first (`github.login`; a GitHub App token is
+  named through GraphQL's `viewer` when `GET user` is refused, else the pass refuses plainly). Then: the searches;
+  the continuation reads; older heads of each PR read are superseded; rows of this mode left `running` or `posting`
+  with no live claim are resumed (a dead daemon, or a ruling's release); then each new head, one at a time:
+  prepare (P6, the head the ledger claimed, the number fixed at its first claim, headless trust), the legs (P5
+  worker, in the daemon's process) with the opt-in tests beside them, the headless adjudicator (P7), and the post
+  (P6). Then the prune.
+- **Queue.** `is:pr is:open draft:false review-requested:@me` (`auto.include_team_requests`, default true, Q11;
+  false uses `user-review-requested:@me`), plus `assignee:@me` with `include_assigned` (Q10), each narrowed with
+  `user:<owner>` for every owner `repos_allow` names (one search each; an owner with a wildcard leaves the search
+  unnarrowed). A result outside `repos_allow` or on `repos_skip` is dropped before anything about it is read; the pass
+  reports only how many. An empty allow list allows nothing. Drafts and the user's own PRs are skipped by the search
+  result, and again by the PR read. A head with a marker review of ours already (an interactive round, another store)
+  is `skipped`, never reviewed twice.
+- **Continuation.** The PRs with a non-retired ledger row (or a posted round of this store) in scope by the lists,
+  read at most 20 per pass beyond the search (the ones read longest ago first, newest first among equals), so every
+  PR is read in turn and none starves a pass. A new head on one is reviewed only while our latest marker review is
+  CHANGES_REQUESTED, COMMENTED or DISMISSED.
+- **Ledger** (migration 005). States as above, plus `rendered` (a dry run's). A claim holds owner (host, pid, token),
+  start and heartbeat (every 30 s while the row is worked); it is live while the heartbeat is under 10 minutes old
+  and, on this host, the pid runs, so a dead pid frees it at once and a reused pid once the heartbeat is stale. Every
+  write names the token: a taken-over owner writes nothing more, and the heartbeat that finds it fenced aborts its
+  legs and adjudicator. Attempts: a claim of a new head or of a failed row is an attempt; a failed attempt leaves the
+  row `failed`, which the next pass retries while attempts are under 2 (a failed round gets a new round with the
+  number fixed at the first claim; a failed adjudication re-runs only the adjudicator; a failed render re-renders).
+  The second failure is final and notifies. A resume of a dead pass's row is not a new attempt. The round number
+  is computed from the reviews the pass read before the claim and stored by the claim's transaction (P8 round 1 row
+  5); a row that has one keeps it on every later claim, only a reset recomputes it, and preparation takes it. A round
+  is linked to its row in the transaction that inserts it (and counted for the daily cap there), fenced by the claim
+  token: a claim taken over rolls the round back, so no crash leaves a round no row knows (row 4). A linked round whose
+  legs never started (its pass died after the prepare) runs its legs on resume, never a second round. An identity
+  round, its `identity-prepared` record and its `needs-ruling` event commit in that same transaction (P8 round 2 row
+  4); `identity.json` is written after the commit and rebuilt from the stored record before the post when a crash
+  left it unwritten.
+- **The post.** A `postRound` dry run renders the event and body; the body goes to `AUTO-POST.md` in the round dir;
+  `records_sha` is the sha256 over `ADJUDICATION.json` (`identity.json` for an identity round), `AUTO-POST.md` and every
+  leg's `answer.md`, `ratification.json` and `reply.json`; the row moves to `posting` with it, the event and the
+  review sha256, fenced; then `postRound --post --expect <that review sha256>` (P6's claim, intent, guards). A render
+  that changed before any intent was recorded is rendered again (three renders at most). The row settles as
+  `approved` (an APPROVE kept), `posted` (a REQUEST_CHANGES or COMMENT, or an approval the race withdrew),
+  `needs-ruling` (the "Ruling needed" COMMENT), or `superseded`; a guard still pending keeps it `posting`.
+- **One review per head** (P8 round 1 row 2). The last read before the POST lists the reviews: one by `github.login`
+  with this round's marker bound to this head (held by no other round of this store, and not the round's archived
+  ruling COMMENT) is adopted when it is exactly the review the post would send, event and body, with its intent and
+  guards; any other refuses the post, and the daemon skips the row. Two stores on one account are serialized only by
+  this read (N116): there is no GitHub-side reservation, so two posts that both read before either lands can both
+  send. A post by hand gets the same check.
+- **Drafts** (P8 round 1 row 3). The daemon's posts refuse a draft at that last read, after any interrupted post was
+  reconciled (`post --post` by hand may still review a draft the user chose to); the row stays `running`, unclaimed,
+  not a failed attempt, and posts once the PR is ready.
+- **Resume.** A `posting` row is never re-run: a round already recorded posted resumes its guards; else P6's
+  reconciliation alone runs first (`reconcileOnly`: a review of ours with this round's marker, body and event, stored
+  on no other round, is adopted with its guards, wherever GitHub bound it); with none landed, the records must still
+  hash to `records_sha` and the fresh render must equal the stored review sha256, or the row fails for good and
+  notifies. An exception while posting leaves the row `posting` for that resume. The adoption is P6's, which needs
+  the intent's body and event, stricter than "a marker review at this head" (P6 round 1 row 4). A resumed row reads
+  the PR first (P8 round 1 row 3): a row whose post may have begun (`posting`, or `records_sha` set) is always worked,
+  so a landed review is reconciled; any other row waits while the PR is a draft and is skipped once it is closed. A
+  re-post refused after the reconciliation found nothing landed sends nothing, so the row may leave `posting` whatever
+  intent an earlier attempt recorded: a closed PR skips it (row 12), as does a head with our review already (row 2),
+  and a draft keeps it. A posting row whose repository left `repos_allow` (or joined `repos_skip`) is still
+  reconciled, read-and-guards only: a post already recorded resumes its guards, a landed review is adopted with its
+  guards, and with nothing landed the row is skipped; nothing new posts there (row 11). A resumed row that would
+  prepare a round checks `max_rounds_per_day` first and waits at the cap (row 4). The resume holds one post claim from
+  its reconciliation through its records check, its re-post and the row's cleanup (P8 round 2 row 1), so no other post
+  of the round (`post --post` by hand, another pass) can start between them. A post refused because another post holds
+  the round's claim, or took over the claim this one held, leaves the row `posting` with its fields intact and a note,
+  at the resume or at a fresh post alike: that post may land, and the next pass reconciles it (adopting it when it
+  did).
+- **Holds.** `repos_hold`, the user's own change request on the head, and the CI gate, all through P6's event
+  mapping. A round held for a ruling (the adjudicator, a contaminated or twice-invalid headless run, the user's own
+  change request) makes the row `needs-ruling`; passes leave it until a `ruling` releases it or a new head supersedes
+  it. Nothing else can clear it, so it never resumes into an APPROVE (3.8).
+- **Caps (Q8).** `max_rounds_per_day` counts the council rounds the daemon started in the trailing 24 hours (an
+  `auto-round` event per round, dry runs included; identity rounds run no seats and are not counted). At the cap a
+  new head is deferred: no row, no round, and the next pass looks again.
+- **Notifications.** Key `<kind>:<repo>#<num>@<head>` (a dry pass's: `<kind>:dry:<repo>#<num>@<head>`, so a shadow
+  pass never suppresses the real notice, P8 round 1 row 7); delivered to `notify.command` (an executable run without a
+  shell, `~/` expanded, the notice as JSON on stdin) or the built-in desktop notifier (macOS `osascript` with the text
+  as arguments, Linux `notify-send`); one delivery per key per 24 hours, recorded as a `notify` event, a failed
+  delivery recorded as `notify-failed` and not counted. Sent on: needs-ruling, a final failure (and an account check
+  that fails, and a pass lock busy for three passes in a row), approval held (rows 4, 7, 8), approval withdrawn by the
+  race.
+- **Service.** macOS: `~/Library/LaunchAgents/dev.sabotage-council.auto.plist` (RunAtLoad, KeepAlive, throttled,
+  output to `auto/daemon.log` beside the store), checked with `plutil -lint`, loaded with `launchctl bootstrap
+  gui/<uid>`. Linux: `~/.config/systemd/user/sabotage-council-auto.service` (Restart=on-failure), checked by the
+  engine and with `systemd-analyze --user verify` when present, loaded with `systemctl --user enable --now`. Both run
+  `auto run` (with `--shadow`, `auto run --dry-run`) with the config, store and roots they were installed with, PATH
+  and HOME only; no token is written. Install creates the log file's dir (0700) before it writes and loads the
+  service, since launchd does not create it (P8 round 1 row 9).
+  Loading a file rendered outside the default directory needs an explicit loader. While a round runs, macOS keeps
+  the machine awake with `caffeinate -i -w <daemon pid>`, stopped when the round ends.
+- **Prune.** Rows of a closed PR this pass read retire (a `running` or `posting` row never does); round dirs and
+  roots as in 5.4. A running round the daemon started (an `auto-round` event) that no ledger row references fails and
+  its roots go (P8 round 1 row 4); rounds of `round start` are never touched.
 
 ## 10. Build phases
 
@@ -1621,12 +1802,12 @@ their evidence.
 | Q5 | A fourth, non-voting shadow seat to trial a candidate on real rounds before swapping? | v1.1. v1 has `seats test` on the fixture. |
 | Q6 | Retention? | DB forever; round dirs 90 days; roots deleted at round end (2 days on failure). |
 | Q7 | Do the human's own change-request asks still block in round 4+? | Yes: they are the human's call, not the council's. |
-| Q8 | Default caps? | 30 auto rounds/day, 25 min per leg, adjudicator 40 turns / 15 min; no dollar cap by default (per-backend costs are not comparable), but the scorecard shows spend. |
+| Q8 | Default caps? | 30 auto rounds/day, 25 min per leg, adjudicator 40 turns / 15 min; no dollar cap by default (per-backend costs are not comparable), but the scorecard shows spend. P8: built as the default; the day is the trailing 24 hours, counting council rounds the daemon started (9.4). |
 | Q9 | When does the owner's own setup switch from the private council? | After P8, once 10 consecutive dogfood rounds agree with the private council's verdicts; decided then. |
-| Q10 | Review PRs where the user is only an assignee? | Off by default (the private council does it; opt-in here). |
-| Q11 | Team review requests? `node:sqlite` vs `better-sqlite3`? | Include team requests (configurable). `node:sqlite` if it is stable enough on Node 22.13+, verified in P0; else `better-sqlite3`. |
+| Q10 | Review PRs where the user is only an assignee? | Off by default (the private council does it; opt-in here). P8: built as the default (`auto.include_assigned`). |
+| Q11 | Team review requests? `node:sqlite` vs `better-sqlite3`? | Include team requests (configurable). `node:sqlite` if it is stable enough on Node 22.13+, verified in P0; else `better-sqlite3`. P8: built as the default (`auto.include_team_requests = true`; false searches direct requests only). |
 | Q12 | Container mode for opt-in tests? | Optional when Docker is present; host mode otherwise, with the collaborator/fork gate. |
-| Q13 | Keep identity approval (3.10) on by default? | Yes, as the private council does; `auto.identity_approval = false` turns it off. |
+| Q13 | Keep identity approval (3.10) on by default? | Yes, as the private council does; `auto.identity_approval = false` turns it off. P8: kept on; `auto` takes the identity path as `pr` does. |
 | Q14 (resolved: D17) | When a delta round falls back to a full review (rebase, missing baseline, empty fold), which owed rule applies? Round 1's rule finds defects the rebase brought in but restarts convergence on every rebase. The round's own rule keeps convergence but may wave through a MEDIUM the rebase introduced. | The round's own rule (no convergence reset), with the changed-file list in the brief. |
 
 ## 14. Risks and what is not yet verified

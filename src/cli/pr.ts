@@ -151,19 +151,29 @@ export function renderPost(r: PostResult): string[] {
 }
 
 /**
- * `post <round> --dry-run | --post`. Exit 0 when rendered or posted; 1 when refused, superseded or failed, and when a
- * `--post` leaves a guard pending (run `post --post` again to resume it, P6 round 1 row 2).
+ * `post <round> --dry-run | --post | --reconcile`. Exit 0 when rendered or posted, or when `--reconcile` adopted a
+ * review that landed or recorded that none did; 1 when refused, superseded or failed, and when a `--post` or
+ * `--reconcile` leaves a guard pending (run `post --post` again to resume it, P6 round 1 row 2).
+ *
+ * `--reconcile` (P8 round 2 row 3) is P6's reconciliation alone: a post by hand that recorded its intent and was
+ * interrupted is either adopted (its review is on GitHub) or recorded as not landed, which lets `ruling` release a
+ * held round whose post never landed. It posts nothing new.
  */
-export async function postCommand(io: PrIo, paths: StorePaths, roundId: number, mode: 'dry-run' | 'post', json: boolean, expect?: string): Promise<void> {
+export async function postCommand(io: PrIo, paths: StorePaths, roundId: number, mode: 'dry-run' | 'post' | 'reconcile', json: boolean, expect?: string): Promise<void> {
   const cfg = await config(io, paths, false);
   if (cfg === null) return;
   const store = openStore(paths.dbPath);
   try {
-    const r = postRound(store, { config: cfg, layout: layoutOf(paths), api: apiOf(io), roundId, mode, expect });
+    const reconcile = mode === 'reconcile';
+    const r = postRound(store, { config: cfg, layout: layoutOf(paths), api: apiOf(io), roundId, mode: reconcile ? 'post' : mode, expect, reconcileOnly: reconcile });
     if (json) io.write(JSON.stringify(r, null, 2));
-    else for (const l of renderPost(r)) io.write(l);
-    const ok = r.outcome === 'rendered' || r.outcome === 'posted' || r.outcome === 'already-posted';
-    io.setExitCode(ok && !(mode === 'post' && r.guards.some((g) => g.status === 'pending')) ? 0 : 1);
+    else {
+      if (reconcile && r.notLanded) io.write(`round ${roundId} reconciled: no review of it is on GitHub, and that is recorded, so nothing waits on its post (a held round can now be released with ruling)`);
+      if (reconcile && r.outcome === 'already-posted') io.write(`round ${roundId} reconciled: its review ${String(r.reviewId)} is on GitHub and recorded as its post`);
+      for (const l of renderPost(r)) io.write(l);
+    }
+    const ok = r.outcome === 'rendered' || r.outcome === 'posted' || r.outcome === 'already-posted' || (reconcile && r.notLanded);
+    io.setExitCode(ok && !(mode !== 'dry-run' && r.guards.some((g) => g.status === 'pending')) ? 0 : 1);
   } catch (error) {
     io.write(`error: ${error instanceof Error ? error.message : String(error)}`);
     io.setExitCode(1);
