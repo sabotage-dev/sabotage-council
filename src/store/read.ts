@@ -6,14 +6,15 @@ import { sqlite, type DatabaseSync } from './sqlite.js';
 
 /*
  * A read-only view of the run store, for the commands that only read it (`stats`, and the scorecard line of
- * `seats list`). It never migrates and never writes: a store whose schema is behind this build is refused with the
- * command that upgrades it, and one ahead of this build is refused too.
+ * `seats list`). It never migrates and never changes the store's contents or schema: a store whose schema is behind
+ * this build is refused with the command that upgrades it, and one ahead of this build is refused too.
  *
  * SQLite reads a WAL-mode database through its `-wal` and `-shm` files, and a read-only connection creates them when
  * they are missing. When neither exists, no connection has the store open and every write is in the main file, so the
  * store is opened `immutable` (SQLite creates nothing beside it). When they exist (a writer has it open), the
  * connection opens read-only through them and sees the writer's last commit. Where SQLite cannot take the immutable
- * URI, it falls back to the plain read-only open.
+ * URI (Node 22.13 and 22.14, whose node:sqlite takes no URI filename), it falls back to the plain read-only open,
+ * which leaves `-wal` and `-shm` beside a closed store; the store's contents stay unchanged.
  */
 
 export class StoreReadError extends Error {
@@ -70,7 +71,7 @@ export function openStoreReadOnly(path: string, options: { migrationsDir?: strin
     if (changed) throw new StoreReadError(`the run store at ${full} applied migration ${changed.version} (${changed.name}) as a different text than this build ships`, 'changed');
     if (rows.length < migrations.length) {
       throw new StoreReadError(
-        `the run store at ${full} is at schema version ${version}; this build reads version ${latest}, and this command never writes the store: run \`sabotage-council doctor --db ${full}\` once to upgrade it (doctor applies the pending migrations), then run this again`,
+        `the run store at ${full} is at schema version ${version}; this build reads version ${latest}, and this command never migrates the store: run \`sabotage-council doctor --db ${full}\` once to upgrade it (doctor applies the pending migrations), then run this again`,
         'behind',
       );
     }

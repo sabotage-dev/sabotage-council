@@ -35,8 +35,10 @@ for it only when the user asks in this turn; `auto status` only reads.
 
 ## Before the first round
 
-Check the engine is installed: `sabotage-council --version`. If it is not on PATH, tell the user to install it
-(`npm install -g sabotage-council`, or from a checkout: `npm ci && npm run build && npm link`) and stop.
+Check the engine is installed: `sabotage-council --version`. This plugin is built for engine 0.1.0. If the engine
+is not on PATH, tell the user to install that version (`npm install -g sabotage-council@0.1.0`, or from a checkout
+of this repository: `npm ci && npm run build && npm link`) and stop. If it prints another version, say so before
+the first round: the commands and flags this skill uses are the 0.1.0 engine's.
 `sabotage-council doctor` checks the config, the run store and every seat's preflight with no model call.
 
 ## Running a round

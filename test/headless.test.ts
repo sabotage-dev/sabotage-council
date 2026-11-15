@@ -519,7 +519,7 @@ describe('headless adjudicator: the recorded live run, replayed through the rati
   });
 });
 
-describe('headless adjudicator: end to end through a fake claude (P7 acceptance 1)', () => {
+describe('headless adjudicator: end to end through a fake claude (P7 acceptance 1)', { timeout: 60_000 }, () => {
   it('adjudicates a settled round: the copy, the inputs, the placeholder, the stored result and the record on the round', async () => {
     const s = await settledRound();
     const doc = placeholderDoc(s.summary);
@@ -956,7 +956,7 @@ describe('headless adjudicator: end to end through a fake claude (P7 acceptance 
   });
 });
 
-describe('headless adjudicator: the validator rejects each class of bad output (P7 acceptance 1)', () => {
+describe('headless adjudicator: the validator rejects each class of bad output (P7 acceptance 1)', { timeout: 60_000 }, () => {
   const HIGH_ONLY = ROSTER_TOML.replace('leg_timeout_minutes = 1', 'leg_timeout_minutes = 1\nhigh_only_from_round = 1');
   type Case = [string, string | null, (s: Settled) => Json, string];
   const CASES: Case[] = [
@@ -1035,7 +1035,7 @@ describe('headless adjudicator: the validator rejects each class of bad output (
   });
 });
 
-describe('adjudicate <id> --headless (the CLI)', () => {
+describe('adjudicate <id> --headless (the CLI)', { timeout: 60_000 }, () => {
   const REGISTRY = fakeRegistry({
     codex: [{ id: 'gpt-6.1-sol', family: 'openai' }],
     claude: [

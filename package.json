@@ -1,14 +1,28 @@
 {
   "name": "sabotage-council",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "A three-seat review council for code and plans.",
   "license": "MIT",
   "author": "Sabotage Development LLC",
+  "homepage": "https://github.com/sabotage-dev/sabotage-council#readme",
+  "bugs": {
+    "url": "https://github.com/sabotage-dev/sabotage-council/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sabotage-dev/sabotage-council.git"
   },
+  "keywords": [
+    "code-review",
+    "review",
+    "council",
+    "pull-request",
+    "plan-review",
+    "claude-code",
+    "codex",
+    "ai-agents",
+    "cli"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -20,8 +34,15 @@
     "dist",
     "migrations",
     "fixtures/planted",
-    "plugin/ADJUDICATE.md"
+    "plugin/ADJUDICATE.md",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
