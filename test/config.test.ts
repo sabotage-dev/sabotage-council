@@ -74,6 +74,7 @@ describe('config: valid documents', () => {
     expect(config.pr).toEqual({ interactive_adjudication: 'trusted-only' });
     expect(config.followups).toEqual({ hook: '~/bin/file-followups' });
     expect(config.notify).toEqual({ command: '~/bin/notify' });
+    expect(config.stats).toEqual({ swap_min_ratified_rounds: 20, swap_precision_below: 0.5, swap_ratified_rate_below: 0.8 });
     expect(result.modelsChecked).toBe(true);
   });
 
@@ -84,6 +85,7 @@ describe('config: valid documents', () => {
     expect(config.pr).toEqual({ interactive_adjudication: 'trusted-only' });
     expect(config.followups).toEqual({});
     expect(config.notify).toEqual({});
+    expect(config.stats).toEqual({ swap_min_ratified_rounds: 20, swap_precision_below: 0.5, swap_ratified_rate_below: 0.8 });
     expect(config.github).toBeUndefined();
     expect(config.auto).toBeUndefined();
     expect(modelsChecked).toBe(false);
@@ -107,6 +109,22 @@ describe('config: valid documents', () => {
   it('raises no warning for three seats from three families, none the adjudicator family', async () => {
     const result = okOf(await parseConfigText(toml(seat(A), seat(C), seat(D)), { registry: fakeRegistry() }));
     expect(result.warnings).toEqual([]);
+  });
+});
+
+describe('config: [stats] (P9, plan 8.3)', () => {
+  it('takes the swap-candidate thresholds, an integer fraction included', async () => {
+    const { config } = okOf(await parseConfigText(toml(seat(A), seat(C), seat(D), '[stats]\nswap_min_ratified_rounds = 5\nswap_precision_below = 1\nswap_ratified_rate_below = 0.25\n')));
+    expect(config.stats).toEqual({ swap_min_ratified_rounds: 5, swap_precision_below: 1, swap_ratified_rate_below: 0.25 });
+  });
+
+  it('rejects a fraction outside 0..1, a round count below 1 and an unknown key', async () => {
+    const bad = async (body: string): Promise<ConfigIssue[]> => errorsOf(await parseConfigText(toml(seat(A), seat(C), seat(D), `[stats]\n${body}\n`)));
+    expect(await bad('swap_precision_below = 1.5')).toEqual([{ path: 'stats.swap_precision_below', message: 'must be from 0 to 1' }]);
+    expect(await bad('swap_ratified_rate_below = -0.1')).toEqual([{ path: 'stats.swap_ratified_rate_below', message: 'must be from 0 to 1' }]);
+    expect((await bad('swap_min_ratified_rounds = 0')).map((e) => e.path)).toEqual(['stats.swap_min_ratified_rounds']);
+    expect((await bad('swap_min_ratified_rounds = 2.5')).map((e) => e.path)).toEqual(['stats.swap_min_ratified_rounds']);
+    expect(await bad('swap_after = 3')).toEqual([{ path: 'stats.swap_after', message: 'unknown key' }]);
   });
 });
 

@@ -1042,7 +1042,16 @@ hook = "~/bin/file-followups"      # D11: receives followups JSON on stdin
 
 [notify]
 command = "~/bin/notify"           # receives an event JSON on stdin; built-in desktop notifier if unset
+
+[stats]                            # P9: the swap-candidate flag (8.3); it only informs
+swap_min_ratified_rounds = 20      # N: adjudicated rounds the seat ratified in, before it can be flagged
+swap_precision_below = 0.5         # P
+swap_ratified_rate_below = 0.8     # R
 ```
+
+`[stats]` (P9) is strict like every table: N is a positive integer, P and R are fractions from 0 to 1. `stats` reads
+it even when the rest of the config fails validation (with a warning), and uses the defaults when there is no config
+file; an invalid `[stats]` section is an error.
 
 Config load validates:
 - exactly three seats;
@@ -1469,7 +1478,76 @@ Per seat and per occupant, over a window:
 | **Drop-one counterfactual** | blocking findings lost and rounds that would have flipped to SHIP if this seat had been absent | The number that retired a seat in the private council: 0 blocking findings lost in 45 rounds. |
 | Dissent right | rounds where this seat was the lone dissent and the final verdict or an owed finding sided with it | Lone dissents were measured right more often than not. |
 | Cost / duration | USD or credits or quota %, p50/p90 duration, **cost per adopted finding** | |
-| Agreement matrix | pairwise SHIP-vs-not disagreement between seats | Two seats that always agree are one seat. |
+| Agreement matrix | pairwise NEEDS-WORK-vs-not disagreement between seats (SHIP vs not until round 1 of P9; see Dissent below) | Two seats that always agree are one seat. |
+
+**As built (P9).** `stats [--since <dur|date>] [--seat <id>] [--occupant <backend:model[:effort]>] [--json]
+[--html <file>]` reads the store and changes nothing; P9 added no migration and records nothing new per round. It
+opens the store read-only and never migrates it: a store whose schema is behind this build is refused with the
+command that upgrades it (`sabotage-council doctor --db <path>`, which applies the pending migrations), and one ahead
+of this build is refused too. With no `-wal` or `-shm` file beside the store (no connection has it open) it opens it
+`immutable`, so SQLite creates nothing; with them it reads through them and sees a writer's last commit. The
+window is all history unless `--since` narrows it (a duration such as `30d`, a UTC date, or an ISO timestamp with a
+zone; rounds count by `started_at`). The filters choose which rows are shown, never what a metric reads (the
+drop-one counterfactual, dissent and agreement need every seat's legs). An empty store or window prints a message and
+exits 0, and no store is created. The choices the table leaves open:
+
+- **Which rounds count.** Council rounds whose legs settled: dry-run rounds count (the shadow week is all dry runs),
+  and failed, solo, awaiting-adjudication and superseded rounds count for the leg metrics (rounds seated, ratified
+  rate, failure mix, verdict mix, cost and duration, agreement). Only adjudicated rounds (a stored verdict) count for
+  the finding metrics (raised, adopted, refuted, precision, unique, drop-one, dissent). Identity rounds have no legs;
+  a round still `running` and a leg still `RUNNING` are left out.
+- **Seated.** A seat is seated in a round when it has a settled leg there (a launch, or a primary that failed
+  preflight). A seat the untrusted-PR policy skipped has no leg and is not seated, so it is not counted against.
+- **One occupant in two seats.** Two seats can share an occupant row (two kiro seats on one model with two logins).
+  The occupant's card counts every ratified leg of it in a round (verdicts, durations, findings); a finding both legs
+  raised is one finding, unique to the occupant when no other occupant raised it, and dropping the occupant drops both
+  legs. Its position in a round (dissent, agreement) is the one its legs share; when they differ it has none there.
+- **Fallbacks and relaunches.** A fallback leg counts for its seat and for its own occupant, never for the seat's
+  primary occupant. A relaunch is a leg at attempt 2 or later (the same seat and role launched again); a fallback is
+  the `fallback` role at attempt 1; a fallback's own relaunch is both. Fallback-used rate: for a seat, seated rounds
+  with a fallback leg; for an occupant, rounds it sat as a primary and its seat moved to the fallback, over the rounds
+  it sat as a primary.
+- **Verdict mix** is the raw verdict of each ratified leg (what the seat said).
+- **Raised** counts canonical findings the seat was a source of, once each; leg findings the adjudicator left
+  unmapped are counted apart.
+- **Rulings.** An upheld ruling is adopted and owed; an overturned ruling is refuted (it lowers precision) and no
+  longer blocks; a ruling not yet ruled on is pending, in neither. Nits and noted findings are in neither.
+- **Unique and HIGH.** A finding is unique to a seat when every source leg is that seat's. Uniqueness counts raisers,
+  not severities: a finding two seats raised at different severities is unique to neither. Unique HIGH counts an
+  adopted unique finding whose final (adjudicator's) severity is HIGH; a seat's own HIGH label earns nothing.
+- **Drop-one.** Blocking = owed, or a ruling that still holds. Blocking lost: blocking findings it raised alone. A
+  round flips to SHIP when its stored verdict was not SHIP, every blocking finding was its alone, and the other
+  ratified legs still make quorum (2). A stored SHIP is never a flip, even with a held ruling of its alone (the
+  validator stores SHIP with a held ruling when nothing is owed). A round whose other legs had fewer than 2 ratified
+  is counted as quorum lost, never as a flip: the solo review it would have been never approves.
+- **Dissent.** The axis is NEEDS-WORK vs not, on the raw verdict (what the seat said): SHIP and SHIP-WITH-FIXES are
+  one position, since the decision rule (3.2) treats them alike and only NEEDS-WORK blocks. The council chose this
+  axis over the plan's earlier "SHIP vs not" in round 1 of P9 (PR #11): under SHIP vs not, a SHIP-WITH-FIXES whose
+  findings all became follow-ups was a wrong lone dissent from two SHIPs. A lone dissent is a round where its
+  position differed from the two other ratified legs, which agreed (a `none` verdict has no position). A lone
+  NEEDS-WORK was right when the round ended blocked or one of its own findings was owed; a lone SHIP or
+  SHIP-WITH-FIXES was right when nothing blocked at the end.
+- **Cost and duration.** USD and credits summed over every settled leg (failed attempts cost too); units are never
+  converted (Q8). `quota_used_pct` is a snapshot of a CLI's own window: the highest and the latest are shown.
+  p50/p90 are nearest-rank percentiles of ratified legs' durations. Cost per adopted finding: its USD (or credits) in
+  adjudicated rounds over the adopted findings in them; null unless one of its legs in an adjudicated round recorded
+  that unit (USD and credits each on their own), so a cost recorded only elsewhere never reads as free. The
+  adjudicator's own cost is shown for the window.
+- **Agreement** is on the same NEEDS-WORK-vs-not axis, over settled rounds where both ratified with a verdict, per
+  pair of seats and per pair of occupants; a pair that never disagreed is marked.
+
+`--json` prints a versioned report (`"schema": "sabotage-council.stats"`, `"version": 1`; the README lists the
+fields). `--html <file>` writes the same report as one self-contained file: inline CSS, no script, font, image or
+link, a `default-src 'none'` CSP, light and dark by `prefers-color-scheme`, wide tables scrolling in their own box at
+phone width. Every value that came from a round is escaped and appears only as text (finding titles were written by
+seats that read PR content). It is written with mode 0600 through a temp file and a rename, and a path that is not a
+regular file is refused. Its agreement matrix shows every pair the (filtered) report keeps: the axes are the pairs'
+endpoints, as the text and the JSON show them.
+
+Untrusted strings in every output: the text and the HTML replace control characters, line separators, bidi controls
+(U+202A-U+202E, U+2066-U+2069) and zero-width characters (U+200B-U+200F, U+FEFF) with U+FFFD; the JSON (`stats`,
+`seats list`, `seats test`) writes DEL, C1, U+2028, U+2029, bidi and zero-width characters as `\uXXXX` escapes, so the
+parsed strings are exact and the printed bytes hold none of them.
 
 ### 8.3 Recommendations
 
@@ -1477,12 +1555,81 @@ The report flags a seat **"swap candidate"** when, over at least 20 ratified rou
 owed count is 0 and either its precision is below 50% or its ratified rate is below 80%. It always shows the
 evidence rows behind the flag. It never swaps a seat by itself.
 
+**As built (P9, with council round 1 of PR #11).** N, P and R are `[stats] swap_min_ratified_rounds`,
+`swap_precision_below` and `swap_ratified_rate_below` (5.2).
+
+- **The flag judges the seat's current occupant.** Current is the config's primary occupant for the seat when a
+  config loads, else the occupant the latest round in the window seated there. Its evidence is the seat's rounds
+  since that occupant took the seat: from the first round whose roster snapshot seats it there after a different one
+  (a round whose snapshot does not name the seat reads its primary leg), or from the window's start. So a swap starts
+  the evidence over, and the reasons (and the JSON's `occupant`) name the occupant and the round it took the seat.
+  The seat's fallback legs in those rounds count, as they do on the seat card; changing only the fallback starts
+  nothing over. The seat cards themselves still cover the whole window, every occupant included.
+- **Two branches, each with its own N.** The ratified-rate branch needs N rounds seated: a seat that fails every
+  attempt over N rounds is flagged, its failures the evidence. The precision branch needs N adjudicated rounds it
+  ratified in (a round with no adjudication has no outcome, so it is no evidence that the seat found nothing). Both
+  need unique owed 0.
+- **Precision n/a is inconclusive,** never "at or above P": the reason says nothing it raised was adopted or refuted,
+  with the rounds, the findings raised and the blocking findings lost without it. Such a seat is not flagged on
+  precision; whether it should be is the owner's call, and this rule stands until then.
+
+The evidence is every round of the tenure the seat sat in (with its verdict, or why it did not ratify) and every
+finding it raised in the adjudicated ones (outcome, severity, unique or not).
+
 ### 8.4 Swapping seats
 
 - `sabotage-council seats list | add | remove | swap <seat> --backend X --model Y [--effort E] | test <seat|occupant>`.
 - `seats test` runs the built-in planted-defect fixture and reports defects found, ratification, cost and
   duration. It qualifies a candidate before seating it.
 - Every round stores the roster snapshot. A swap opens a new occupant, so history stays attributable.
+
+**As built (P9).**
+
+- `seats list [--no-preflight] [--json]`: each seat and its fallback, the enforcement label its preflight gives (as
+  `doctor` shows it, no model call), and a one-line scorecard (all history) when the store has the seat. Its flag
+  judges the config's occupant for the seat, as `stats` does (8.3), so it is never raised on a swapped-out
+  occupant's history. It reads the store read-only, as `stats` does; when it cannot (a schema behind or ahead), it
+  lists the seats with a note.
+- `seats swap | add | remove <seat> [--backend X --model Y [--effort E] [--sandbox m] [--auth-home d]] [--dry-run]` edit
+  the user's config file through one seam (`SeatEditor`), whose default changes only the target seat's own `[[seats]]`
+  block and keeps every other byte (comments, order, other sections, CRLF, a key's trailing comment, a value that does
+  not change), with one exception for blank lines: the blank line that separates two blocks goes with a removed block. A
+  swap replaces the occupant keys (backend, model, effort, sandbox, auth_home: the ones the new occupant does not set
+  are deleted) and keeps the id and the fallback; `add` appends a block after the last seat's last key line, with a
+  blank line before it (and one after it when text follows); `remove` deletes the block from its header to its last key
+  line together with the blank line after it when a blank line also precedes it, or the blank line before it when the
+  block ends the file, so a remove and an add do not grow the file and no double or trailing blank line is left.
+  Comments above the header and after the last key line stay. Before anything is written, both texts are parsed and must
+  differ only in the target seat, and the edited text must pass the config loader (D10's three seats, unique ids, models
+  in the adapter's list, distinct occupants and fallbacks). `add` therefore works only on a file with two seats and
+  `remove` only on one with four, and each refusal names `swap`. A timestamped backup (mode 0600) is written beside the
+  file, then the file is replaced through a temp file and a rename (its exact mode kept, set on the temp file's
+  descriptor so the umask cannot clear bits; a symlinked config keeps its link; a file changed under the edit is
+  refused). `--dry-run` prints the unified diff and writes nothing. A file the editor cannot place a block in safely
+  (seats as an inline array or a dotted key, a `[seats.x]` sub-table, a multi-line occupant value) is refused, never
+  rewritten.
+- `seats test <seat-id | backend:model[:effort]> [--fallback] [--auth-home d] [--sandbox m] [--timeout min] [--json]`:
+  one leg on the planted-defect fixture shipped in the package (`fixtures/planted/`: base and head trees, three
+  defects in `calc/rangesum.py` with their lines and keywords). The fixture's repository is built at fixed shas, and
+  the root the normal way (archive, neutralize, sanitize, a diff brief with a fresh nonce, seal); the leg is
+  preflighted, launched, polled under the cap, collected and ratified as a round's leg, then the residue is swept.
+  Each defect sits on one changed line (6, 11 and 20). A finding counts for a defect when its path is the head path
+  exactly once the root's `planted/` prefix (and a leading `./`) is removed (never the `_base/` copy, which holds the
+  correct code, or any other prefix) and its line is the defect's line; else, on that file, when its title holds more
+  of that defect's keywords than of any other's (a tie is no match; no keyword is a bare operator such as `//`). With
+  an unparsed findings block, the answer text's `file:line` citations are read by the same path rule. It prints the
+  backend, model, effort and cap before launching (on stderr with `--json`, whose stdout is only the JSON result).
+  SIGINT or SIGTERM cancels: it is checked before the setup, before the preflight and after it immediately before the
+  paid launch, and a launch that returns after it is cancelled at once; a cancel before the launch, or a setup
+  failure (the fixture repository, the root), launches nothing, removes the leg dir, records nothing, prints a clear
+  error and exits 1. Exit 0: ratified and every defect found; 2: ratified but a defect missed; 1: not ratified. It
+  works for an occupant not in the config: `backend:model[:effort]` reads against the adapter's model list (the whole
+  rest as the model when it is listed, the last `:` segment as the effort only when that split is listed and the
+  whole is not, refused when both are listed, naming both). What an adapter or a leg supplies (preflight reasons,
+  failed checks, finding ids) is cleaned before it is printed. The result is a `seat-test` event with no round: no
+  `rounds`, `legs` or `occupants` row is written, so no scorecard metric can count it, and `stats` lists seat tests
+  on their own.
+- A shadow seat (a fourth, non-voting seat on real rounds) stays v1.1 (Q5).
 
 ## 9. Modes in detail
 

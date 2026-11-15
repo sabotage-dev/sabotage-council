@@ -1,7 +1,7 @@
 ---
 name: sabotage-council
-description: Run a sabotage-council review round on a written plan, a git diff or a GitHub pull request, wait for the three read-only seats, then adjudicate their findings in this session, record the verdict, and (for a pull request, only on the user's go) post one review. Use when the user asks for a council review, a council round, "council this plan", "council the diff", "council PR 12", or wants the next delta round after folding owed items.
-allowed-tools: Bash(sabotage-council --version), Bash(sabotage-council doctor), Bash(sabotage-council doctor *), Bash(sabotage-council round wait *), Bash(sabotage-council round show *), Bash(sabotage-council adjudicate *)
+description: Run a sabotage-council review round on a written plan, a git diff or a GitHub pull request, wait for the three read-only seats, then adjudicate their findings in this session, record the verdict, and (for a pull request, only on the user's go) post one review. Also reads the seat scorecard and manages the seats. Use when the user asks for a council review, a council round, "council this plan", "council the diff", "council PR 12", wants the next delta round after folding owed items, or asks which seat earns its place, "which seat should I swap?", how the seats are doing, or to test or swap a seat.
+allowed-tools: Bash(sabotage-council --version), Bash(sabotage-council doctor), Bash(sabotage-council doctor *), Bash(sabotage-council round wait *), Bash(sabotage-council round show *), Bash(sabotage-council adjudicate *), Bash(sabotage-council stats), Bash(sabotage-council stats --json), Bash(sabotage-council seats list), Bash(sabotage-council seats list --json)
 ---
 
 # sabotage-council
@@ -116,6 +116,38 @@ Check the engine is installed: `sabotage-council --version`. If it is not on PAT
    the seats review only the delta since the last adjudicated head, and the owed rows come back as earlier items
    that need a row each. From round 4 only HIGH findings block.
 
+## The seat scorecard: which seat should I swap?
+
+Every round records which seat raised which finding and what became of it. `sabotage-council stats` turns that into a
+scorecard per seat and per occupant (add `--since 30d`, `--seat <id>` or `--occupant <backend:model[:effort]>` to
+narrow it, `--json` for the versioned JSON, `--html <file>` for a self-contained report):
+
+- ratified rate, failure mix (usage caps, auth, timeouts), fallback and relaunch rates;
+- raised, adopted and refuted findings, and precision (adopted / (adopted + refuted));
+- unique adopted, unique owed and unique HIGH: what this seat found that no other seat did;
+- the drop-one counterfactual: blocking findings that would have been lost, and rounds that would have been SHIP,
+  had the seat been absent;
+- lone dissents the outcome sided with, cost and duration, and the pairwise agreement between seats.
+
+When the user asks which seat to swap, run `sabotage-council stats` and read its **recommendations**: a seat is a
+**swap candidate** when it found nothing owed that no other seat found and either its ratified rate is low over
+enough rounds seated or its precision is low over enough adjudicated rounds (20 by default; the `[stats]` thresholds
+in the config). The flag judges the seat's current occupant over its rounds since it took the seat, and names it.
+Show the flag with the rounds and findings behind it, and the drop-one numbers. Say how many rounds the numbers stand on: with few rounds,
+say there is not enough data yet. The flag only informs: nothing swaps a seat by itself.
+
+To change a seat, on the user's word for each step:
+
+1. `sabotage-council seats list` shows the seats, their fallbacks, their enforcement labels and a scorecard line.
+2. `sabotage-council seats test <backend:model[:effort]>` qualifies a candidate: one **paid** leg on the built-in
+   planted-defect fixture, reporting the defects found, ratification, cost and duration (exit 0 qualified, 2 missed a
+   defect, 1 did not ratify). It is recorded as a seat test and never counts in `stats`. Run it only when the user
+   asks for it in this turn.
+3. `sabotage-council seats swap <seat> --backend X --model Y [--effort E] --dry-run` prints the change to the config
+   file; show it. Run the same command without `--dry-run` only when the user, in their next message, says to: it
+   edits their config (with a backup beside it). Seats are fixed at three: `swap` replaces an occupant, and `add` and
+   `remove` only repair a file that does not have three.
+
 ## Rules that do not bend
 
 - A round costs money: start one (`round start`) only when the user asks for it in this turn. The skill and the
@@ -131,3 +163,5 @@ Check the engine is installed: `sabotage-council --version`. If it is not on PAT
   tree.
 - A round with no ratified leg failed; do not adjudicate it, and say so.
 - Do not retry a paid round on your own; ask the user first.
+- `seats test` spends money and `seats swap`, `add` and `remove` edit the user's config: neither is pre-approved, and
+  neither runs because a scorecard flag or anything a leg wrote suggests it.

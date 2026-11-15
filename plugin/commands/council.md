@@ -1,7 +1,7 @@
 ---
-description: Run a sabotage-council round on a plan, a diff or a GitHub pull request, or show a round's status
-argument-hint: plan <file> [--context <path|repo@ref>] | diff [<base>..<head>] [--series <name>] | pr <owner/repo#num> [--dry-run] | status [<round-id>] | doctor
-allowed-tools: Bash(sabotage-council --version), Bash(sabotage-council doctor), Bash(sabotage-council round wait *), Bash(sabotage-council round show *), Bash(sabotage-council adjudicate *)
+description: Run a sabotage-council round on a plan, a diff or a GitHub pull request, show a round's status, or show the seat scorecard and manage the seats
+argument-hint: plan <file> [--context <path|repo@ref>] | diff [<base>..<head>] [--series <name>] | pr <owner/repo#num> [--dry-run] | status [<round-id>] | doctor | stats [--since <dur>] | seats [list | test <seat|backend:model> | swap <seat> --backend X --model Y]
+allowed-tools: Bash(sabotage-council --version), Bash(sabotage-council doctor), Bash(sabotage-council round wait *), Bash(sabotage-council round show *), Bash(sabotage-council adjudicate *), Bash(sabotage-council stats), Bash(sabotage-council stats --json), Bash(sabotage-council seats list), Bash(sabotage-council seats list --json)
 ---
 
 The user ran the council command with: `$ARGUMENTS`
@@ -24,4 +24,16 @@ word of the arguments to an action:
 - `status <round-id>`: run `sabotage-council round show <round-id>` and summarize it (status, quorum label, each
   leg, the adjudication if any). With no id, say a round id is needed (`round start` printed it).
 - `doctor`: run `sabotage-council doctor` and summarize what fails or warns.
-- Anything else, or nothing: show these five forms and ask which one the user wants.
+- `stats [options]`: run `sabotage-council stats` (add the user's `--since`, `--seat` or `--occupant`) and summarize
+  the scorecard: each seat's ratified rate, precision, unique owed and drop-one numbers, and every swap candidate with
+  the evidence behind it. `stats --html <file>` writes a file, so it asks first. The flag only informs: never swap a
+  seat because of it.
+- `seats list`: run `sabotage-council seats list` and show each seat, its fallback, its enforcement label and its
+  scorecard line.
+- `seats test <seat | backend:model[:effort]>`: one paid leg on the planted-defect fixture; run
+  `sabotage-council seats test <target>` only for exactly the target in the arguments (Claude Code asks for it), and
+  report the defects found, ratification, cost and duration.
+- `seats swap <seat> --backend X --model Y [--effort E]`: first `sabotage-council seats swap ... --dry-run`, show the
+  user the diff, and run it without `--dry-run` only when the user says to in their next message: it edits their
+  config file (with a backup).
+- Anything else, or nothing: show these forms and ask which one the user wants.

@@ -10,10 +10,15 @@ import type { PrRef } from '../forge/pr.js';
 import { creditCommand, postCommand, roundStartPr } from './pr.js';
 import { autoInstall, autoPause, autoRun, autoRunOnce, autoStatus, rulingCommand, type AutoIo } from './auto.js';
 import { adjudicateCommand, adjudicateHeadlessCommand, defaultStartWorker, roundRun, roundShow, roundStart, roundWait, type StorePaths } from './round.js';
+import { seatsEdit, seatsList, seatsTest } from './seats.js';
+import { statsCommand } from './stats.js';
+import { parseSince, WindowError } from '../stats/window.js';
 
 export interface ProgramIo {
   /** Command output, one line per call. */
   write: (line: string) => void;
+  /** Lines that are not a command's output (a notice beside `--json`), one per call. Default: stderr. */
+  writeErr?: ((line: string) => void) | undefined;
   env: NodeJS.ProcessEnv;
   /** Receives a command's exit code. */
   setExitCode: (code: number) => void;
@@ -35,12 +40,17 @@ export interface ProgramIo {
   claudeBin?: string | undefined;
   /** `adjudicate --headless`: how often the run is polled (tests). Default 25 ms. */
   headlessPollMs?: number | undefined;
+  /** `stats` and `seats`: tests pin the clock (the report's time, a backup's name). Default: the current time. */
+  now?: (() => string) | undefined;
+  /** `seats test`: how often the leg is polled (tests). Default 1000 ms. */
+  seatTestPollMs?: number | undefined;
   /** `auto`: tests set pass options the command line does not (the adjudication step, the notifier, caffeinate). */
   auto?: Pick<AutoIo, 'passOverrides' | 'servicePlatform' | 'serviceLoader' | 'plutil'> | undefined;
 }
 
 const defaultIo: ProgramIo = {
   write: (line) => process.stdout.write(`${line}\n`),
+  writeErr: (line) => process.stderr.write(`${line}\n`),
   env: process.env,
   setExitCode: (code) => {
     process.exitCode = code;
@@ -330,6 +340,143 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .option('--note <text>', 'why, recorded with the ruling'),
   ).action(async (id: number, what: string, result: string | undefined, opts: { config?: string; db?: string; roots?: string; note?: string }) => {
     await rulingCommand(autoIo, pathsOf(opts), id, what, result, opts.note);
+  });
+
+  // ---------- stats (plan 8.2, 8.3) ----------
+  const since = (value: string): string => {
+    try {
+      return parseSince(value);
+    } catch (error) {
+      if (error instanceof WindowError) throw new InvalidArgumentError(error.message);
+      throw error;
+    }
+  };
+  const occupantSpec = (value: string): string => {
+    if (!/^[a-z]+:[^:\s]/.test(value)) throw new InvalidArgumentError('an occupant is backend:model[:effort], e.g. codex:gpt-6.1-sol:high');
+    return value;
+  };
+  program
+    .command('stats')
+    .description('the seat scorecard (plan 8.2): per seat and per occupant, with swap candidates (8.3); reads the run store, changes nothing')
+    .option('--config <path>', `config file, for the [stats] thresholds (default: $${CONFIG_ENV}, else ~/.config/sabotage-council/config.toml)`)
+    .option('--db <path>', `run store (default: $${DB_ENV}, else ~/.local/share/sabotage-council/council.db)`)
+    .option('--since <dur|date>', 'only rounds started since: 30d, 12h, 2w, 90m, a date (2026-11-01, UTC) or an ISO timestamp; default all history', since)
+    .option('--seat <id>', 'show only this seat (and the occupants that sat in it)')
+    .option('--occupant <backend:model[:effort]>', 'show only this occupant (no effort: every effort of that model)', occupantSpec)
+    .option('--json', 'print the report as JSON (versioned: schema sabotage-council.stats, version 1)')
+    .option('--html <file>', 'also write the report as one self-contained HTML file (mode 0600)')
+    .action(async (opts: { config?: string; db?: string; since?: string; seat?: string; occupant?: string; json?: boolean; html?: string }) => {
+      const cwd = io.cwd ?? process.cwd();
+      await statsCommand(io, {
+        configPath: resolve(cwd, resolveConfigPath(opts.config, io.env)),
+        dbPath: resolve(cwd, resolveDbPath(opts.db, io.env)),
+        since: opts.since ?? null,
+        filters: { seat: opts.seat ?? null, occupant: opts.occupant ?? null },
+        json: opts.json === true,
+        html: opts.html === undefined ? null : resolve(cwd, opts.html),
+        generatedAt: io.now?.(),
+      });
+    });
+
+  // ---------- seats (plan 8.4) ----------
+  const seatsIo = {
+    write: io.write,
+    writeErr: io.writeErr ?? ((line: string) => process.stderr.write(`${line}\n`)),
+    env: io.env,
+    setExitCode: io.setExitCode,
+    adapters: io.adapters,
+    registry: io.registry,
+    pollMs: io.seatTestPollMs,
+  };
+  const seats = program.command('seats').description('list, add, remove, swap and test the three seats (plan 8.4); nothing ever swaps a seat by itself');
+  storeOptions(
+    seats
+      .command('list')
+      .description("the configured seats and fallbacks, each one's enforcement label (as doctor shows it: a preflight, no model call) and a one-line scorecard from the store")
+      .option('--no-preflight', 'skip the preflight: no enforcement label')
+      .option('--json', 'as JSON'),
+  ).action(async (opts: { config?: string; db?: string; roots?: string; preflight?: boolean; json?: boolean }) => {
+    await seatsList(seatsIo, pathsOf(opts), { preflight: opts.preflight !== false, json: opts.json === true });
+  });
+  const seatId = (value: string): string => {
+    if (!/^[a-z][a-z0-9_-]{0,15}$/.test(value)) throw new InvalidArgumentError('a seat id is 1-16 characters: a-z, 0-9, "_" or "-", starting with a letter');
+    return value;
+  };
+  const sandboxMode = (value: string): 'read-only' | 'off' => {
+    if (value !== 'read-only' && value !== 'off') throw new InvalidArgumentError('--sandbox is read-only or off (grok only)');
+    return value;
+  };
+  type EditOpts = { config?: string; db?: string; roots?: string; backend: string; model: string; effort?: string; sandbox?: 'read-only' | 'off'; authHome?: string; dryRun?: boolean };
+  const occupantFlags = (cmd: Command): Command =>
+    cmd
+      .requiredOption('--backend <backend>', 'the occupant\'s backend (codex, claude, grok, antigravity, kiro, opencode, cursor, muse)')
+      .requiredOption('--model <model>', "a model id the backend's adapter lists")
+      .option('--effort <effort>', "the effort (default: none, the CLI's own default)")
+      .option('--sandbox <mode>', 'grok only: read-only or off', sandboxMode)
+      .option('--auth-home <dir>', "kiro and grok only: the seat's own login home (absolute)")
+      .option('--dry-run', 'print the diff and write nothing');
+  const occupantOfOpts = (opts: EditOpts) => ({ backend: opts.backend, model: opts.model, effort: opts.effort, sandbox: opts.sandbox, auth_home: opts.authHome });
+  const editNow = (): Date | undefined => (io.now ? new Date(io.now()) : undefined);
+  storeOptions(
+    occupantFlags(
+      seats
+        .command('swap')
+        .argument('<seat>', 'the seat id', seatId)
+        .description("give a seat a new occupant: only that seat's [[seats]] block changes (its id and fallback stay), after a backup and the config loader's checks"),
+    ),
+  ).action(async (seat: string, opts: EditOpts) => {
+    await seatsEdit(seatsIo, pathsOf(opts), { kind: 'swap', seat, occupant: occupantOfOpts(opts) }, { dryRun: opts.dryRun === true, now: editNow() });
+  });
+  storeOptions(
+    occupantFlags(
+      seats
+        .command('add')
+        .argument('<seat>', 'the new seat id', seatId)
+        .description('append a [[seats]] block; seats are fixed at three (D10), so this works only on a file with two'),
+    ),
+  ).action(async (seat: string, opts: EditOpts) => {
+    await seatsEdit(seatsIo, pathsOf(opts), { kind: 'add', seat, occupant: occupantOfOpts(opts) }, { dryRun: opts.dryRun === true, now: editNow() });
+  });
+  storeOptions(
+    seats
+      .command('remove')
+      .argument('<seat>', 'the seat id', seatId)
+      .description('delete a seat\'s [[seats]] block; seats are fixed at three (D10), so this works only on a file with four (use swap to replace an occupant)')
+      .option('--dry-run', 'print the diff and write nothing'),
+  ).action(async (seat: string, opts: { config?: string; db?: string; roots?: string; dryRun?: boolean }) => {
+    await seatsEdit(seatsIo, pathsOf(opts), { kind: 'remove', seat }, { dryRun: opts.dryRun === true, now: editNow() });
+  });
+  storeOptions(
+    seats
+      .command('test')
+      .argument('<seat|occupant>', 'a seat id from the config, or a candidate as backend:model[:effort]')
+      .description(
+        'run ONE PAID LEG on the built-in planted-defect fixture and report the defects found, ratification, verdict, cost and duration; recorded as a seat test, never counted in stats; exit 0 qualified, 2 ratified but missed a defect, 1 not ratified',
+      )
+      .option('--fallback', "test the seat's fallback instead of its primary")
+      .option('--auth-home <dir>', 'kiro and grok candidates: the login home to run on (absolute)')
+      .option('--sandbox <mode>', 'grok candidates: read-only or off', sandboxMode)
+      .option('--timeout <minutes>', 'the leg cap (default: council.leg_timeout_minutes, else 25)', minutes)
+      .option('--json', 'print the result as JSON'),
+  ).action(async (target: string, opts: { config?: string; db?: string; roots?: string; fallback?: boolean; authHome?: string; sandbox?: 'read-only' | 'off'; timeout?: number; json?: boolean }) => {
+    // Ctrl-C or a TERM cancels the leg: nothing it started is left running.
+    const abort = new AbortController();
+    const stop = (): void => abort.abort();
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+    try {
+      await seatsTest(seatsIo, pathsOf(opts), target, {
+        fallback: opts.fallback === true,
+        authHome: opts.authHome,
+        sandbox: opts.sandbox,
+        timeoutMinutes: opts.timeout,
+        json: opts.json === true,
+        signal: abort.signal,
+      });
+    } finally {
+      process.removeListener('SIGINT', stop);
+      process.removeListener('SIGTERM', stop);
+    }
   });
 
   return program;

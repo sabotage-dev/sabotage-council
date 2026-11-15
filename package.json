@@ -19,6 +19,7 @@
   "files": [
     "dist",
     "migrations",
+    "fixtures/planted",
     "plugin/ADJUDICATE.md"
   ],
   "scripts": {
