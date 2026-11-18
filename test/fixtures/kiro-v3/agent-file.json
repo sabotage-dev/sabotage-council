@@ -1,0 +1,68 @@
+{
+  "name": "sabotage-council",
+  "description": "sabotage-council read-only review seat",
+  "tools": [
+    "glob",
+    "grep",
+    "read"
+  ],
+  "allowedTools": [],
+  "toolsSettings": {
+    "execute_bash": {
+      "denyByDefault": true
+    },
+    "fs_write": {
+      "deniedPaths": [
+        "**"
+      ]
+    }
+  },
+  "resources": [],
+  "hooks": [],
+  "mcpServers": {},
+  "includeMcpJson": false,
+  "permissions": {
+    "rules": [
+      {
+        "capability": "shell",
+        "match": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "fs_write",
+        "match": [
+          "**"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "fs_read",
+        "match": [
+          "./**"
+        ],
+        "effect": "allow"
+      },
+      {
+        "capability": "web_fetch",
+        "match": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "web_search",
+        "match": [
+          "*"
+        ],
+        "effect": "deny"
+      }
+    ]
+  },
+  "kiroUpgrade": {
+    "revision": 3,
+    "fingerprint": "sha256:05eb4a75778be2d65203627b438cc4f87e8a8bab0ad164e5ad776d5957adec28",
+    "source": "sha256:af853cf771d041b0b0789c8654b296b991b614b5e4fa213c37557c575020f3f4"
+  }
+}

@@ -114,7 +114,8 @@ async function launch(
   opts: { o?: Partial<Occupant>; record?: Record<string, unknown> | null; plant?: (root: string, outside: string) => void; startedAt?: (ms: number) => void; env?: Record<string, string> } = {},
 ): Promise<Run> {
   const home = tokenHome(GOOD_TOKEN);
-  const o: Occupant = { backend: 'kiro', model: MODEL, effort: 'low', authHome: home, ...opts.o };
+  // These are the P3 (v2 engine) cases; since P11 an occupant with no engine runs v3.
+  const o: Occupant = { backend: 'kiro', model: MODEL, effort: 'low', authHome: home, engine: 'v2', ...opts.o };
   const record = opts.record === undefined ? sessionRecord({ effort: o.effort ?? null }) : opts.record;
   const full = {
     sessionId: SESSION,
@@ -339,7 +340,7 @@ describe('kiro through the fake agent (synthetic, every conformance case)', () =
 });
 
 describe('kiro preflight (no model call, no browser risk)', () => {
-  const o = (home: string, extra: Partial<Occupant> = {}): Occupant => ({ backend: 'kiro', model: MODEL, effort: 'low', authHome: home, ...extra });
+  const o = (home: string, extra: Partial<Occupant> = {}): Occupant => ({ backend: 'kiro', model: MODEL, effort: 'low', authHome: home, engine: 'v2', ...extra });
   it('reads only expiry and refresh presence from the auth_home store, then lists models with HOME = auth_home', async () => {
     const home = tokenHome(GOOD_TOKEN);
     const { run, calls } = runner();
@@ -356,7 +357,7 @@ describe('kiro preflight (no model call, no browser risk)', () => {
   });
   it('defaults to the user HOME when no auth_home is set', async () => {
     const home = tokenHome(GOOD_TOKEN);
-    const pre = await createKiroAdapter({ runner: runner().run, platform: 'darwin' }).preflight({ backend: 'kiro', model: MODEL, effort: 'low' }, { ...ctxFor(), env: { PATH: '/usr/bin', HOME: home } });
+    const pre = await createKiroAdapter({ runner: runner().run, platform: 'darwin' }).preflight({ backend: 'kiro', model: MODEL, effort: 'low', engine: 'v2' }, { ...ctxFor(), env: { PATH: '/usr/bin', HOME: home } });
     expect(pre.ok).toBe(true);
     expect(pre.checks.find((c) => c.name === 'home')?.detail).toContain("the user's HOME");
   });
@@ -374,7 +375,7 @@ describe('kiro preflight (no model call, no browser risk)', () => {
   });
   it('KIRO_API_KEY skips the token store only when no auth_home is set', async () => {
     const pre = await createKiroAdapter({ runner: runner().run, platform: 'darwin' }).preflight(
-      { backend: 'kiro', model: MODEL, effort: 'low' },
+      { backend: 'kiro', model: MODEL, effort: 'low', engine: 'v2' },
       { ...ctxFor({ KIRO_API_KEY: 'k' }), env: { PATH: '/usr/bin', HOME: tokenHome(null), KIRO_API_KEY: 'k' } },
     );
     expect(pre.ok).toBe(true);

@@ -34,6 +34,11 @@ export interface Occupant {
   authHome?: string | undefined;
   /** grok seats only: the OS sandbox profile (plan 4.2). Absent: `read-only`. */
   sandbox?: 'read-only' | 'off' | undefined;
+  /**
+   * kiro seats only: the engine kiro-cli runs (plan 4.6, D18). Absent: `v3`. Not part of the occupant's identity
+   * (Q15): it is recorded on every leg instead.
+   */
+  engine?: 'v3' | 'v2' | undefined;
 }
 
 /** What a seat needs to know about the round. */

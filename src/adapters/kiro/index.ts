@@ -1,20 +1,66 @@
 import type { ModelInfo } from '../../config/registry.js';
 import type { FailureClass } from '../../config/vocab.js';
 import { runCommand, type CommandRunner } from '../../transport/headless.js';
-import { createAcpAdapter, type AcpRecordResult } from '../acp/adapter.js';
+import { createAcpAdapter, type AcpLaunchPlan, type AcpRecordResult } from '../acp/adapter.js';
 import { isObject, type ReadSet } from '../acp/policy.js';
 import { isRoot, type AcpCommonResult } from '../acp/ratify.js';
 import { pathInsideRoot, rootAliases } from '../paths.js';
 import type { LegHandle, Occupant, Preflight, RatificationCheck, RoundCtx, SeatAdapter } from '../types.js';
-import { KIRO_AGENT, KIRO_FLOOR, KIRO_MODELS, KIRO_TESTED_VERSIONS, kiroDecl } from './known.js';
-import { KIRO_KILL_ON, kiroArgs, kiroEnv, kiroEnvAllow, kiroHome, kiroLegFiles, writeKiroProfile } from './launch.js';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  KIRO_AGENT,
+  KIRO_FLOOR,
+  KIRO_MODELS,
+  KIRO_TESTED_VERSIONS,
+  KIRO_V3_AGENT_SHA256,
+  kiroDecl,
+  kiroEngine,
+  kiroSettingsText,
+  kiroV3AgentText,
+} from './known.js';
+import { KIRO_KILL_ON, kiroArgs, kiroEnv, kiroEnvAllow, kiroHome, kiroLegFiles, writeAgentFile, writeKiroProfile, writeKiroSettings } from './launch.js';
 import { kiroPreflight } from './preflight.js';
 import { readKiroRecord } from './records.js';
+import { KIRO_V3_READS, kiroV3Gate, kiroV3Policy, kiroV3Records } from './v3.js';
 
-export { KIRO_AGENT, KIRO_DECLARED, KIRO_MODELS, kiroDecl, kiroProfile, profileHash } from './known.js';
+export {
+  KIRO_AGENT,
+  KIRO_DECLARED,
+  KIRO_DEFAULT_ENGINE,
+  KIRO_ENGINES,
+  KIRO_MODELS,
+  KIRO_SETTINGS_KEYS,
+  KIRO_UPDATE_OFF_TEXT,
+  KIRO_V3_AGENT_SHA256,
+  KIRO_V3_AGENT_TEXT,
+  KIRO_V3_FLOOR,
+  kiroDecl,
+  kiroEngine,
+  kiroEngineDecl,
+  kiroProfile,
+  kiroSettingsText,
+  profileHash,
+  type KiroEngine,
+} from './known.js';
 export { KIRO_ENV_ALLOW, KIRO_KILL_ON, kiroArgs, kiroCredential, kiroEnv, kiroEnvAllow, kiroHome, kiroLegFiles, kiroTokenStore } from './launch.js';
 export { kiroPreflight, parseKiroModels, readTokenState } from './preflight.js';
 export { readKiroRecord } from './records.js';
+export {
+  KIRO_V3_CLASS,
+  KIRO_V3_GATE_NEEDS,
+  KIRO_V3_NOTICE,
+  KIRO_V3_READS,
+  KIRO_V3_TITLES,
+  gateViewOf,
+  isLoopGuard,
+  kiroV3Gate,
+  kiroV3GateChecks,
+  kiroV3Policy,
+  kiroV3Ran,
+  legVersions,
+  noPresets,
+} from './v3.js';
 
 /*
  * Kiro failure signatures (plan 4.4), applied to stderr, RPC errors, non-JSON stdout and the exit code, never to
@@ -45,10 +91,19 @@ export interface KiroAdapterOptions {
   runner?: CommandRunner | undefined;
   platform?: NodeJS.Platform | undefined;
   /**
-   * Merged into the leg's agent profile. Only the promotion canary uses it, to plant allow rules in the leg's temp
-   * KIRO_HOME; preflight refuses any overlay.
+   * Merged into the leg's agent file (v2: the profile; v3: the constant file). Only the promotion canary uses it, to
+   * plant allow rules in the leg's temp KIRO_HOME; preflight refuses any overlay.
    */
   profileOverlay?: Record<string, unknown> | undefined;
+  /**
+   * A permission preset written to the leg's `$KIRO_HOME/settings/permissions.yaml` (v3 promotion canary only, P11);
+   * preflight refuses it, and the gate refuses the session it lands in.
+   */
+  presetPlant?: string | undefined;
+  /** How long the v3 gate waits for each notification it needs (default 5000 ms; tests shorten it). */
+  gateWaitMs?: number | undefined;
+  /** Where preflight makes its scratch KIRO_HOME (default the OS temp dir). */
+  scratchDir?: string | undefined;
 }
 
 const kiroMeta = (s: Record<string, unknown>): Record<string, unknown> => {
@@ -93,6 +148,18 @@ const RECORD_CLASS: Readonly<Record<string, FailureClass>> = {
 };
 
 function kiroRecords(h: LegHandle, common: AcpCommonResult): AcpRecordResult {
+  const files = kiroLegFiles(h.legDir);
+  if (legEngine(h) === 'v3') return kiroV3Records(h, common, files.kiroHome, files.profile);
+  return kiroV2Records(h, common);
+}
+
+/** The engine a leg ran: the one its launch recorded, else its occupant's (unset = v3). */
+function legEngine(h: Pick<LegHandle, 'data' | 'occupant'>): 'v2' | 'v3' {
+  const recorded = h.data['engine'];
+  return recorded === 'v2' || recorded === 'v3' ? recorded : kiroEngine(h.occupant.engine);
+}
+
+function kiroV2Records(h: LegHandle, common: AcpCommonResult): AcpRecordResult {
   const checks: RatificationCheck[] = [];
   const check = (name: string, ok: boolean, detail: string): void => {
     checks.push({ name, ok, detail });
@@ -149,35 +216,85 @@ export function createKiroAdapter(options: KiroAdapterOptions = {}): SeatAdapter
   return createAcpAdapter({
     id: 'kiro',
     testedVersions: { floor: KIRO_FLOOR, tested: KIRO_TESTED_VERSIONS },
-    enforcement: (version) => kiroDecl(version)?.enforcement ?? 'pending',
+    // Every declared engine of every declared version is `pending` (P3, P11).
+    enforcement: (version) => Object.values(kiroDecl(version)?.engines ?? {})[0]?.enforcement ?? 'pending',
     listModels: async (): Promise<ModelInfo[]> => [...KIRO_MODELS],
     preflight: (o: Occupant, ctx: RoundCtx): Promise<Preflight> =>
-      kiroPreflight(o, { bin, runner, env: ctx.env ?? process.env, root: ctx.root, platform: options.platform, profileOverlay: options.profileOverlay }),
-    plan(o, ctx) {
+      kiroPreflight(o, {
+        bin,
+        runner,
+        env: ctx.env ?? process.env,
+        root: ctx.root,
+        platform: options.platform,
+        profileOverlay: options.profileOverlay,
+        presetPlant: options.presetPlant,
+        scratchDir: options.scratchDir,
+      }),
+    plan(o, ctx, pre): AcpLaunchPlan {
       const files = kiroLegFiles(ctx.legDir);
       const sourceEnv = ctx.env ?? process.env;
       const home = kiroHome(o.authHome, sourceEnv);
       if (home === null) throw new Error('no HOME for kiro-cli');
-      writeKiroProfile(files, o.model, options.profileOverlay);
+      const engine = kiroEngine(o.engine);
+      // The leg settings file, on the versions that declare its keys (4.6): both engines.
+      const settings = kiroSettingsText(pre.cliVersion);
+      if (settings !== null) writeKiroSettings(files.kiroHome, settings);
+      const env = kiroEnv(sourceEnv, home, files, kiroEnvAllow(o.authHome));
+      const common = { command: bin, env, killOn: KIRO_KILL_ON };
+      if (engine === 'v2') {
+        writeKiroProfile(files, o.model, options.profileOverlay);
+        return {
+          ...common,
+          args: kiroArgs(o.model, o.effort, 'v2'),
+          // The v2 engine takes the agent, model and effort as launch flags and reports the first two back.
+          pins: [
+            { via: 'launch', configId: 'mode', value: KIRO_AGENT },
+            { via: 'launch', configId: 'model', value: o.model },
+          ],
+          expect: [
+            { id: 'mode', value: KIRO_AGENT, check: 'mode' },
+            { id: 'model', value: o.model, check: 'model' },
+          ],
+          files: { log: files.log, stderr: files.stderr, process: files.process, profile: files.profile },
+          data: { home, kiroHome: files.kiroHome, engine: 'v2', settingsWritten: settings !== null },
+        };
+      }
+      // v3: the constant agent file, written as its exact bytes and hashed back from disk.
+      const overlaid = options.profileOverlay !== undefined && Object.keys(options.profileOverlay).length > 0;
+      const agentHash = writeAgentFile(files.profile, kiroV3AgentText(options.profileOverlay));
+      if (!overlaid && agentHash !== KIRO_V3_AGENT_SHA256) throw new Error(`the v3 agent file reads back as sha256 ${agentHash.slice(0, 16)}, not the declared bytes`);
+      if (options.presetPlant !== undefined) writeFileSync(join(files.kiroHome, 'settings', 'permissions.yaml'), options.presetPlant);
+      const effort = o.effort;
       return {
-        command: bin,
-        args: kiroArgs(o.model, o.effort),
-        env: kiroEnv(sourceEnv, home, files, kiroEnvAllow(o.authHome)),
-        // The v2 engine takes the agent, model and effort as launch flags and reports the first two back.
+        ...common,
+        args: kiroArgs(o.model, effort, 'v3'),
+        // Every pin over ACP, in the plan's order (4.6 step 2), each checked in the reported configOptions.
         pins: [
-          { via: 'launch', configId: 'mode', value: KIRO_AGENT },
-          { via: 'launch', configId: 'model', value: o.model },
+          { via: 'set_config_option', configId: 'mode', value: KIRO_AGENT },
+          { via: 'set_config_option', configId: 'model', value: o.model, advertised: 'wait' },
+          ...(effort !== undefined ? [{ via: 'set_config_option' as const, configId: 'effortLevel', value: effort, advertised: 'require' as const }] : []),
+          { via: 'set_config_option', configId: 'autopilot', value: 'off' },
+          { via: 'set_config_option', configId: 'contentCollection', value: 'disabled' },
+          { via: 'set_config_option', configId: 'memoryReflection', value: 'off' },
+          { via: 'set_config_option', configId: 'sessionToolsMessaging', value: 'off' },
         ],
         expect: [
           { id: 'mode', value: KIRO_AGENT, check: 'mode' },
           { id: 'model', value: o.model, check: 'model' },
+          ...(effort !== undefined ? [{ id: 'effortLevel', value: effort, check: 'effort' }] : []),
+          { id: 'autopilot', value: 'off', check: 'autopilot' },
+          { id: 'contentCollection', value: 'disabled', check: 'contentCollection' },
+          { id: 'memoryReflection', value: 'off', check: 'memoryReflection' },
+          { id: 'sessionToolsMessaging', value: 'off', check: 'sessionToolsMessaging' },
         ],
-        files: { log: files.log, stderr: files.stderr, process: files.process, profile: files.profile },
-        data: { home, kiroHome: files.kiroHome, engine: 'v2' },
-        killOn: KIRO_KILL_ON,
+        gate: kiroV3Gate(files.kiroHome, options.gateWaitMs),
+        onPermission: kiroV3Policy(ctx.root),
+        files: { log: files.log, stderr: files.stderr, process: files.process, profile: files.profile, settings: files.settings },
+        data: { home, kiroHome: files.kiroHome, engine: 'v3', agentHash, settingsWritten: settings !== null },
       };
     },
     reads: KIRO_READS,
+    readsOf: (h) => (legEngine(h) === 'v3' ? KIRO_V3_READS : KIRO_READS),
     ratifyRecords: kiroRecords,
     classifyText: classifyKiroText,
   });

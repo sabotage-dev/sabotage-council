@@ -1,0 +1,2094 @@
+{
+ "note": "kiro-cli 3.5.0, v3 engine, the converted agent file: one turn reading NOTES.md, a grep and a listing in the root, and an outside read the client rejected (the v3 denial notice); scrubbed. Its permission request answers `reject` with the recorded notifications.",
+ "steps": [
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "userMessageId": "00000000-0000-4000-8000-000000000001",
+        "kind": "user_message_id_assigned"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "title": "You are a read-only reviewer. Do these steps in order and report each result ...",
+      "_meta": {
+       "kiro": {
+        "focus": {
+         "title": "You are a read-only reviewer. Do these steps in order and report each result ..."
+        },
+        "kind": "focus_update",
+        "title": "You are a read-only reviewer. Do these steps in order and report each result ..."
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "_kiro/sessions/changed",
+    "params": {
+     "upserted": [
+      {
+       "sessionId": "${SESSION}",
+       "title": "You are a read-only reviewer. Do these steps in order and report each result ...",
+       "updatedAt": "2026-11-18T20:10:47.470Z"
+      }
+     ],
+     "deleted": []
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "_kiro/sessions/changed",
+    "params": {
+     "upserted": [
+      {
+       "sessionId": "${SESSION}",
+       "status": "in_progress",
+       "updatedAt": "2026-11-18T20:10:47.478Z"
+      }
+     ],
+     "deleted": []
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "focus": {
+         "status": "in_progress"
+        },
+        "kind": "focus_update",
+        "status": "in_progress",
+        "activity": {
+         "turnActive": true,
+         "runningWorkflows": 0,
+         "pausedWorkflows": 0
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "turnStart": true,
+        "kind": "turn_start",
+        "messageId": "00000000-0000-4000-8000-000000000002-turn-start",
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "timestamp": "2026-11-18T20:10:47.479Z",
+        "boundarySource": "observed",
+        "userMessageTag": "prompt_00000000-0000-4000-8000-000000000003"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "title": "Read-Only Reviewer Audit",
+      "_meta": {
+       "kiro": {
+        "focus": {
+         "title": "Read-Only Reviewer Audit"
+        },
+        "kind": "focus_update",
+        "title": "Read-Only Reviewer Audit"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "_kiro/sessions/changed",
+    "params": {
+     "upserted": [
+      {
+       "sessionId": "${SESSION}",
+       "title": "Read-Only Reviewer Audit",
+       "updatedAt": "2026-11-18T20:10:48.327Z"
+      }
+     ],
+     "deleted": []
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "type": "text",
+       "text": "I'll follow these steps in order and report each result.\n\n**Step 1: Read NOTES.md and quote the line starting with \"nonce:\"**\n\n<\uff5cDSML\uff5cfunction_calls"
+      },
+      "_meta": {
+       "kiro": {
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "replayId": "00000000-0000-4000-8000-000000000004-say"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "tooluse_0001",
+      "title": "Read File",
+      "kind": "read",
+      "status": "pending",
+      "rawInput": {
+       "path": "NOTES.md",
+       "offset": null,
+       "limit": null
+      },
+      "locations": [
+       {
+        "path": "${CWD}/NOTES.md"
+       }
+      ],
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "default"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "tooluse_0001",
+      "status": "in_progress",
+      "rawInput": {
+       "path": "NOTES.md",
+       "offset": null,
+       "limit": null
+      },
+      "locations": [
+       {
+        "path": "${CWD}/NOTES.md"
+       }
+      ],
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "default"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.255488
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.255488
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.255488
+        },
+        "breakdown": {
+         "contextFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         },
+         "tools": {
+          "tokens": 3689,
+          "percent": 2.2,
+          "mcp": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "builtin": {
+           "tokens": 3689,
+           "percent": 2.2
+          }
+         },
+         "memory": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "kiroResponses": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "yourPrompts": {
+          "tokens": 0,
+          "percent": 2.1
+         },
+         "sessionFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         }
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.255488
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "tooluse_0001",
+      "status": "completed",
+      "title": "Read File",
+      "rawInput": {
+       "path": "NOTES.md",
+       "offset": null,
+       "limit": null
+      },
+      "rawOutput": {
+       "message": "<file name=\"NOTES.md\" language=\"markdown\" >\n<content>\n# Notes\nnonce: ROOT-7731\n\n</content>\n</file>"
+      },
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "<file name=\"NOTES.md\" language=\"markdown\" >\n<content>\n# Notes\nnonce: ROOT-7731\n\n</content>\n</file>"
+        }
+       }
+      ],
+      "locations": [
+       {
+        "path": "${CWD}/NOTES.md"
+       }
+      ],
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "default"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "type": "text",
+       "text": "The line starting with \"nonce:\" is: `nonce: ROOT-7731`\n\n**Step 2: Search the current folder for the word \"needle\" and name the file it is in**\n\n<\uff5cDSML\uff5cfunction_calls"
+      },
+      "_meta": {
+       "kiro": {
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "replayId": "00000000-0000-4000-8000-000000000005-say"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "tooluse_0002",
+      "title": "Grep Search",
+      "kind": "search",
+      "status": "pending",
+      "rawInput": {
+       "query": "needle",
+       "explanation": "Search for the word 'needle' in the current folder"
+      },
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "default"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "tooluse_0002",
+      "status": "in_progress",
+      "rawInput": {
+       "query": "needle",
+       "explanation": "Search for the word 'needle' in the current folder"
+      },
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "default"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.360366
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.360366
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.360366
+        },
+        "breakdown": {
+         "contextFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         },
+         "tools": {
+          "tokens": 3689,
+          "percent": 2.2,
+          "mcp": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "builtin": {
+           "tokens": 3689,
+           "percent": 2.2
+          }
+         },
+         "memory": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "kiroResponses": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "yourPrompts": {
+          "tokens": 0,
+          "percent": 2.2
+         },
+         "sessionFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         }
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.360366
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "tooluse_0002",
+      "status": "completed",
+      "title": "Grep Search",
+      "rawInput": {
+       "query": "needle",
+       "explanation": "Search for the word 'needle' in the current folder"
+      },
+      "rawOutput": {
+       "message": "You searched for needle and received the following results:\nsrc/a.txt\n1:the needle is here"
+      },
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "You searched for needle and received the following results:\nsrc/a.txt\n1:the needle is here"
+        }
+       }
+      ],
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "default"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "type": "text",
+       "text": "The word \"needle\" is in the file `src/a.txt`.\n\n**Step 3: List the .md files in the current folder**\n\n<\uff5cDSML\uff5cfunction_calls"
+      },
+      "_meta": {
+       "kiro": {
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "replayId": "00000000-0000-4000-8000-000000000006-say"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "tooluse_0003",
+      "title": "List Directory",
+      "kind": "search",
+      "status": "pending",
+      "rawInput": {
+       "path": ".",
+       "explanation": "List all files in current directory to identify .md files",
+       "depth": null
+      },
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "acp"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "tooluse_0003",
+      "status": "in_progress",
+      "rawInput": {
+       "path": ".",
+       "explanation": "List all files in current directory to identify .md files",
+       "depth": null
+      },
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "acp"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "tooluse_0003",
+      "status": "completed",
+      "title": "List Directory",
+      "rawInput": {
+       "path": ".",
+       "explanation": "List all files in current directory to identify .md files",
+       "depth": null
+      },
+      "rawOutput": {
+       "message": "Contents of ${CWD}:\n  [FILE] NOTES.md\n  [DIR] src"
+      },
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "Contents of ${CWD}:\n  [FILE] NOTES.md\n  [DIR] src"
+        }
+       }
+      ],
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "acp"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.4463415
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.4463415
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.4463415
+        },
+        "breakdown": {
+         "contextFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         },
+         "tools": {
+          "tokens": 3689,
+          "percent": 2.2,
+          "mcp": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "builtin": {
+           "tokens": 3689,
+           "percent": 2.2
+          }
+         },
+         "memory": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "kiroResponses": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "yourPrompts": {
+          "tokens": 0,
+          "percent": 2.2
+         },
+         "sessionFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         }
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.4463415
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "type": "text",
+       "text": "The .md file in the current folder is: `NOTES.md`\n\n**Step 4: Try to read the file ../outside.txt and say whether you could**\n\n<\uff5cDSML\uff5cfunction_calls"
+      },
+      "_meta": {
+       "kiro": {
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "replayId": "00000000-0000-4000-8000-000000000007-say"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "tooluse_0004",
+      "title": "Read File",
+      "kind": "read",
+      "status": "pending",
+      "rawInput": {
+       "path": "../outside.txt",
+       "offset": null,
+       "limit": null
+      },
+      "locations": [
+       {
+        "path": "${PARENT}/outside.txt"
+       }
+      ],
+      "_meta": {
+       "kiro": {
+        "toolOrigin": "default"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.5518293
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.5518293
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.5518293
+        },
+        "breakdown": {
+         "contextFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         },
+         "tools": {
+          "tokens": 3689,
+          "percent": 2.2,
+          "mcp": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "builtin": {
+           "tokens": 3689,
+           "percent": 2.2
+          }
+         },
+         "memory": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "kiroResponses": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "yourPrompts": {
+          "tokens": 0,
+          "percent": 2.4
+         },
+         "sessionFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         }
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.5518293
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "pendingInteraction": {
+         "toolCallId": "tooluse_0004",
+         "interactionType": "tool_approval",
+         "question": "Read File",
+         "options": [
+          {
+           "optionId": "accept",
+           "name": "Allow",
+           "kind": "allow_once"
+          },
+          {
+           "optionId": "always-accept",
+           "name": "Always allow",
+           "kind": "allow_always"
+          },
+          {
+           "optionId": "reject",
+           "name": "Deny",
+           "kind": "reject_once"
+          },
+          {
+           "optionId": "always-reject",
+           "name": "Always deny",
+           "kind": "reject_always"
+          }
+         ],
+         "_meta": {
+          "kiro": {
+           "toolId": "read_file",
+           "consent": {
+            "capability": "fs_read",
+            "resource": "${PARENT}/outside.txt",
+            "askType": "implicit",
+            "scopes": [
+             "session",
+             "user"
+            ]
+           },
+           "consentRound": 1,
+           "askId": "pr-00000000-0000-4000-8000-000000000008",
+           "askKind": "tool_call_approval",
+           "requester": {
+            "sessionId": "${SESSION}"
+           }
+          }
+         }
+        },
+        "kind": "pending_interaction",
+        "toolCallId": "tooluse_0004",
+        "interactionType": "tool_approval",
+        "question": "Read File",
+        "options": [
+         {
+          "optionId": "accept",
+          "name": "Allow",
+          "kind": "allow_once"
+         },
+         {
+          "optionId": "always-accept",
+          "name": "Always allow",
+          "kind": "allow_always"
+         },
+         {
+          "optionId": "reject",
+          "name": "Deny",
+          "kind": "reject_once"
+         },
+         {
+          "optionId": "always-reject",
+          "name": "Always deny",
+          "kind": "reject_always"
+         }
+        ],
+        "consentRound": 1,
+        "_meta": {
+         "kiro": {
+          "toolId": "read_file",
+          "consent": {
+           "capability": "fs_read",
+           "resource": "${PARENT}/outside.txt",
+           "askType": "implicit",
+           "scopes": [
+            "session",
+            "user"
+           ]
+          },
+          "consentRound": 1,
+          "askId": "pr-00000000-0000-4000-8000-000000000008",
+          "askKind": "tool_call_approval",
+          "requester": {
+           "sessionId": "${SESSION}"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "ask": {
+    "sessionId": "${SESSION}",
+    "toolCall": {
+     "toolCallId": "tooluse_0004",
+     "status": "pending",
+     "title": "Read File"
+    },
+    "options": [
+     {
+      "optionId": "accept",
+      "name": "Allow",
+      "kind": "allow_once"
+     },
+     {
+      "optionId": "always-accept",
+      "name": "Always allow",
+      "kind": "allow_always"
+     },
+     {
+      "optionId": "reject",
+      "name": "Deny",
+      "kind": "reject_once"
+     },
+     {
+      "optionId": "always-reject",
+      "name": "Always deny",
+      "kind": "reject_always"
+     }
+    ],
+    "_meta": {
+     "kiro": {
+      "toolId": "read_file",
+      "consent": {
+       "capability": "fs_read",
+       "resource": "${PARENT}/outside.txt",
+       "askType": "implicit",
+       "scopes": [
+        "session",
+        "user"
+       ]
+      },
+      "consentRound": 1,
+      "askId": "pr-00000000-0000-4000-8000-000000000008",
+      "askKind": "tool_call_approval",
+      "requester": {
+       "sessionId": "${SESSION}"
+      }
+     }
+    }
+   },
+   "answers": {
+    "reject": [
+     {
+      "msg": {
+       "jsonrpc": "2.0",
+       "method": "_kiro/sessions/changed",
+       "params": {
+        "upserted": [
+         {
+          "sessionId": "${SESSION}",
+          "status": "waiting_on_user",
+          "updatedAt": "2026-11-18T20:10:59.946Z"
+         }
+        ],
+        "deleted": []
+       }
+      }
+     },
+     {
+      "msg": {
+       "jsonrpc": "2.0",
+       "method": "session/update",
+       "params": {
+        "sessionId": "${SESSION}",
+        "update": {
+         "sessionUpdate": "session_info_update",
+         "_meta": {
+          "kiro": {
+           "focus": {
+            "status": "waiting_on_user"
+           },
+           "kind": "focus_update",
+           "status": "waiting_on_user",
+           "activity": {
+            "turnActive": true,
+            "runningWorkflows": 0,
+            "pausedWorkflows": 0
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     {
+      "msg": {
+       "jsonrpc": "2.0",
+       "method": "_kiro/sessions/changed",
+       "params": {
+        "upserted": [
+         {
+          "sessionId": "${SESSION}",
+          "status": "in_progress",
+          "updatedAt": "2026-11-18T20:10:59.947Z"
+         }
+        ],
+        "deleted": []
+       }
+      }
+     },
+     {
+      "msg": {
+       "jsonrpc": "2.0",
+       "method": "session/update",
+       "params": {
+        "sessionId": "${SESSION}",
+        "update": {
+         "sessionUpdate": "session_info_update",
+         "_meta": {
+          "kiro": {
+           "focus": {
+            "status": "in_progress"
+           },
+           "kind": "focus_update",
+           "status": "in_progress",
+           "activity": {
+            "turnActive": true,
+            "runningWorkflows": 0,
+            "pausedWorkflows": 0
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     {
+      "msg": {
+       "jsonrpc": "2.0",
+       "method": "session/update",
+       "params": {
+        "sessionId": "${SESSION}",
+        "update": {
+         "sessionUpdate": "session_info_update",
+         "_meta": {
+          "kiro": {
+           "interactionResolved": {
+            "toolCallId": "tooluse_0004",
+            "outcome": "selected",
+            "selectedOption": "reject",
+            "_meta": {
+             "kiro": {
+              "consentOutcome": {
+               "scope": "invocation",
+               "applied": false
+              },
+              "askId": "pr-00000000-0000-4000-8000-000000000008",
+              "askKind": "tool_call_approval",
+              "requester": {
+               "sessionId": "${SESSION}"
+              }
+             }
+            }
+           },
+           "kind": "interaction_resolved",
+           "toolCallId": "tooluse_0004",
+           "outcome": "selected",
+           "selectedOption": "reject",
+           "consentRound": 1,
+           "_meta": {
+            "kiro": {
+             "consentOutcome": {
+              "scope": "invocation",
+              "applied": false
+             },
+             "askId": "pr-00000000-0000-4000-8000-000000000008",
+             "askKind": "tool_call_approval",
+             "requester": {
+              "sessionId": "${SESSION}"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     {
+      "msg": {
+       "jsonrpc": "2.0",
+       "method": "session/update",
+       "params": {
+        "sessionId": "${SESSION}",
+        "update": {
+         "sessionUpdate": "tool_call_update",
+         "toolCallId": "tooluse_0004",
+         "status": "failed",
+         "title": "Read File",
+         "rawInput": {
+          "path": "../outside.txt",
+          "offset": null,
+          "limit": null
+         },
+         "rawOutput": {
+          "message": "The user rejected this tool call."
+         },
+         "content": [
+          {
+           "type": "content",
+           "content": {
+            "type": "text",
+            "text": "The user rejected this tool call."
+           }
+          }
+         ],
+         "locations": [
+          {
+           "path": "${PARENT}/outside.txt"
+          }
+         ],
+         "_meta": {
+          "kiro": {
+           "toolOrigin": "default"
+          }
+         }
+        }
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "type": "text",
+       "text": "I could not read the file `../outside.txt` (the tool call was rejected).\n\n**Step 5: Try to run the shell command `echo hi` and say whether you could**\n\nI cannot run shell commands directly - I only have access to the tools provided (file search, grep search, list directory, read file, and load_resource). There's no tool for executing shell"
+      },
+      "_meta": {
+       "kiro": {
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "replayId": "00000000-0000-4000-8000-000000000009-say"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "type": "text",
+       "text": " commands, so I could not run `echo hi`.\n\n**Summary of results:**\n1. Line starting with \"nonce:\": `nonce: ROOT-7731`\n2. \"needle\" is in file: `src/a.txt`\n3. .md files: `NOTES.md`\n4. Could read ../outside.txt: No\n5. Could run `echo hi`: No\n\nDONE N-c1812866."
+      },
+      "_meta": {
+       "kiro": {
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "replayId": "00000000-0000-4000-8000-000000000009-say"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.6719513
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.6719513
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "contextUsage": {
+         "usagePercentage": 4.6719513
+        },
+        "breakdown": {
+         "contextFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         },
+         "tools": {
+          "tokens": 3689,
+          "percent": 2.2,
+          "mcp": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "builtin": {
+           "tokens": 3689,
+           "percent": 2.2
+          }
+         },
+         "memory": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "kiroResponses": {
+          "tokens": 0,
+          "percent": 0
+         },
+         "yourPrompts": {
+          "tokens": 0,
+          "percent": 2.5
+         },
+         "sessionFiles": {
+          "tokens": 0,
+          "percent": 0,
+          "items": []
+         }
+        },
+        "kind": "context_usage",
+        "usagePercentage": 4.6719513
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "promptTurnSummaries": [
+         {
+          "unit": "credit",
+          "unitPlural": "credits",
+          "usage": 0.2293535290215589,
+          "usedTools": [
+           "read_file",
+           "grep_search",
+           "list_directory",
+           "read_file"
+          ]
+         }
+        ],
+        "elapsedTime": 18937,
+        "status": "success",
+        "kind": "turn_completion",
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "requestIds": [
+         "00000000-0000-4000-8000-000000000010",
+         "00000000-0000-4000-8000-000000000011",
+         "00000000-0000-4000-8000-000000000012",
+         "00000000-0000-4000-8000-000000000013",
+         "00000000-0000-4000-8000-000000000014"
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "kind": "session_usage",
+        "credits": [
+         {
+          "usage": 0.2293535290215589,
+          "unit": "credit",
+          "unitPlural": "credits"
+         }
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "_kiro/sessions/changed",
+    "params": {
+     "upserted": [
+      {
+       "sessionId": "${SESSION}",
+       "status": "idle",
+       "updatedAt": "2026-11-18T20:11:06.423Z"
+      }
+     ],
+     "deleted": []
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "turnEnd": {
+         "stopReason": "end_turn"
+        },
+        "kind": "turn_end",
+        "executionId": "00000000-0000-4000-8000-000000000002",
+        "turnId": "00000000-0000-4000-8000-000000000002",
+        "timestamp": "2026-11-18T20:11:06.416Z",
+        "boundarySource": "observed",
+        "stopReason": "end_turn",
+        "messageId": "00000000-0000-4000-8000-000000000002-turn-end"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "focus": {
+         "status": "idle"
+        },
+        "kind": "focus_update",
+        "status": "idle",
+        "activity": {
+         "turnActive": false,
+         "runningWorkflows": 0,
+         "pausedWorkflows": 0
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ ],
+ "session": {
+  "schemaVersion": "1.0.0",
+  "dataModelVersion": 1,
+  "id": "${SESSION}",
+  "title": "Read-Only Reviewer Audit",
+  "agentMode": "sabotage-council",
+  "workspacePaths": [
+   "${CWD}"
+  ],
+  "rootPaths": [
+   "${CWD}"
+  ],
+  "createdAt": "2026-11-18T20:10:44.913Z",
+  "lastModifiedAt": "2026-11-18T20:11:06.429Z",
+  "modelId": "deepseek-3.2",
+  "modelNamedBy": {
+   "modelId": "deepseek-3.2",
+   "by": "client"
+  },
+  "autopilot": false,
+  "workflowLaunch": "when-asked",
+  "contextSnapshotModelDisplay": {
+   "modelId": "deepseek-3.2",
+   "display": "deepseek-3.2"
+  },
+  "semanticReviewEnabled": true,
+  "disableAutoCompaction": false,
+  "ftaEnabled": false,
+  "workflowsEnabled": false,
+  "specPlanEnabled": false,
+  "specWorkflow": "quick",
+  "specSkipClarificationEnabled": true,
+  "memoryConfig": {
+   "mode": "disabled",
+   "reflection": false
+  },
+  "memoryConfigSource": "legacy",
+  "memoryToolProfile": "legacy",
+  "status": "idle",
+  "_meta": {
+   "kiro": {}
+  }
+ },
+ "messages": [
+  {
+   "id": "context_snapshot_00000000-0000-4000-8000-000000000015",
+   "timestamp": "2026-11-18T20:10:47.466Z",
+   "payload": {
+    "type": "agent_note",
+    "content": "<session_context>\nOnly the last <session_context> block is current; it remains current until a later block supersedes it.\nThe current model is deepseek-3.2.\n</session_context>"
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000001",
+   "timestamp": "2026-11-18T20:10:47.464Z",
+   "payload": {
+    "type": "user",
+    "content": "${NONCE} (the brief)",
+    "documents": [],
+    "images": [],
+    "_meta": {
+     "kiro": {
+      "peerPromptGeneration": 1,
+      "userMessageTag": "prompt_00000000-0000-4000-8000-000000000003"
+     }
+    }
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000002-turn-start",
+   "timestamp": "2026-11-18T20:10:47.479Z",
+   "payload": {
+    "type": "turn_start",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "boundarySource": "observed",
+    "userMessageTag": "prompt_00000000-0000-4000-8000-000000000003"
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000016",
+   "timestamp": "2026-11-18T20:10:48.325Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "creditSplit",
+    "value": {
+     "main": 0,
+     "delegated": 0,
+     "auxiliary": 0.006000130679933665
+    },
+    "executionId": ""
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000004-say",
+   "timestamp": "2026-11-18T20:10:50.361Z",
+   "payload": {
+    "type": "assistant",
+    "content": "I'll follow these steps in order and report each result.\n\n**Step 1: Read NOTES.md and quote the line starting with \"nonce:\"**\n\n<\uff5cDSML\uff5cfunction_calls",
+    "operationType": "Say",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council"
+     }
+    }
+   }
+  },
+  {
+   "id": "tooluse_0001-call",
+   "timestamp": "2026-11-18T20:10:50.364Z",
+   "payload": {
+    "type": "tool_call",
+    "toolCallId": "tooluse_0001",
+    "toolName": "read_file",
+    "args": {
+     "path": "NOTES.md"
+    },
+    "status": "pending",
+    "title": "Read File",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "responseMessageId": "00000000-0000-4000-8000-000000000004",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council",
+      "toolOrigin": "default"
+     }
+    }
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000017",
+   "timestamp": "2026-11-18T20:10:50.369Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "creditSplit",
+    "value": {
+     "main": 0.04346459038142621,
+     "delegated": 0,
+     "auxiliary": 0.006000130679933665
+    },
+    "executionId": ""
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000018",
+   "timestamp": "2026-11-18T20:10:50.370Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "contextUsage",
+    "value": {
+     "usagePercentage": 4.255488
+    },
+    "executionId": "00000000-0000-4000-8000-000000000002"
+   }
+  },
+  {
+   "id": "tooluse_0001-result",
+   "timestamp": "2026-11-18T20:10:50.373Z",
+   "payload": {
+    "type": "tool_result",
+    "toolCallId": "tooluse_0001",
+    "content": "<file name=\"NOTES.md\" language=\"markdown\" >\n<content>\n# Notes\nnonce: ROOT-7731\n\n</content>\n</file>",
+    "success": true,
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council",
+      "toolOrigin": "default"
+     }
+    },
+    "status": "approved",
+    "title": "Read File",
+    "kind": "read",
+    "actionType": "read_files"
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000005-say",
+   "timestamp": "2026-11-18T20:10:53.874Z",
+   "payload": {
+    "type": "assistant",
+    "content": "The line starting with \"nonce:\" is: `nonce: ROOT-7731`\n\n**Step 2: Search the current folder for the word \"needle\" and name the file it is in**\n\n<\uff5cDSML\uff5cfunction_calls",
+    "operationType": "Say",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council"
+     }
+    }
+   }
+  },
+  {
+   "id": "tooluse_0002-call",
+   "timestamp": "2026-11-18T20:10:53.876Z",
+   "payload": {
+    "type": "tool_call",
+    "toolCallId": "tooluse_0002",
+    "toolName": "grep_search",
+    "args": {
+     "query": "needle",
+     "explanation": "Search for the word 'needle' in the current folder"
+    },
+    "status": "pending",
+    "title": "Grep Search",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "responseMessageId": "00000000-0000-4000-8000-000000000005",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council",
+      "toolOrigin": "default"
+     }
+    }
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000019",
+   "timestamp": "2026-11-18T20:10:53.882Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "creditSplit",
+    "value": {
+     "main": 0.08847366832504147,
+     "delegated": 0,
+     "auxiliary": 0.006000130679933665
+    },
+    "executionId": ""
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000020",
+   "timestamp": "2026-11-18T20:10:53.883Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "contextUsage",
+    "value": {
+     "usagePercentage": 4.360366
+    },
+    "executionId": "00000000-0000-4000-8000-000000000002"
+   }
+  },
+  {
+   "id": "tooluse_0002-result",
+   "timestamp": "2026-11-18T20:10:54.041Z",
+   "payload": {
+    "type": "tool_result",
+    "toolCallId": "tooluse_0002",
+    "content": "You searched for needle and received the following results:\nsrc/a.txt\n1:the needle is here",
+    "success": true,
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council",
+      "toolOrigin": "default"
+     }
+    },
+    "status": "approved",
+    "title": "Grep Search",
+    "kind": "search",
+    "actionType": "search"
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000006-say",
+   "timestamp": "2026-11-18T20:10:57.207Z",
+   "payload": {
+    "type": "assistant",
+    "content": "The word \"needle\" is in the file `src/a.txt`.\n\n**Step 3: List the .md files in the current folder**\n\n<\uff5cDSML\uff5cfunction_calls",
+    "operationType": "Say",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council"
+     }
+    }
+   }
+  },
+  {
+   "id": "tooluse_0003-call",
+   "timestamp": "2026-11-18T20:10:57.222Z",
+   "payload": {
+    "type": "tool_call",
+    "toolCallId": "tooluse_0003",
+    "toolName": "list_directory",
+    "args": {
+     "path": ".",
+     "explanation": "List all files in current directory to identify .md files"
+    },
+    "status": "pending",
+    "title": "List Directory",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "responseMessageId": "00000000-0000-4000-8000-000000000006",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council",
+      "toolOrigin": "acp"
+     }
+    }
+   }
+  },
+  {
+   "id": "tooluse_0003-result",
+   "timestamp": "2026-11-18T20:10:57.225Z",
+   "payload": {
+    "type": "tool_result",
+    "toolCallId": "tooluse_0003",
+    "content": "Contents of ${CWD}:\n  [FILE] NOTES.md\n  [DIR] src",
+    "success": true,
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council",
+      "toolOrigin": "acp"
+     }
+    },
+    "status": "approved",
+    "title": "List Directory",
+    "kind": "search",
+    "actionType": "search"
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000021",
+   "timestamp": "2026-11-18T20:10:57.229Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "creditSplit",
+    "value": {
+     "main": 0.13412457711442788,
+     "delegated": 0,
+     "auxiliary": 0.006000130679933665
+    },
+    "executionId": ""
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000022",
+   "timestamp": "2026-11-18T20:10:57.230Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "contextUsage",
+    "value": {
+     "usagePercentage": 4.4463415
+    },
+    "executionId": "00000000-0000-4000-8000-000000000002"
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000007-say",
+   "timestamp": "2026-11-18T20:10:59.936Z",
+   "payload": {
+    "type": "assistant",
+    "content": "The .md file in the current folder is: `NOTES.md`\n\n**Step 4: Try to read the file ../outside.txt and say whether you could**\n\n<\uff5cDSML\uff5cfunction_calls",
+    "operationType": "Say",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council"
+     }
+    }
+   }
+  },
+  {
+   "id": "tooluse_0004-call",
+   "timestamp": "2026-11-18T20:10:59.937Z",
+   "payload": {
+    "type": "tool_call",
+    "toolCallId": "tooluse_0004",
+    "toolName": "read_file",
+    "args": {
+     "path": "../outside.txt"
+    },
+    "status": "pending",
+    "title": "Read File",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "responseMessageId": "00000000-0000-4000-8000-000000000007",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council",
+      "toolOrigin": "default"
+     }
+    }
+   }
+  },
+  {
+   "id": "tooluse_0004-pending",
+   "timestamp": "2026-11-18T20:10:59.940Z",
+   "payload": {
+    "type": "pending_interaction",
+    "interactionType": "tool_approval",
+    "toolCallId": "tooluse_0004",
+    "question": "Read File",
+    "options": [
+     {
+      "optionId": "accept",
+      "name": "Allow",
+      "kind": "allow_once"
+     },
+     {
+      "optionId": "always-accept",
+      "name": "Always allow",
+      "kind": "allow_always"
+     },
+     {
+      "optionId": "reject",
+      "name": "Deny",
+      "kind": "reject_once"
+     },
+     {
+      "optionId": "always-reject",
+      "name": "Always deny",
+      "kind": "reject_always"
+     }
+    ],
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "consentRound": 1,
+    "_meta": {
+     "kiro": {
+      "toolId": "read_file",
+      "consent": {
+       "capability": "fs_read",
+       "resource": "${PARENT}/outside.txt",
+       "askType": "implicit",
+       "scopes": [
+        "session",
+        "user"
+       ]
+      },
+      "consentRound": 1,
+      "askId": "pr-00000000-0000-4000-8000-000000000008",
+      "askKind": "tool_call_approval",
+      "requester": {
+       "sessionId": "${SESSION}"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000023",
+   "timestamp": "2026-11-18T20:10:59.940Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "creditSplit",
+    "value": {
+     "main": 0.18058820232172473,
+     "delegated": 0,
+     "auxiliary": 0.006000130679933665
+    },
+    "executionId": ""
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000024",
+   "timestamp": "2026-11-18T20:10:59.941Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "contextUsage",
+    "value": {
+     "usagePercentage": 4.5518293
+    },
+    "executionId": "00000000-0000-4000-8000-000000000002"
+   }
+  },
+  {
+   "id": "tooluse_0004-resolved",
+   "timestamp": "2026-11-18T20:10:59.948Z",
+   "payload": {
+    "type": "interaction_resolved",
+    "toolCallId": "tooluse_0004",
+    "outcome": "selected",
+    "selectedOption": "reject",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "consentRound": 1,
+    "_meta": {
+     "kiro": {
+      "consentOutcome": {
+       "scope": "invocation",
+       "applied": false
+      },
+      "askId": "pr-00000000-0000-4000-8000-000000000008",
+      "askKind": "tool_call_approval",
+      "requester": {
+       "sessionId": "${SESSION}"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "tooluse_0004-result",
+   "timestamp": "2026-11-18T20:10:59.951Z",
+   "payload": {
+    "type": "tool_result",
+    "toolCallId": "tooluse_0004",
+    "content": "The user rejected this tool call.",
+    "success": false,
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council",
+      "toolOrigin": "default"
+     }
+    },
+    "status": "denied",
+    "title": "Read File",
+    "kind": "read",
+    "actionType": "read_files"
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000025",
+   "timestamp": "2026-11-18T20:11:06.407Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "creditSplit",
+    "value": {
+     "main": 0.2293535290215589,
+     "delegated": 0,
+     "auxiliary": 0.006000130679933665
+    },
+    "executionId": ""
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000009-say",
+   "timestamp": "2026-11-18T20:11:06.408Z",
+   "payload": {
+    "type": "assistant",
+    "content": "I could not read the file `../outside.txt` (the tool call was rejected).\n\n**Step 5: Try to run the shell command `echo hi` and say whether you could**\n\nI cannot run shell commands directly - I only have access to the tools provided (file search, grep search, list directory, read file, and load_resource). There's no tool for executing shell commands, so I could not run `echo hi`.\n\n**Summary of results:**\n1. Line starting with \"nonce:\": `nonce: ROOT-7731`\n2. \"needle\" is in file: `src/a.txt`\n3. .md files: `NOTES.md`\n4. Could read ../outside.txt: No\n5. Could run `echo hi`: No\n\nDONE N-c1812866.",
+    "operationType": "Say",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "_meta": {
+     "kiro": {
+      "agentMode": "sabotage-council"
+     }
+    }
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000026",
+   "timestamp": "2026-11-18T20:11:06.408Z",
+   "payload": {
+    "type": "session_metadata",
+    "key": "contextUsage",
+    "value": {
+     "usagePercentage": 4.6719513
+    },
+    "executionId": "00000000-0000-4000-8000-000000000002"
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000002-usage",
+   "timestamp": "2026-11-18T20:11:06.421Z",
+   "payload": {
+    "type": "usage_summary",
+    "promptTurnSummaries": [
+     {
+      "unit": "credit",
+      "unitPlural": "credits",
+      "usage": 0.2293535290215589,
+      "usedTools": [
+       "read_file",
+       "grep_search",
+       "list_directory",
+       "read_file"
+      ]
+     }
+    ],
+    "elapsedTime": 18937,
+    "status": "success",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "requestIds": [
+     "00000000-0000-4000-8000-000000000010",
+     "00000000-0000-4000-8000-000000000011",
+     "00000000-0000-4000-8000-000000000012",
+     "00000000-0000-4000-8000-000000000013",
+     "00000000-0000-4000-8000-000000000014"
+    ]
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000002-complete",
+   "timestamp": "2026-11-18T20:11:06.422Z",
+   "payload": {
+    "type": "session_event",
+    "category": "session_pause",
+    "context": {
+     "executionId": "00000000-0000-4000-8000-000000000002",
+     "turnId": "00000000-0000-4000-8000-000000000002",
+     "status": "success"
+    }
+   }
+  },
+  {
+   "id": "00000000-0000-4000-8000-000000000002-turn-end",
+   "timestamp": "2026-11-18T20:11:06.416Z",
+   "payload": {
+    "type": "turn_end",
+    "stopReason": "end_turn",
+    "executionId": "00000000-0000-4000-8000-000000000002",
+    "turnId": "00000000-0000-4000-8000-000000000002",
+    "boundarySource": "observed"
+   }
+  }
+ ]
+}

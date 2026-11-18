@@ -1,13 +1,16 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { KIRO_AGENT, profileText } from './known.js';
+import { KIRO_AGENT, profileText, sha256Hex, type KiroEngine } from './known.js';
 
 /*
- * The kiro leg's command line, homes and files (plan 4.2):
- *   - `kiro-cli acp --agent-engine v2 --agent sabotage-council --model <m> [--effort <e>]`, never `--trust-tools` or
- *     `--trust-all-tools`, so every tool use is a permission request the client answers;
- *   - `KIRO_HOME` is the leg's own directory holding only the council agent profile, so the user's steering, hooks,
- *     MCP servers, agents and settings never load, and the session record lands beside the update log;
+ * The kiro leg's command line, homes and files (plan 4.2, 4.6):
+ *   - v2 (`engine = "v2"`, P3): `kiro-cli acp --agent-engine v2 --agent sabotage-council --model <m> [--effort <e>]`;
+ *     v3 (the default, P11): `kiro-cli acp --agent-engine v3` with no agent, model or effort flag (v3 refuses them;
+ *     the pins go over ACP). Never `--trust-tools` or `--trust-all-tools`, so every tool use that kiro asks about is
+ *     a permission request the client answers;
+ *   - `KIRO_HOME` is the leg's own directory holding only the council agent file (and, on a version that declares
+ *     them, the leg settings file), so the user's steering, hooks, MCP servers, agents and settings never load, and
+ *     the session record lands beside the update log;
  *   - `HOME` is the seat's `auth_home` when set (a separate Kiro login, read from its own token store), else the
  *     user's HOME. Nothing else of the user's environment that could move the store (`XDG_*`) is passed.
  */
@@ -80,6 +83,8 @@ export interface KiroLegFiles {
   process: string;
   kiroHome: string;
   profile: string;
+  /** `$KIRO_HOME/settings/cli.json` (written on versions that declare settings keys, 4.6). */
+  settings: string;
 }
 
 export function kiroLegFiles(legDir: string): KiroLegFiles {
@@ -91,6 +96,7 @@ export function kiroLegFiles(legDir: string): KiroLegFiles {
     process: join(dir, 'process.json'),
     kiroHome: kh,
     profile: join(kh, 'agents', `${KIRO_AGENT}.json`),
+    settings: join(kh, 'settings', 'cli.json'),
   };
 }
 
@@ -99,7 +105,21 @@ export function writeKiroProfile(files: KiroLegFiles, model: string, overlay?: R
   writeFileSync(files.profile, profileText(model, overlay));
 }
 
-export function kiroArgs(model: string, effort: string | undefined): string[] {
+/** Writes an agent file's exact bytes and returns the sha256 of the file as it reads back from disk. */
+export function writeAgentFile(path: string, text: string): string {
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, text);
+  return sha256Hex(readFileSync(path));
+}
+
+/** Writes `$KIRO_HOME/settings/cli.json` (a home's settings file). */
+export function writeKiroSettings(kiroHome: string, text: string): void {
+  mkdirSync(join(kiroHome, 'settings'), { recursive: true });
+  writeFileSync(join(kiroHome, 'settings', 'cli.json'), text);
+}
+
+export function kiroArgs(model: string, effort: string | undefined, engine: KiroEngine = 'v2'): string[] {
+  if (engine === 'v3') return ['acp', '--agent-engine', 'v3'];
   return ['acp', '--agent-engine', 'v2', '--agent', KIRO_AGENT, '--model', model, ...(effort !== undefined ? ['--effort', effort] : [])];
 }
 

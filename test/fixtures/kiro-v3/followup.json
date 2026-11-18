@@ -1,0 +1,3269 @@
+{
+ "note": "kiro-cli 3.5.0, v3 engine, the shipped agent file: a turn with a File Search, three Load Resource calls that went in_progress then failed with the catalogue error, a Grep Search whose includePattern climbs out of the root (it ran, matched nothing), seven failed reads, and the loop guard answered `cancel`; scrubbed. `keepIterating` is the P3-file run's loop guard answered `cancelled`, which kiro recorded as keep-iterating.",
+ "segments": {
+  "preamble": [
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "userMessageId": "00000000-0000-4000-8000-000000000027",
+         "kind": "user_message_id_assigned"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "title": "You are a read-only reviewer. Do these steps in order and report each result ...",
+       "_meta": {
+        "kiro": {
+         "focus": {
+          "title": "You are a read-only reviewer. Do these steps in order and report each result ..."
+         },
+         "kind": "focus_update",
+         "title": "You are a read-only reviewer. Do these steps in order and report each result ..."
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "_kiro/sessions/changed",
+     "params": {
+      "upserted": [
+       {
+        "sessionId": "${SESSION}",
+        "title": "You are a read-only reviewer. Do these steps in order and report each result ...",
+        "updatedAt": "2026-11-18T20:48:18.638Z"
+       }
+      ],
+      "deleted": []
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "_kiro/sessions/changed",
+     "params": {
+      "upserted": [
+       {
+        "sessionId": "${SESSION}",
+        "status": "in_progress",
+        "updatedAt": "2026-11-18T20:48:18.644Z"
+       }
+      ],
+      "deleted": []
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "focus": {
+          "status": "in_progress"
+         },
+         "kind": "focus_update",
+         "status": "in_progress",
+         "activity": {
+          "turnActive": true,
+          "runningWorkflows": 0,
+          "pausedWorkflows": 0
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "turnStart": true,
+         "kind": "turn_start",
+         "messageId": "00000000-0000-4000-8000-000000000028-turn-start",
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "timestamp": "2026-11-18T20:48:18.647Z",
+         "boundarySource": "observed",
+         "userMessageTag": "prompt_00000000-0000-4000-8000-000000000029"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "title": "Code Review and System Discovery",
+       "_meta": {
+        "kiro": {
+         "focus": {
+          "title": "Code Review and System Discovery"
+         },
+         "kind": "focus_update",
+         "title": "Code Review and System Discovery"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "_kiro/sessions/changed",
+     "params": {
+      "upserted": [
+       {
+        "sessionId": "${SESSION}",
+        "title": "Code Review and System Discovery",
+        "updatedAt": "2026-11-18T20:48:19.559Z"
+       }
+      ],
+      "deleted": []
+     }
+    }
+   }
+  ],
+  "fileSearch": [
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "I'll follow the steps in order.\n\n**Step 1: Search for .md files in current folder**\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000030-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0005",
+       "title": "File Search",
+       "kind": "search",
+       "status": "pending",
+       "rawInput": {
+        "explanation": "Find all markdown files in current folder",
+        "query": ".md$"
+       },
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0005",
+       "status": "in_progress",
+       "rawInput": {
+        "explanation": "Find all markdown files in current folder",
+        "query": ".md$"
+       },
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.287805
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.287805
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.287805
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.1
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.287805
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0005",
+       "status": "completed",
+       "title": "File Search",
+       "rawInput": {
+        "explanation": "Find all markdown files in current folder",
+        "query": ".md$"
+       },
+       "rawOutput": {
+        "message": "You searched for .md$ and received the following complete results:\n---\nNOTES.md\n---"
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "You searched for .md$ and received the following complete results:\n---\nNOTES.md\n---"
+         }
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   }
+  ],
+  "loadResource": [
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "**Step 2: Name resources I could load with load_resource, then load one**\n\nFrom the system information, I can see resources use various prefixes. Based on typical MCP resource patterns, I could load:\n- skill::<name> resources\n- steering::<name> resources  \n- tool::<builtin_name> resources\n- tool::<server>::<"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000031-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "tool> resources\n- power::<installed_name>::* resources (legacy Power members)\n- plugin::<installed_name>::* resources (Plugin members)\n\nI'll try to load a skill resource. Let me check what's available:\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000031-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0006",
+       "title": "Load Resource",
+       "kind": "other",
+       "status": "in_progress",
+       "rawInput": {
+        "id": "skill::file_management",
+        "_meta": {
+         "_isValid": true,
+         "_activePath": [
+          "id"
+         ],
+         "_completedPaths": [
+          [
+           "id"
+          ]
+         ]
+        }
+       },
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0006",
+       "status": "failed",
+       "title": "Load Resource",
+       "rawInput": {
+        "id": "skill::file_management",
+        "_meta": {
+         "_isValid": true,
+         "_activePath": [
+          "id"
+         ],
+         "_completedPaths": [
+          [
+           "id"
+          ]
+         ]
+        }
+       },
+       "rawOutput": {
+        "message": "Use one exact resource ID from the current load_resource catalogue. Check the load_resource catalogue for a currently available tool ID."
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Use one exact resource ID from the current load_resource catalogue. Check the load_resource catalogue for a currently available tool ID."
+         }
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.4182925
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.4182925
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.4182925
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.2
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.4182925
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "Since I can't see the catalogue without trying specific IDs, I'll try a common built-in tool:\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000032-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0007",
+       "title": "Load Resource",
+       "kind": "other",
+       "status": "in_progress",
+       "rawInput": {
+        "id": "tool::file_search",
+        "_meta": {
+         "_isValid": true,
+         "_activePath": [
+          "id"
+         ],
+         "_completedPaths": [
+          [
+           "id"
+          ]
+         ]
+        }
+       },
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0007",
+       "status": "failed",
+       "title": "Load Resource",
+       "rawInput": {
+        "id": "tool::file_search",
+        "_meta": {
+         "_isValid": true,
+         "_activePath": [
+          "id"
+         ],
+         "_completedPaths": [
+          [
+           "id"
+          ]
+         ]
+        }
+       },
+       "rawOutput": {
+        "message": "Use one exact resource ID from the current load_resource catalogue. Check the load_resource catalogue for a currently available tool ID."
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Use one exact resource ID from the current load_resource catalogue. Check the load_resource catalogue for a currently available tool ID."
+         }
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.4865856
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.4865856
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.4865856
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.3
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.4865856
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "Let me check what resources might be available based on the tools I can see:\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000033-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0008",
+       "title": "Load Resource",
+       "kind": "other",
+       "status": "in_progress",
+       "rawInput": {
+        "id": "tool::file_search::file_search",
+        "_meta": {
+         "_isValid": true,
+         "_activePath": [
+          "id"
+         ],
+         "_completedPaths": [
+          [
+           "id"
+          ]
+         ]
+        }
+       },
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0008",
+       "status": "failed",
+       "title": "Load Resource",
+       "rawInput": {
+        "id": "tool::file_search::file_search",
+        "_meta": {
+         "_isValid": true,
+         "_activePath": [
+          "id"
+         ],
+         "_completedPaths": [
+          [
+           "id"
+          ]
+         ]
+        }
+       },
+       "rawOutput": {
+        "message": "Use one exact resource ID from the current load_resource catalogue. Check the load_resource catalogue for a currently available tool ID."
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Use one exact resource ID from the current load_resource catalogue. Check the load_resource catalogue for a currently available tool ID."
+         }
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.5536585
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.5536585
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.5536585
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.4
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.5536585
+        }
+       }
+      }
+     }
+    }
+   }
+  ],
+  "outsideGrep": [
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "Based on the available tools in my interface, I could potentially load instructions for: file_search, grep_search, list_directory, load_resource, read_file.\n\n**Step 3: Search parent folder \"..\" for the word \"secret\"**\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000034-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0009",
+       "title": "Grep Search",
+       "kind": "search",
+       "status": "pending",
+       "rawInput": {
+        "query": "secret",
+        "explanation": "Search for the word secret in parent folder",
+        "includePattern": "../**/*"
+       },
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0009",
+       "status": "in_progress",
+       "rawInput": {
+        "query": "secret",
+        "explanation": "Search for the word secret in parent folder",
+        "includePattern": "../**/*"
+       },
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.6640244
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.6640244
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.6640244
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.5
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.6640244
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0009",
+       "status": "completed",
+       "title": "Grep Search",
+       "rawInput": {
+        "query": "secret",
+        "explanation": "Search for the word secret in parent folder",
+        "includePattern": "../**/*"
+       },
+       "rawOutput": {
+        "message": "You searched for secret and received the following results:\nNo matches found."
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "You searched for secret and received the following results:\nNo matches found."
+         }
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   }
+  ],
+  "failedReads": [
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "**Step 4: Read"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000035-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": " each of the listed files (m1.txt through m9.txt)**\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000035-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0010",
+       "title": "Read File",
+       "kind": "read",
+       "status": "pending",
+       "rawInput": {
+        "path": "m1.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m1.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0010",
+       "status": "in_progress",
+       "rawInput": {
+        "path": "m1.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m1.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.725
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.725
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.725
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.5
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.725
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0010",
+       "status": "failed",
+       "title": "Read File",
+       "rawInput": {
+        "path": "m1.txt",
+        "offset": null,
+        "limit": null
+       },
+       "rawOutput": {
+        "message": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m1.txt'"
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m1.txt'"
+         }
+        }
+       ],
+       "locations": [
+        {
+         "path": "${CWD}/m1.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000036-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0011",
+       "title": "Read File",
+       "kind": "read",
+       "status": "pending",
+       "rawInput": {
+        "path": "m2.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m2.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0011",
+       "status": "in_progress",
+       "rawInput": {
+        "path": "m2.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m2.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.8134146
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.8134146
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.8134146
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.6
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.8134146
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0011",
+       "status": "failed",
+       "title": "Read File",
+       "rawInput": {
+        "path": "m2.txt",
+        "offset": null,
+        "limit": null
+       },
+       "rawOutput": {
+        "message": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m2.txt'"
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m2.txt'"
+         }
+        }
+       ],
+       "locations": [
+        {
+         "path": "${CWD}/m2.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000037-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0012",
+       "title": "Read File",
+       "kind": "read",
+       "status": "pending",
+       "rawInput": {
+        "path": "m3.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m3.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0012",
+       "status": "in_progress",
+       "rawInput": {
+        "path": "m3.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m3.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.9018292
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.9018292
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.9018292
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.7
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.9018292
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0012",
+       "status": "failed",
+       "title": "Read File",
+       "rawInput": {
+        "path": "m3.txt",
+        "offset": null,
+        "limit": null
+       },
+       "rawOutput": {
+        "message": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m3.txt'"
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m3.txt'"
+         }
+        }
+       ],
+       "locations": [
+        {
+         "path": "${CWD}/m3.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000038-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0013",
+       "title": "Read File",
+       "kind": "read",
+       "status": "pending",
+       "rawInput": {
+        "path": "m4.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m4.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0013",
+       "status": "in_progress",
+       "rawInput": {
+        "path": "m4.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m4.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.990244
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.990244
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 4.990244
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.8
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 4.990244
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0013",
+       "status": "failed",
+       "title": "Read File",
+       "rawInput": {
+        "path": "m4.txt",
+        "offset": null,
+        "limit": null
+       },
+       "rawOutput": {
+        "message": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m4.txt'"
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m4.txt'"
+         }
+        }
+       ],
+       "locations": [
+        {
+         "path": "${CWD}/m4.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000039-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0014",
+       "title": "Read File",
+       "kind": "read",
+       "status": "pending",
+       "rawInput": {
+        "path": "m5.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m5.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0014",
+       "status": "in_progress",
+       "rawInput": {
+        "path": "m5.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m5.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 5.0786586
+         },
+         "kind": "context_usage",
+         "usagePercentage": 5.0786586
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 5.0786586
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 2.9
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 5.0786586
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0014",
+       "status": "failed",
+       "title": "Read File",
+       "rawInput": {
+        "path": "m5.txt",
+        "offset": null,
+        "limit": null
+       },
+       "rawOutput": {
+        "message": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m5.txt'"
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m5.txt'"
+         }
+        }
+       ],
+       "locations": [
+        {
+         "path": "${CWD}/m5.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000040-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0015",
+       "title": "Read File",
+       "kind": "read",
+       "status": "pending",
+       "rawInput": {
+        "path": "m6.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m6.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0015",
+       "status": "in_progress",
+       "rawInput": {
+        "path": "m6.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m6.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 5.1707315
+         },
+         "kind": "context_usage",
+         "usagePercentage": 5.1707315
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 5.1707315
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 3
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 5.1707315
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0015",
+       "status": "failed",
+       "title": "Read File",
+       "rawInput": {
+        "path": "m6.txt",
+        "offset": null,
+        "limit": null
+       },
+       "rawOutput": {
+        "message": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m6.txt'"
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m6.txt'"
+         }
+        }
+       ],
+       "locations": [
+        {
+         "path": "${CWD}/m6.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "\n\n<\uff5cDSML\uff5cfunction_calls"
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000041-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "tooluse_0016",
+       "title": "Read File",
+       "kind": "read",
+       "status": "pending",
+       "rawInput": {
+        "path": "m7.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m7.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0016",
+       "status": "in_progress",
+       "rawInput": {
+        "path": "m7.txt",
+        "offset": null,
+        "limit": null
+       },
+       "locations": [
+        {
+         "path": "${CWD}/m7.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 5.259146
+         },
+         "kind": "context_usage",
+         "usagePercentage": 5.259146
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 5.259146
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 3.1
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 5.259146
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call_update",
+       "toolCallId": "tooluse_0016",
+       "status": "failed",
+       "title": "Read File",
+       "rawInput": {
+        "path": "m7.txt",
+        "offset": null,
+        "limit": null
+       },
+       "rawOutput": {
+        "message": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m7.txt'"
+       },
+       "content": [
+        {
+         "type": "content",
+         "content": {
+          "type": "text",
+          "text": "Caught error reading: ENOENT: no such file or directory, stat '${CWD}/m7.txt'"
+         }
+        }
+       ],
+       "locations": [
+        {
+         "path": "${CWD}/m7.txt"
+        }
+       ],
+       "_meta": {
+        "kiro": {
+         "toolOrigin": "default"
+        }
+       }
+      }
+     }
+    }
+   }
+  ],
+  "loopGuard": [
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "tool_call",
+       "toolCallId": "failure-intervention-prompt-1000000000001",
+       "title": "I've been trying to use \"read_file\" but it's failed 7 times in a row. I'm clearly stuck in a loop.\n\nWhat would you like me to do?",
+       "kind": "other",
+       "status": "pending",
+       "_meta": {
+        "kiro": {
+         "toolId": "user_input",
+         "userInputReason": "failure-intervention"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "pendingInteraction": {
+          "toolCallId": "failure-intervention-prompt-1000000000001",
+          "interactionType": "user_input",
+          "question": "I've been trying to use \"read_file\" but it's failed 7 times in a row. I'm clearly stuck in a loop.\n\nWhat would you like me to do?",
+          "options": [
+           {
+            "optionId": "cancel",
+            "name": "Cancel",
+            "kind": "allow_once"
+           },
+           {
+            "optionId": "keep-iterating",
+            "name": "Keep Iterating",
+            "kind": "allow_once"
+           }
+          ],
+          "_meta": {
+           "kiro": {
+            "askId": "pr-00000000-0000-4000-8000-000000000042",
+            "askKind": "question",
+            "requester": {
+             "sessionId": "${SESSION}"
+            }
+           }
+          }
+         },
+         "kind": "pending_interaction",
+         "toolCallId": "failure-intervention-prompt-1000000000001",
+         "interactionType": "user_input",
+         "question": "I've been trying to use \"read_file\" but it's failed 7 times in a row. I'm clearly stuck in a loop.\n\nWhat would you like me to do?",
+         "options": [
+          {
+           "optionId": "cancel",
+           "name": "Cancel",
+           "kind": "allow_once"
+          },
+          {
+           "optionId": "keep-iterating",
+           "name": "Keep Iterating",
+           "kind": "allow_once"
+          }
+         ],
+         "_meta": {
+          "kiro": {
+           "askId": "pr-00000000-0000-4000-8000-000000000042",
+           "askKind": "question",
+           "requester": {
+            "sessionId": "${SESSION}"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "ask": {
+     "sessionId": "${SESSION}",
+     "toolCall": {
+      "toolCallId": "failure-intervention-prompt-1000000000001",
+      "title": "I've been trying to use \"read_file\" but it's failed 7 times in a row. I'm clearly stuck in a loop.\n\nWhat would you like me to do?",
+      "status": "pending"
+     },
+     "options": [
+      {
+       "optionId": "cancel",
+       "name": "Cancel",
+       "kind": "allow_once"
+      },
+      {
+       "optionId": "keep-iterating",
+       "name": "Keep Iterating",
+       "kind": "allow_once"
+      }
+     ],
+     "_meta": {
+      "kiro": {
+       "askId": "pr-00000000-0000-4000-8000-000000000042",
+       "askKind": "question",
+       "requester": {
+        "sessionId": "${SESSION}"
+       }
+      }
+     }
+    },
+    "answers": {
+     "cancel": [
+      {
+       "msg": {
+        "jsonrpc": "2.0",
+        "method": "_kiro/sessions/changed",
+        "params": {
+         "upserted": [
+          {
+           "sessionId": "${SESSION}",
+           "status": "waiting_on_user",
+           "updatedAt": "2026-11-18T20:48:59.997Z"
+          }
+         ],
+         "deleted": []
+        }
+       }
+      },
+      {
+       "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+         "sessionId": "${SESSION}",
+         "update": {
+          "sessionUpdate": "session_info_update",
+          "_meta": {
+           "kiro": {
+            "focus": {
+             "status": "waiting_on_user"
+            },
+            "kind": "focus_update",
+            "status": "waiting_on_user",
+            "activity": {
+             "turnActive": true,
+             "runningWorkflows": 0,
+             "pausedWorkflows": 0
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      {
+       "msg": {
+        "jsonrpc": "2.0",
+        "method": "_kiro/sessions/changed",
+        "params": {
+         "upserted": [
+          {
+           "sessionId": "${SESSION}",
+           "status": "in_progress"
+          }
+         ],
+         "deleted": []
+        }
+       }
+      },
+      {
+       "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+         "sessionId": "${SESSION}",
+         "update": {
+          "sessionUpdate": "session_info_update",
+          "_meta": {
+           "kiro": {
+            "focus": {
+             "status": "in_progress"
+            },
+            "kind": "focus_update",
+            "status": "in_progress",
+            "activity": {
+             "turnActive": true,
+             "runningWorkflows": 0,
+             "pausedWorkflows": 0
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      {
+       "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+         "sessionId": "${SESSION}",
+         "update": {
+          "sessionUpdate": "session_info_update",
+          "_meta": {
+           "kiro": {
+            "interactionResolved": {
+             "toolCallId": "failure-intervention-prompt-1000000000001",
+             "outcome": "selected",
+             "selectedOption": "cancel",
+             "_meta": {
+              "kiro": {
+               "askId": "pr-00000000-0000-4000-8000-000000000042",
+               "askKind": "question",
+               "requester": {
+                "sessionId": "${SESSION}"
+               }
+              }
+             }
+            },
+            "kind": "interaction_resolved",
+            "toolCallId": "failure-intervention-prompt-1000000000001",
+            "outcome": "selected",
+            "selectedOption": "cancel",
+            "_meta": {
+             "kiro": {
+              "askId": "pr-00000000-0000-4000-8000-000000000042",
+              "askKind": "question",
+              "requester": {
+               "sessionId": "${SESSION}"
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      {
+       "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+         "sessionId": "${SESSION}",
+         "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "failure-intervention-prompt-1000000000001",
+          "status": "completed"
+         }
+        }
+       }
+      },
+      {
+       "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+         "sessionId": "${SESSION}",
+         "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "failure-intervention-1000000000002",
+          "status": "completed",
+          "rawInput": {
+           "message": "User intervention: cancel"
+          },
+          "rawOutput": {
+           "userChoice": "cancel",
+           "guidanceProvided": false
+          },
+          "content": [
+           {
+            "type": "content",
+            "content": {
+             "type": "text",
+             "text": "{\"userChoice\":\"cancel\",\"guidanceProvided\":false}"
+            }
+           }
+          ],
+          "_meta": {
+           "kiro": {}
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  ],
+  "cancelledText": [
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "agent_message_chunk",
+       "content": {
+        "type": "text",
+        "text": "Task cancelled. I'll stop the current approach."
+       },
+       "_meta": {
+        "kiro": {
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "replayId": "00000000-0000-4000-8000-000000000043-say"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 5.357927
+         },
+         "kind": "context_usage",
+         "usagePercentage": 5.357927
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "contextUsage": {
+          "usagePercentage": 5.357927
+         },
+         "breakdown": {
+          "contextFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          },
+          "tools": {
+           "tokens": 3689,
+           "percent": 2.2,
+           "mcp": {
+            "tokens": 0,
+            "percent": 0
+           },
+           "builtin": {
+            "tokens": 3689,
+            "percent": 2.2
+           }
+          },
+          "memory": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "kiroResponses": {
+           "tokens": 0,
+           "percent": 0
+          },
+          "yourPrompts": {
+           "tokens": 0,
+           "percent": 3.2
+          },
+          "sessionFiles": {
+           "tokens": 0,
+           "percent": 0,
+           "items": []
+          }
+         },
+         "kind": "context_usage",
+         "usagePercentage": 5.357927
+        }
+       }
+      }
+     }
+    }
+   }
+  ],
+  "closing": [
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "promptTurnSummaries": [
+          {
+           "unit": "credit",
+           "unitPlural": "credits",
+           "usage": 0.6377699237147595,
+           "usedTools": [
+            "file_search",
+            "load_resource",
+            "load_resource",
+            "load_resource",
+            "grep_search",
+            "read_file",
+            "read_file",
+            "read_file",
+            "read_file",
+            "read_file",
+            "read_file",
+            "read_file"
+           ]
+          }
+         ],
+         "elapsedTime": 42723,
+         "status": "success",
+         "kind": "turn_completion",
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "requestIds": [
+          "00000000-0000-4000-8000-000000000044",
+          "00000000-0000-4000-8000-000000000045",
+          "00000000-0000-4000-8000-000000000046",
+          "00000000-0000-4000-8000-000000000047",
+          "00000000-0000-4000-8000-000000000048",
+          "00000000-0000-4000-8000-000000000049",
+          "00000000-0000-4000-8000-000000000050",
+          "00000000-0000-4000-8000-000000000051",
+          "00000000-0000-4000-8000-000000000052",
+          "00000000-0000-4000-8000-000000000053",
+          "00000000-0000-4000-8000-000000000054",
+          "00000000-0000-4000-8000-000000000055",
+          "00000000-0000-4000-8000-000000000056"
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "kind": "session_usage",
+         "credits": [
+          {
+           "usage": 0.6377699237147595,
+           "unit": "credit",
+           "unitPlural": "credits"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "_kiro/sessions/changed",
+     "params": {
+      "upserted": [
+       {
+        "sessionId": "${SESSION}",
+        "status": "idle",
+        "updatedAt": "2026-11-18T20:49:01.377Z"
+       }
+      ],
+      "deleted": []
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "turnEnd": {
+          "stopReason": "end_turn"
+         },
+         "kind": "turn_end",
+         "executionId": "00000000-0000-4000-8000-000000000028",
+         "turnId": "00000000-0000-4000-8000-000000000028",
+         "timestamp": "2026-11-18T20:49:01.370Z",
+         "boundarySource": "observed",
+         "stopReason": "end_turn",
+         "messageId": "00000000-0000-4000-8000-000000000028-turn-end"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "msg": {
+     "jsonrpc": "2.0",
+     "method": "session/update",
+     "params": {
+      "sessionId": "${SESSION}",
+      "update": {
+       "sessionUpdate": "session_info_update",
+       "_meta": {
+        "kiro": {
+         "focus": {
+          "status": "idle"
+         },
+         "kind": "focus_update",
+         "status": "idle",
+         "activity": {
+          "turnActive": false,
+          "runningWorkflows": 0,
+          "pausedWorkflows": 0
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  ]
+ },
+ "keepIterating": [
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "_kiro/sessions/changed",
+    "params": {
+     "upserted": [
+      {
+       "sessionId": "${SESSION}",
+       "status": "waiting_on_user",
+       "updatedAt": "2026-11-18T20:08:14.649Z"
+      }
+     ],
+     "deleted": []
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "focus": {
+         "status": "waiting_on_user"
+        },
+        "kind": "focus_update",
+        "status": "waiting_on_user",
+        "activity": {
+         "turnActive": true,
+         "runningWorkflows": 0,
+         "pausedWorkflows": 0
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "_kiro/sessions/changed",
+    "params": {
+     "upserted": [
+      {
+       "sessionId": "${SESSION}",
+       "status": "in_progress"
+      }
+     ],
+     "deleted": []
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "focus": {
+         "status": "in_progress"
+        },
+        "kind": "focus_update",
+        "status": "in_progress",
+        "activity": {
+         "turnActive": true,
+         "runningWorkflows": 0,
+         "pausedWorkflows": 0
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "session_info_update",
+      "_meta": {
+       "kiro": {
+        "interactionResolved": {
+         "toolCallId": "failure-intervention-prompt-1000000000003",
+         "outcome": "cancelled"
+        },
+        "kind": "interaction_resolved",
+        "toolCallId": "failure-intervention-prompt-1000000000003",
+        "outcome": "cancelled"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "failure-intervention-prompt-1000000000003",
+      "status": "completed"
+     }
+    }
+   }
+  },
+  {
+   "msg": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "${SESSION}",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "failure-intervention-1000000000004",
+      "status": "completed",
+      "rawInput": {
+       "message": "User intervention: keep-iterating"
+      },
+      "rawOutput": {
+       "userChoice": "keep-iterating",
+       "guidanceProvided": false
+      },
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "{\"userChoice\":\"keep-iterating\",\"guidanceProvided\":false}"
+        }
+       }
+      ],
+      "_meta": {
+       "kiro": {}
+      }
+     }
+    }
+   }
+  }
+ ]
+}
