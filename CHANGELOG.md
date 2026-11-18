@@ -16,6 +16,15 @@ The first release.
   mode posts nothing).
 - **Eight seat backends**: codex and claude (headless), grok, cursor and muse (headless), antigravity, kiro and
   opencode (ACP). See [docs/backends/](docs/backends/README.md).
+- **kiro seats run kiro-cli's v3 engine by default** (Kiro's own default for new installs; kiro-cli 3.5.0 or later),
+  with `engine = "v2"` keeping the v2 engine on 3.2.1, 3.3.0 and 3.5.0. **An existing kiro seat or fallback with no
+  `engine` moves to v3**: set `engine = "v2"` to keep it on v2, or update kiro-cli to 3.5.0 (a v3 seat on an older
+  kiro-cli is refused at preflight: "update kiro-cli, or set engine = v2"). `doctor` prints each kiro seat's engine,
+  `seats swap/add/test` take `--engine`, and every leg records the engine it ran. On v3 the client pins the agent,
+  model, effort, autopilot, content collection, memory reflection and session tools messaging over ACP and gates the
+  session before the prompt (exactly kiro's read tool tag, empty permission presets, no MCP server, bundled steering
+  only); legs on 3.5.0 get a settings file that turns off kiro-cli's self-update, telemetry and content sharing. See
+  [the kiro page](docs/backends/kiro.md).
 - **Findings blocks** in the three shapes seats write (the `F1 | HIGH | path:line | title` lines, JSON, YAML), tagged
   `findings` on the opening fence or, as a live seat wrote it, on the first non-blank line inside an untagged fence
   that only blank lines and the verdict line follow; anything looser, such a block midway through the answer (it may
@@ -41,15 +50,17 @@ The first release.
 
 - **Enforcement labels.** Only `claude` on 2.1.322, 2.1.323 and 2.1.325 is `strong` (a promotion canary on each).
   `codex` 0.167.0 is `sandboxed-exec` (commands run in a write- and network-denied sandbox; reads are not confined).
-  `antigravity` 1.5.7, `kiro` 3.2.1 and `opencode` 2.2.7 are `pending`: their canaries ran and did not prove every
-  action refused before it ran. `grok` 1.0.70 is `weak` with `sandbox = "off"` (reads outside the root ran and were
-  caught only by ratification); with its sandbox on it is `pending`, a label no recorded run backs. `cursor` and
-  `muse` are `weak`: no live Cursor run and no logged-in Muse run exists.
+  `antigravity` 1.5.7, `kiro` (3.5.0 on both engines; 3.2.1 and 3.3.0 on v2) and `opencode` 2.2.7 are `pending`:
+  their canaries ran and did not prove every action refused before it ran (kiro's v3 canary has not run yet). `grok`
+  1.0.70 is `weak` with `sandbox = "off"` (reads outside the root ran and were caught only by ratification); with its
+  sandbox on it is `pending`, a label no recorded run backs. `cursor` and `muse` are `weak`: no live Cursor run and no
+  logged-in Muse run exists.
 - With the default `untrusted_seat_policy = "fallback"`, a round on a PR from an author without write access needs
   `strong` (claude) fallbacks for the other seats, or it fails below quorum, visibly.
 - Not measured: an antigravity leg's symlink read, write, command and fetch, each put to the client on its own;
-  whether `~/.gemini` instructions, skills, plugins and hooks stay out of an agy leg; kiro's offered tool set and its
-  effort field on a model with effort levels; a grok configuration that stops reads before they run, and a grok leg
+  whether `~/.gemini` instructions, skills, plugins and hooks stay out of an agy leg; kiro's offered tool set on its v2
+  engine, the effort field on a model with effort levels (either engine), whether the v3 settings file stops a pending
+  self-update, and a model reroute v3 does not report; a grok configuration that stops reads before they run, and a grok leg
   with its sandbox on; every Cursor behaviour; a logged-in Muse leg's records; the Bedrock and Vertex routes for
   claude; the `GEMINI_API_KEY`, `KIRO_API_KEY` and paid-provider opencode routes.
 

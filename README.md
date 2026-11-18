@@ -197,7 +197,7 @@ earn the top label:
 |---|---|---|
 | `strong` | claude 2.1.322, 2.1.323, 2.1.325 | its promotion canary on each version denied every outside read (path, symlink, Glob, Grep) before it ran; no write, command or fetch tool is offered |
 | `sandboxed-exec` | codex 0.167.0 | commands run in a write- and network-denied sandbox; reads are not confined to the root (checked afterwards) |
-| `pending` | antigravity 1.5.7, kiro 3.2.1, opencode 2.2.7; claude on an untested version | their canaries ran and did not prove every action refused before it ran |
+| `pending` | antigravity 1.5.7, kiro 3.5.0 (v3 engine, the default; v2 also on 3.2.1 and 3.3.0), opencode 2.2.7; claude on an untested version | their canaries ran and did not prove every action refused before it ran (kiro's v3 canary has not run yet) |
 | `weak` | grok 1.0.70 with `sandbox = "off"`; cursor; muse | grok's reads outside the root ran and were caught only afterwards; no live Cursor run and no logged-in Muse run exists |
 
 A grok seat with its sandbox running would be `pending`, a label no recorded run backs. With the default
@@ -234,7 +234,8 @@ model = "gpt-6.1-sol"              # an id the backend's adapter lists
 effort = "high"                    # required by most backends (see each backend page)
 fallback = { backend = "claude", model = "claude-opus-5-5", effort = "high", on = ["usage_limit", "auth"] }
 # grok seats take sandbox = "read-only" | "off"; kiro and grok seats (and fallbacks) take auth_home = "/abs/dir",
-# a separate login of the seat's own.
+# a separate login of the seat's own. kiro seats and fallbacks take engine = "v3" (the default) | "v2": a kiro seat
+# with no engine runs kiro-cli's v3 engine (3.5.0 or later); engine = "v2" keeps the v2 engine.
 
 [adjudicator]                      # the headless adjudicator (auto, adjudicate --headless)
 model = "claude-opus-5-5"          # no default: adjudicate --headless refuses until it is set
