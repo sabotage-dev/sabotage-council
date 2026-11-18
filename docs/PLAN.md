@@ -998,8 +998,9 @@ refuses them). The leg keeps P3's per-leg `KIRO_HOME` and `HOME` = the seat's `a
 **Preflight (both engines).** Preflight's own kiro-cli commands (`--version`, `chat --list-models`) run with a
 scratch `KIRO_HOME` that holds the leg settings file, so a preflight launch cannot update the CLI on a declared
 version. Each leg records the version it actually ran, from the `KiroCLI/<version> KAS/<version>` user agent in
-its own `KIRO_HOME/logs/*/kiro.log`. A version that differs from preflight's fails the leg (`setup`). The v3
-`initialize` result names no version when signed in.
+its own `KIRO_HOME/logs/*/kiro.log` (measured on 3.5.0: `KiroCLI/3.5.0 KAS/0.66.119`). A version that differs
+from preflight's, or no such line, fails the leg (`setup`). The v3 `initialize` result names no version when
+signed in.
 
 **Before the prompt (v3).** P11 adds a pre-prompt gate to the ACP client: an adapter hook that reads the session's
 notifications, which may refuse the leg before `session/prompt` is sent. The ACP log reader keeps every `_kiro/*`
@@ -1025,14 +1026,17 @@ notification for ratification. Any miss below refuses the leg before a credit is
    - `sessionToolsMessaging` = `off`.
 
    The pin-check types grow beyond `mode`, `model` and `effort`. A value that is not confirmed is `setup`, except
-   `model` and `effortLevel`, which are `model`. Measured on 3.5.0: all were confirmed except `effortLevel`.
-   `memoryReflection` and `sessionToolsMessaging` were already `off`.
+   `model` and `effortLevel`, which are `model`. Measured on 3.5.0: `mode`, `model`, `autopilot` and
+   `contentCollection` were each set and confirmed. `memoryReflection` and `sessionToolsMessaging` were seen `off`
+   but never set, and `effortLevel` was never offered. The live `seats test` of the build exercises the two set
+   calls first; if kiro refuses either, the plan falls back to checking its advertised value instead of setting
+   it (plan round 2).
 3. **Effort.** If the occupant sets an effort and no `effortLevel` option is advertised after the model pin, the
    leg is refused (`model`). This is not measured live: no model on the owner's personal login has effort levels
    (14).
 4. **After all pins,** the gate evaluates the newest of each notification received after the mode pin's request
    was sent. kiro sends them before its response (measured: tags at +5 ms, the response at +8 ms). The gate waits
-   at most 5 s for each one.
+   at most 5 s for each one; a missing one refuses the leg (`setup`).
    - **Tools.** `_kiro/tools/didChange` must list exactly one tag, `{source: "builtin", tag: "read"}`.
      - Measured: no tags for the P3 file; that one tag for the v3 file; and `read`, `write`, `shell` and `web`,
        all `builtin`, for kiro's default agent.
@@ -1061,6 +1065,11 @@ notification for ratification. Any miss below refuses the leg before a credit is
   - Measured: `cancelled` is recorded as `keep-iterating`, and kiro goes on calling tools; `cancel` ends the turn.
   - A later `userChoice: "keep-iterating"`, or a completed loop-guard call that did not record `cancel`, fails the
     leg (`contaminated`).
+  - The client recognises the request by `_meta.kiro.toolId` `user_input` with `userInputReason`
+    `failure-intervention` (and the `failure-intervention-` call ids), not by option ids alone.
+  - The loop-guard calls are exempt from the read set's title and `toolOrigin` rules and from the `usedTools`
+    match, which does not list them. A cancelled turn ends with no verdict, so the leg fails as `empty` (plan
+    round 2, both legs).
 
 **The v3 read set.** v3 tool calls carry `title`, `kind`, `rawInput`, `locations` (absolute paths) and
 `_meta.kiro.toolOrigin`, but no tool name. The read set keys on `title` and `kind`:
@@ -1079,15 +1088,21 @@ How each read is judged:
   tag also names "diagnostics", which no measured call has used.
 - **Tool origin.** `toolOrigin` must be `default` or `acp`. Measured: `acp` on `List Directory`, `default` on the
   rest.
-- **Denial notice.** The v3 notice is a snapshot that has all three of: status `failed`, `rawOutput.message`
-  exactly "The user rejected this tool call.", and an earlier client rejection of that call. That snapshot is a
-  notice, not tool output, so a rejected read did not run.
-- **`Load Resource`** (kind `other`) is always offered. Measured with the v3 file, its catalogue is empty: three
-  loads (a skill id and two tool ids) each failed with "Use one exact resource ID from the current load_resource
-  catalogue".
-  - A `Load Resource` call that only went to `failed` is recorded as not run. This is an adapter-scoped rule;
-    other backends keep the shared one.
-  - A completed `Load Resource` call fails the leg (`contaminated`).
+- **Denial notice.** The v3 notice is a snapshot that has all of: status `failed`; `rawOutput` with
+  `message` exactly "The user rejected this tool call." and no other text; `content` empty or holding only that
+  sentence; and an earlier client rejection of that call. That snapshot is a notice, not tool output, so a
+  rejected read did not run. A snapshot with any other text is output: the call ran, and its paths are judged
+  (plan round 2).
+- **`Load Resource`** (kind `other`) is always offered. Measured with the v3 file: three guessed ids (a skill
+  id and two tool ids) each failed with "Use one exact resource ID from the current load_resource catalogue". The
+  catalogue itself was not listed, and loading one of the three bundled steering documents was not tried (plan
+  round 2).
+  - A `Load Resource` call that never reached `completed` is recorded as not run, even when it went
+    `in_progress` and then `failed` with that error text. This is an adapter-scoped rule; other backends keep the
+    shared one.
+  - Any completed `Load Resource` call fails the leg (`contaminated`), a bundled steering document included. That
+    fails closed; if live legs show reviewers loading bundled steering, a later change may allow those ids by
+    name.
 
 **Ratification (v3).** It replaces the v2 record checks for a v3 leg; v2 legs keep theirs. New check names carry
 the failure classes below.
@@ -1114,8 +1129,10 @@ the failure classes below.
     - `modelId` = the pin, and `modelNamedBy` = `{modelId: <pin>, by: "client"}`;
     - `rootPaths` and `workspacePaths` = the root, and nothing else;
     - `autopilot` = `false`.
-  - `messages.jsonl` beside it. Every `agent_note` reading "The current model is <id>." must name the pin, and
-    its `tool_call` entries must agree with the stream's by id, name and status.
+  - `messages.jsonl` beside it. It must hold at least one `agent_note` reading "The current model is <id>.",
+    and every such note, the last included, must name the pin. Its `tool_call` entries must agree with the
+    stream's by id and name, and its `tool_result` status with the stream's terminal status (`approved` with
+    `completed`, `denied` with `failed`).
   - Both preset stores, re-read: each missing or with no presets. A store the leg created is allowed only when
     empty.
 
@@ -2110,7 +2127,7 @@ existing private council until the two agree for 10 rounds in a row (Q9).
 | **P8** Auto daemon (+ opt-in tests) | Queue, ledger state machine, claim fencing, crash resume, continuation, holds, CI gate, notifications, launchd/systemd install, test runner with collaborator/fork checks | State-machine tests incl. crash between POST and review read (no double post), head moved mid-round, human review lands mid-approve; a week of shadow running on the owner's machine posting `--dry-run` | L |
 | **P9** Stats + seats | Scorecard metrics, counterfactuals, recommendations, HTML report, `seats` commands, planted-defect fixture for `seats test` | Metric tests on a synthetic store with known answers (e.g. a seat with 0 unique owed over 25 rounds is flagged); report renders in light and dark | M |
 | **P10** Docs + release 0.1.0 | README, per-backend setup pages (auth, terms notes, enforcement strength), security model page, migration notes, npm publish with provenance, plugin marketplace entry | A clean machine install from the README reaches a first `plan` round; `npm audit` clean | S |
-| **P11** kiro v3 engine (D18) | `engine` key on kiro seats, kiro fallbacks and `seats swap/add/test` (default `v3`); the v3 agent file as fixture bytes, and the leg settings file on declared versions (4.6); preflight's kiro commands on a scratch `KIRO_HOME`; the ACP client's pre-prompt gate hook, the log reader keeping `_kiro/*` notifications, and wider pin-check types; the v3 pins, the effort refusal, and the `session/new`, tags, policy, steering, powers and MCP checks; the v3 request-path reader (`consent.resource`), read set, denial notice, `Load Resource` rule and loop-guard answer; v3 ratification from the stream, `session.json`, `messages.jsonl` and the preset stores; the leg's own version from its log; the per-engine declared table with settings keys, and the v3 floor; the engine in `doctor`, `seats` and the `stats` evidence rows; docs (kiro backend page, README, CHANGELOG, security page) | Replay tests on a fake ACP agent from scrubbed fixtures of the P11 probes. **Ratifies:** the v3 happy path, including a rejected outside read (the v3 denial notice), a failed `Load Resource` and a `File Search`. **Refused before the prompt:** tags `[]`; the four default tags; a non-builtin tag; a listed MCP server; a non-empty preset store; a non-bundled steering document; a power or progressive-context item; each of the seven pins unconfirmed; an effort with no `effortLevel` option. **`contaminated`:** a pinned option changed after the prompt; a later tags, policy or steering notification that would fail the gate; a completed `Load Resource`; an unknown title; a `toolOrigin` other than `default` or `acp`; a `usedTools` list with an extra, missing or reordered name; a grep or file search whose path or `includePattern` resolves outside the root; a loop guard recorded as `keep-iterating`; a changed agent-file hash or a `.json.bak` after the leg; a preset in a store after the leg. **`model`:** a notification after the prompt naming another model; a `messages.jsonl` model note other than the pin; a wrong `modelId` or `modelNamedBy`. **`setup`:** a missing `session.json` or `messages.jsonl`; the leg's own version differing from preflight's. **`auth`:** the signed-out `session/new` error. **Answered `cancel`:** the loop-guard request. **v2 and versions:** every v2 test is unchanged and green; `engine = "v2"` selects the P3 path; the settings file is written only on versions declared for it; preflight's kiro commands carry the scratch `KIRO_HOME`. **Mutation check, one failing test each:** the tags, preset, steering and MCP checks; the denial notice; the `Load Resource` rule; the `usedTools` match; the outside-pattern judgement; the `modelId` and `messages.jsonl` model checks; the effort refusal; the loop-guard answer. **Live, on the owner's personal login:** `seats test` passes ratified on the planted-defect fixture on v3, and on v2 with the settings file (3.5.0). The P3 canary is repeated on v3, run clean and with a planted allow rule, the allow rule also given as a permission preset: an outside read by path and through a symlink, a search outside, a write, a command and a fetch. The decoy run of 4.6 runs on a HOME the owner names. Results go in 14 | M |
+| **P11** kiro v3 engine (D18) | `engine` key on kiro seats, kiro fallbacks and `seats swap/add/test` (default `v3`); the v3 agent file as fixture bytes, and the leg settings file on declared versions (4.6); preflight's kiro commands on a scratch `KIRO_HOME`; the ACP client's pre-prompt gate hook, the log reader keeping `_kiro/*` notifications, and wider pin-check types; the v3 pins, the effort refusal, and the `session/new`, tags, policy, steering, powers and MCP checks; the v3 request-path reader (`consent.resource`), read set, denial notice, `Load Resource` rule and loop-guard answer; v3 ratification from the stream, `session.json`, `messages.jsonl` and the preset stores; the leg's own version from its log; the per-engine declared table with settings keys, and the v3 floor; the engine in `doctor`, `seats` and the `stats` evidence rows; docs (kiro backend page, README, CHANGELOG, security page) | Replay tests on a fake ACP agent from scrubbed fixtures of the P11 probes. **Ratifies:** the v3 happy path, including a rejected outside read (the v3 denial notice), a `Load Resource` that went `in_progress` then `failed` with the catalogue error, and a `File Search`. **Refused before the prompt:** tags `[]`; the four default tags; a non-builtin tag; a listed MCP server; a non-empty preset store; a non-bundled steering document; a power or progressive-context item; each of the seven pins unconfirmed; an effort with no `effortLevel` option. **`contaminated`:** a pinned option changed after the prompt; a later tags, policy or steering notification that would fail the gate; a completed `Load Resource`; an unknown title; a `toolOrigin` other than `default` or `acp`; a `usedTools` list with an extra, missing or reordered name; a grep or file search whose path or `includePattern` resolves outside the root; a loop guard recorded as `keep-iterating`; a changed agent-file hash or a `.json.bak` after the leg; a preset in a store after the leg; a wrong `agentMode`, `rootPaths`, `workspacePaths` or `session.json` `autopilot`; a rejection snapshot carrying any text beyond the notice. **`model`:** a notification after the prompt naming another model; a `messages.jsonl` model note other than the pin; a wrong `modelId` or `modelNamedBy`. **`setup`:** a missing `session.json` or `messages.jsonl`, or a `messages.jsonl` with no model note; the leg's own version differing from preflight's, or missing from its log; a gate notification that never arrives. **`empty`:** a turn ended by a loop-guard `cancel`. **`auth`:** the signed-out `session/new` error. **Answered `cancel`:** the loop-guard request. **v2 and versions:** every v2 test is unchanged and green; `engine = "v2"` selects the P3 path; the settings file is written only on versions declared for it; preflight's kiro commands carry the scratch `KIRO_HOME`. **Mutation check, one failing test each:** the tags, preset, steering and MCP checks; the denial notice; the `Load Resource` rule; the `usedTools` match; the outside-pattern judgement; the `modelId` and `messages.jsonl` model checks; the effort refusal; the loop-guard answer. **Live, on the owner's personal login:** `seats test` passes ratified on the planted-defect fixture on v3, and on v2 with the settings file (3.5.0). The P3 canary is repeated on v3, run clean and with a planted allow rule, the allow rule also given as a permission preset: an outside read by path and through a symlink, a search outside, a write, a command and a fetch. The decoy run of 4.6 runs on a HOME the owner names. Results go in 14 | M |
 
 Build process for each phase:
 1. An implementation agent builds it from a written brief.
@@ -2276,7 +2293,7 @@ scratch `KIRO_HOME` per run, two paid turns and two seat tests, 1.59 credits in 
 - **Plan round 1 follow-up turn** (3.5.0, the model-less v3 file, 0.64 credits), plus two runs with no prompt:
   - `File Search` (kind `search`) took `rawInput.query` `".md$"`, with no path, and found `NOTES.md` with no
     request.
-  - `Load Resource`'s catalogue is empty: a skill id and two tool ids each failed.
+  - `Load Resource`: three guessed ids (a skill id and two tool ids) each failed; the catalogue was not listed.
   - A `Grep Search` with `includePattern: "../**/*"` ran with no request and matched nothing, although the
     parent held a match.
   - Seven failed in-root reads raised the loop guard. Selecting `cancel` ended the turn; an earlier
