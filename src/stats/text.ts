@@ -95,7 +95,7 @@ export function recommendationLines(r: Recommendation): string[] {
     lines.push('    rounds:');
     for (const e of r.evidence.rounds) {
       lines.push(
-        `      #${e.round} ${clean(e.target)} round ${e.round_no} ${e.started_at.slice(0, 10)}${e.dry_run ? ' (dry run)' : ''}: ${clean(e.said)}; round verdict ${e.verdict ?? 'not adjudicated'}`,
+        `      #${e.round} ${clean(e.target)} round ${e.round_no} ${e.started_at.slice(0, 10)}${e.dry_run ? ' (dry run)' : ''}: ${clean(e.said)}${e.engine !== null ? ` (kiro engine ${clean(e.engine)})` : ''}; round verdict ${e.verdict ?? 'not adjudicated'}`,
       );
     }
     lines.push('    findings:');
@@ -164,7 +164,7 @@ function seatTestLines(report: StatsReport): string[] {
     const occ = [t.backend, t.model, t.effort].filter((x) => x !== null).map((x) => clean(String(x))).join(':');
     const cost = [t.cost_usd !== null ? money(t.cost_usd) : null, t.credits !== null ? `${t.credits} credits` : null].filter((x) => x !== null).join(', ');
     out.push(
-      `  ${t.ts.slice(0, 19)}Z ${occ}${t.seat !== null ? ` (seat ${clean(t.seat)})` : ''}: ${t.ratified ? 'ratified' : `not ratified (${clean(t.failure_class ?? t.status)})`}, verdict ${clean(t.verdict ?? 'none')}, defects ${t.defects_found.length}/${t.defects_total}${cost !== '' ? `, ${cost}` : ''}, ${durationText(t.duration_ms)}`,
+      `  ${t.ts.slice(0, 19)}Z ${occ}${t.engine !== null ? ` (kiro engine ${clean(t.engine)})` : ''}${t.seat !== null ? ` (seat ${clean(t.seat)})` : ''}: ${t.ratified ? 'ratified' : `not ratified (${clean(t.failure_class ?? t.status)})`}, verdict ${clean(t.verdict ?? 'none')}, defects ${t.defects_found.length}/${t.defects_total}${cost !== '' ? `, ${cost}` : ''}, ${durationText(t.duration_ms)}`,
     );
   }
   return out;

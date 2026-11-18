@@ -5,6 +5,7 @@ import {
   checkFallbacksAcrossSeats,
   checkFallbacksDiffer,
   checkAuthHome,
+  checkEngineOnlyForKiro,
   checkGrokLogins,
   checkKiroLogins,
   checkSandboxOnlyForGrok,
@@ -45,6 +46,7 @@ export async function validateConfig(raw: unknown, options: ValidateOptions = {}
   errors.push(...checkFallbacksDiffer(config.seats));
   errors.push(...checkFallbacksAcrossSeats(config.seats));
   errors.push(...checkSandboxOnlyForGrok(config.seats));
+  errors.push(...checkEngineOnlyForKiro(config.seats));
   errors.push(...checkAuthHome(config.seats));
   if (errors.length === 0) errors.push(...checkKiroLogins(config.seats), ...checkGrokLogins(config.seats));
 

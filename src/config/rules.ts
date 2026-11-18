@@ -117,6 +117,23 @@ export function checkSandboxOnlyForGrok(seats: readonly SeatConfig[]): ConfigIss
 }
 
 /**
+ * `engine` is a kiro setting (plan 4.6, D18), on seats and fallbacks; on any other backend it is an error, not a
+ * silent no-op.
+ */
+export function checkEngineOnlyForKiro(seats: readonly SeatConfig[]): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+  seats.forEach((seat, i) => {
+    if (seat.engine !== undefined && seat.backend !== 'kiro') {
+      issues.push({ path: `seats[${i}].engine`, message: `engine applies only to kiro seats and fallbacks (seat "${seat.id}" is ${seat.backend})` });
+    }
+    if (seat.fallback?.engine !== undefined && seat.fallback.backend !== 'kiro') {
+      issues.push({ path: `seats[${i}].fallback.engine`, message: `engine applies only to kiro seats and fallbacks (this fallback is ${seat.fallback.backend})` });
+    }
+  });
+  return issues;
+}
+
+/**
  * `auth_home` is a kiro setting (a separate Kiro login): on any other backend it is an error, and the directory
  * must exist (a typo would otherwise run on the user's own login or fail later at preflight).
  */

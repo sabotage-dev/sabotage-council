@@ -44,11 +44,15 @@ function formatIssue(issue: ConfigIssue): string {
 
 const describe = (o: { backend: string; model: string; effort?: string | null | undefined }): string => [o.backend, o.model, o.effort ?? undefined].filter((p) => p !== undefined).join(' / ');
 
-function occupantOf(o: { backend: BackendId; model: string; effort?: string | undefined; auth_home?: string | undefined; sandbox?: 'read-only' | 'off' | undefined }): Occupant {
+function occupantOf(o: { backend: BackendId; model: string; effort?: string | undefined; auth_home?: string | undefined; sandbox?: 'read-only' | 'off' | undefined; engine?: 'v3' | 'v2' | undefined }): Occupant {
   const out: Occupant = { backend: o.backend, model: o.model, effort: o.effort, authHome: o.auth_home };
   if (o.sandbox !== undefined) out.sandbox = o.sandbox;
+  if (o.engine !== undefined) out.engine = o.engine;
   return out;
 }
+
+/** A kiro occupant's engine as a suffix (plan 4.6): `, engine v3` (unset is v3), nothing for other backends. */
+const engineText = (o: { backend: string; engine?: string | undefined }): string => (o.backend === 'kiro' ? `, engine ${o.engine ?? 'v3'}` : '');
 
 // ---------- list ----------
 
@@ -160,9 +164,11 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
             const r = rec as Recommendation | undefined;
             return {
               id: s.id,
-              occupant: { backend: s.backend, model: s.model, effort: s.effort ?? null, auth_home: s.auth_home ?? null, sandbox: s.sandbox ?? null },
+              occupant: { backend: s.backend, model: s.model, effort: s.effort ?? null, auth_home: s.auth_home ?? null, sandbox: s.sandbox ?? null, engine: s.backend === 'kiro' ? (s.engine ?? 'v3') : null },
               label: label ?? null,
-              fallback: s.fallback ? { backend: s.fallback.backend, model: s.fallback.model, effort: s.fallback.effort ?? null, on: s.fallback.on, label: fallbackLabel ?? null } : null,
+              fallback: s.fallback
+                ? { backend: s.fallback.backend, model: s.fallback.model, effort: s.fallback.effort ?? null, engine: s.fallback.backend === 'kiro' ? (s.fallback.engine ?? 'v3') : null, on: s.fallback.on, label: fallbackLabel ?? null }
+                : null,
               scorecard_error: unread,
               scorecard: c
                 ? {
@@ -189,9 +195,9 @@ export async function seatsList(io: SeatsIo, paths: StorePaths, opts: { prefligh
   io.write(`seats in ${paths.configPath}:`);
   for (const { seat, label, fallbackLabel, card, rec } of rows) {
     const s = seat as SeatConfig;
-    io.write(`${s.id}  ${describe(s)}${s.auth_home !== undefined ? `, auth_home ${s.auth_home}` : ''}  ${labelText(s.backend, label as Label | null)}`);
+    io.write(`${s.id}  ${describe(s)}${engineText(s)}${s.auth_home !== undefined ? `, auth_home ${s.auth_home}` : ''}  ${labelText(s.backend, label as Label | null)}`);
     if (s.fallback) {
-      io.write(`   fallback  ${describe(s.fallback)} on ${s.fallback.on.join(', ')}  ${labelText(s.fallback.backend, fallbackLabel as Label | null)}`);
+      io.write(`   fallback  ${describe(s.fallback)}${engineText(s.fallback)} on ${s.fallback.on.join(', ')}  ${labelText(s.fallback.backend, fallbackLabel as Label | null)}`);
     }
     io.write(`   ${scorecardLine(card as SeatCard | undefined, rec as Recommendation | undefined)}`);
   }
@@ -241,6 +247,8 @@ export interface TestArgs {
   fallback: boolean;
   authHome?: string | undefined;
   sandbox?: 'read-only' | 'off' | undefined;
+  /** kiro only: the engine to run (plan 4.6); with a seat id it overrides the seat's own. */
+  engine?: 'v3' | 'v2' | undefined;
   /** Minutes; default the config's leg_timeout_minutes, else 25. */
   timeoutMinutes?: number | undefined;
   json: boolean;
@@ -276,7 +284,8 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
     const spec = resolved.occupant;
     if (args.authHome !== undefined && spec.backend !== 'kiro' && spec.backend !== 'grok') return fail('--auth-home applies only to kiro and grok');
     if (args.sandbox !== undefined && spec.backend !== 'grok') return fail('--sandbox applies only to grok');
-    occupant = occupantOf({ backend: spec.backend as BackendId, model: spec.model, effort: spec.effort, auth_home: args.authHome, sandbox: args.sandbox });
+    if (args.engine !== undefined && spec.backend !== 'kiro') return fail('--engine applies only to kiro');
+    occupant = occupantOf({ backend: spec.backend as BackendId, model: spec.model, effort: spec.effort, auth_home: args.authHome, sandbox: args.sandbox, engine: args.engine });
     who = { seat: null, role: null };
   } else {
     if (config === null) return fail(`no config file at ${paths.configPath}: name the candidate as backend:model[:effort] instead`);
@@ -291,6 +300,11 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
     if (!seat) return fail(`no seat "${target}" in ${paths.configPath} (seats: ${config.config.seats.map((s) => s.id).join(', ')})`);
     if (args.fallback && !seat.fallback) return fail(`seat "${target}" has no fallback`);
     occupant = args.fallback && seat.fallback ? occupantOf(seat.fallback) : occupantOf(seat);
+    // --engine on a seat id runs that seat's kiro occupant on the named engine (the engine is not its identity, Q15).
+    if (args.engine !== undefined) {
+      if (occupant.backend !== 'kiro') return fail(`--engine applies only to kiro (seat "${seat.id}"${args.fallback ? "'s fallback" : ''} is ${occupant.backend})`);
+      occupant.engine = args.engine;
+    }
     who = { seat: seat.id, role: args.fallback ? 'fallback' : 'primary' };
   }
   if (!io.adapters) return fail('no seat adapters in this build');
@@ -299,7 +313,7 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
   const fixture = loadFixture();
   // It spends money: say exactly what runs before anything launches (on stderr with --json, still before the launch).
   say(
-    `seats test: about to run one paid leg: backend ${occupant.backend}, model ${occupant.model}, effort ${occupant.effort ?? '(the CLI default)'}${who.seat !== null ? ` (seat ${who.seat}, ${who.role})` : ' (a candidate, not in the config)'}; capped at ${minutes} min, on the planted-defect fixture (${fixture.defects.length} defects)`,
+    `seats test: about to run one paid leg: backend ${occupant.backend}, model ${occupant.model}, effort ${occupant.effort ?? '(the CLI default)'}${engineText(occupant)}${who.seat !== null ? ` (seat ${who.seat}, ${who.role})` : ' (a candidate, not in the config)'}; capped at ${minutes} min, on the planted-defect fixture (${fixture.defects.length} defects)`,
   );
   let result: SeatTestResult;
   try {
@@ -343,7 +357,7 @@ export async function seatsTest(io: SeatsIo, paths: StorePaths, target: string, 
 export function resultLines(r: SeatTestResult, defects: ReadonlyArray<{ id: string; severity: string; title: string }>): string[] {
   const out: string[] = [];
   out.push(
-    `ratification  ${r.ratified ? 'PASS' : `${clean(r.status)}${r.failure_class !== null ? ` (${clean(r.failure_class)})` : ''}`}${r.enforcement !== null ? `; enforcement ${clean(r.enforcement)}` : ''}${r.cli_version !== null ? `; ${r.occupant.backend} ${clean(r.cli_version)}` : ''}`,
+    `ratification  ${r.ratified ? 'PASS' : `${clean(r.status)}${r.failure_class !== null ? ` (${clean(r.failure_class)})` : ''}`}${r.enforcement !== null ? `; enforcement ${clean(r.enforcement)}` : ''}${r.cli_version !== null ? `; ${r.occupant.backend} ${clean(r.cli_version)}` : ''}${typeof r.occupant.engine === 'string' ? `, engine ${clean(r.occupant.engine)}` : ''}`,
   );
   for (const c of r.failed_checks) out.push(`  failed  ${clean(c)}`);
   if (r.reason !== null) out.push(`  ${clean(r.reason)}`);

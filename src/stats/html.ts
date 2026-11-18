@@ -141,7 +141,7 @@ function evidenceRounds(rows: readonly EvidenceRound[]): Raw {
 <thead><tr><th scope="col">round</th><th scope="col">target</th><th scope="col">no.</th><th scope="col">started</th><th scope="col">the seat</th><th scope="col">round verdict</th></tr></thead>
 <tbody>${rows.map(
     (e) =>
-      h`<tr><td>#${e.round}${e.dry_run ? ' (dry run)' : ''}</td><td class="title">${e.target}</td><td>${e.round_no}</td><td>${e.started_at.slice(0, 16).replace('T', ' ')}</td><td class="title">${e.said}</td><td>${e.verdict ?? 'not adjudicated'}</td></tr>`,
+      h`<tr><td>#${e.round}${e.dry_run ? ' (dry run)' : ''}</td><td class="title">${e.target}</td><td>${e.round_no}</td><td>${e.started_at.slice(0, 16).replace('T', ' ')}</td><td class="title">${e.said}${e.engine !== null ? ` (kiro engine ${e.engine})` : ''}</td><td>${e.verdict ?? 'not adjudicated'}</td></tr>`,
   )}</tbody></table></div>`;
 }
 
@@ -231,7 +231,7 @@ ${
 <thead><tr><th scope="col">when</th><th scope="col">occupant</th><th scope="col">ratified</th><th scope="col">verdict</th><th scope="col">defects found</th><th scope="col">cost</th><th scope="col">duration</th></tr></thead>
 <tbody>${report.seat_tests.map(
         (s) =>
-          h`<tr><td>${s.ts.slice(0, 16).replace('T', ' ')}</td><td class="title"><code>${[s.backend, s.model, s.effort].filter((x) => x !== null).join(':')}</code>${s.seat !== null ? ` (seat ${s.seat})` : ''}</td><td>${s.ratified ? 'yes' : `no (${s.failure_class ?? s.status})`}</td><td>${s.verdict ?? 'none'}</td><td>${s.defects_found.length} of ${s.defects_total}${s.defects_found.length > 0 ? ` (${s.defects_found.join(', ')})` : ''}</td><td>${[s.cost_usd !== null ? money(s.cost_usd) : null, s.credits !== null ? `${s.credits} credits` : null].filter((x) => x !== null).join(', ') || '-'}</td><td>${durationText(s.duration_ms)}</td></tr>`,
+          h`<tr><td>${s.ts.slice(0, 16).replace('T', ' ')}</td><td class="title"><code>${[s.backend, s.model, s.effort].filter((x) => x !== null).join(':')}</code>${s.engine !== null ? ` (kiro engine ${s.engine})` : ''}${s.seat !== null ? ` (seat ${s.seat})` : ''}</td><td>${s.ratified ? 'yes' : `no (${s.failure_class ?? s.status})`}</td><td>${s.verdict ?? 'none'}</td><td>${s.defects_found.length} of ${s.defects_total}${s.defects_found.length > 0 ? ` (${s.defects_found.join(', ')})` : ''}</td><td>${[s.cost_usd !== null ? money(s.cost_usd) : null, s.credits !== null ? `${s.credits} credits` : null].filter((x) => x !== null).join(', ') || '-'}</td><td>${durationText(s.duration_ms)}</td></tr>`,
       )}</tbody></table></div>
 </section>`
     : ''

@@ -141,11 +141,6 @@ export async function kiroPreflight(o: Occupant, options: KiroPreflightOptions):
     checks.push({ name, status: 'fail', detail });
   };
 
-  checks.push({
-    name: 'engine',
-    status: 'ok',
-    detail: o.engine === undefined ? 'v3 (the default; set engine = "v2" to keep the v2 engine)' : `${engine} (engine = "${engine}")`,
-  });
   if (!/^[a-z0-9][a-z0-9.-]{0,99}$/.test(o.model) || o.model === 'auto') {
     fail('occupant', `model "${o.model}" is not a kiro model id a seat can pin (auto routes per request)`);
     return result(false, 'setup', 'bad model id', null);

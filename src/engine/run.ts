@@ -117,7 +117,14 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 function occupantOf(seat: SeatConfig | FallbackConfig): Occupant {
   const o: Occupant = { backend: seat.backend, model: seat.model, effort: seat.effort, authHome: seat.auth_home };
   if ('sandbox' in seat && seat.sandbox !== undefined) o.sandbox = seat.sandbox;
+  if (seat.engine !== undefined) o.engine = seat.engine;
   return o;
+}
+
+/** A kiro occupant's engine (unset is v3, D18); null for any other backend or no occupant. */
+export function legEngine(o: Occupant | undefined): string | null {
+  if (o === undefined || o.backend !== 'kiro') return null;
+  return o.engine ?? 'v3';
 }
 
 function nonNeg(n: number | null | undefined): number | null {
@@ -641,6 +648,8 @@ function settle(store: Store, inputs: RoundFacts, results: LegResult[], aborted:
         failure_class: l.failure_class,
         // Whether the adjudicator must extract this leg's findings (its block did not parse): the store's record.
         findings: results.find((r) => r.legId === l.id)?.reply?.findings.extracted_by ?? null,
+        // The engine a kiro leg ran (plan 4.6; unset is v3), null for other backends: `stats` shows it per leg.
+        engine: legEngine(results.find((r) => r.legId === l.id)?.occupant),
       })),
     });
     db.exec('COMMIT');
