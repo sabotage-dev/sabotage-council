@@ -22,6 +22,8 @@ export interface AcpToolCall {
   decision: 'allow' | 'reject' | null;
   /** How many statuses had been reported when the client first rejected the call (null: never rejected). */
   rejectedAt: number | null;
+  /** How many snapshots had been reported when the client first rejected the call (null: never rejected). */
+  rejectedAtSnapshot: number | null;
   /** The permission request's own tool-call fields, if the agent asked. */
   asked: Json | null;
   /** Every snapshot the call was reported with (each update, and each permission request's `toolCall`), in order. */
@@ -31,6 +33,16 @@ export interface AcpToolCall {
   /** Position of the first update for the call in the log (ordering with the prompt). */
   firstLine: number;
 }
+
+export interface AcpNote {
+  line: number;
+  method: string;
+  kind: string | null;
+  params: Json;
+}
+
+/** The `session/update` kinds the log reader keeps beside every `_kiro/*` notification. */
+export const KEPT_UPDATE_KINDS = ['available_commands_update', 'session_info_update', 'config_option_update'] as const;
 
 export interface AcpRpc {
   method: string;
@@ -64,8 +76,14 @@ export interface AcpLog {
   pinsHeld: boolean;
   refused: string | null;
   toolCalls: Map<string, AcpToolCall>;
-  /** Permission requests in order, with the client's answer. */
-  permissions: Array<{ toolCallId: string | null; toolCall: Json; decision: 'allow' | 'reject'; option: string; why: string }>;
+  /** Permission requests in order, with the client's answer (`optionId`: the option it selected, if any). */
+  permissions: Array<{ toolCallId: string | null; toolCall: Json; decision: 'allow' | 'reject'; option: string; optionId: string | null; why: string }>;
+  /**
+   * Agent notifications kept for ratification (P11), in order: every `_kiro/*` notification, and every
+   * `session/update` of kind `available_commands_update`, `session_info_update` or `config_option_update`. For a
+   * `session/update`, `kind` is its `sessionUpdate` and `params` its `update` object.
+   */
+  notes: AcpNote[];
   refusedClientMethods: string[];
   /** Agent message text, split into segments at each tool call. The answer is all of them, in order. */
   messageSegments: string[];
@@ -105,6 +123,7 @@ export function readAcpLog(path: string): AcpLog {
     refused: null,
     toolCalls: new Map(),
     permissions: [],
+    notes: [],
     refusedClientMethods: [],
     messageSegments: [],
     updateKinds: {},
@@ -165,13 +184,17 @@ export function readAcpLog(path: string): AcpLog {
         if (last && last.toolCallId === id && last.option === '') {
           last.decision = decision;
           last.option = String(entry['option'] ?? '');
+          last.optionId = str(entry['optionId']);
           last.why = String(entry['why'] ?? '');
         }
         if (id !== null) {
           const call = log.toolCalls.get(id);
           // A call rejected once stays rejected; an allow never overrides an earlier reject.
           if (call) {
-            if (decision === 'reject' && call.rejectedAt === null) call.rejectedAt = call.statuses.length;
+            if (decision === 'reject' && call.rejectedAt === null) {
+              call.rejectedAt = call.statuses.length;
+              call.rejectedAtSnapshot = call.snapshots.length;
+            }
             call.decision = call.decision === 'reject' ? 'reject' : decision;
           }
         }
@@ -240,7 +263,7 @@ export function readAcpLog(path: string): AcpLog {
       const toolCallId = str(toolCall['toolCallId']);
       // A request the ratifier cannot tie to a call is a malformed record line: it fails `log` (round 2).
       if (toolCallId === null) log.malformed++;
-      log.permissions.push({ toolCallId, toolCall, decision: 'reject', option: '', why: '' });
+      log.permissions.push({ toolCallId, toolCall, decision: 'reject', option: '', optionId: null, why: '' });
       if (toolCallId !== null) {
         const call = log.toolCalls.get(toolCallId) ?? newCall(toolCallId, i);
         call.asked = toolCall;
@@ -251,10 +274,15 @@ export function readAcpLog(path: string): AcpLog {
       }
       return;
     }
+    if (id === undefined && method !== null && method.startsWith('_kiro/')) {
+      log.notes.push({ line: i, method, kind: null, params: isObject(msg['params']) ? msg['params'] : {} });
+      return;
+    }
     if (method !== 'session/update') return;
     const params = isObject(msg['params']) ? msg['params'] : {};
     const update = isObject(params['update']) ? params['update'] : {};
     const kind = str(update['sessionUpdate']) ?? '(none)';
+    if ((KEPT_UPDATE_KINDS as readonly string[]).includes(kind)) log.notes.push({ line: i, method, kind, params: update });
     log.updateKinds[kind] = (log.updateKinds[kind] ?? 0) + 1;
     if (kind === 'agent_message_chunk') {
       const content = update['content'];
@@ -287,7 +315,7 @@ export function readAcpLog(path: string): AcpLog {
 }
 
 function newCall(id: string, line: number): AcpToolCall {
-  return { id, fields: {}, kinds: [], titles: [], statuses: [], decision: null, rejectedAt: null, asked: null, snapshots: [], extraPaths: [], firstLine: line };
+  return { id, fields: {}, kinds: [], titles: [], statuses: [], decision: null, rejectedAt: null, rejectedAtSnapshot: null, asked: null, snapshots: [], extraPaths: [], firstLine: line };
 }
 
 function mergeInto(call: AcpToolCall, update: Json): void {
@@ -302,7 +330,7 @@ function mergeInto(call: AcpToolCall, update: Json): void {
 }
 
 /** Whether a value holds non-empty text at any depth. A `type` tag (`"content"`, `"text"`) is structure, not text. */
-function hasText(v: unknown): boolean {
+export function hasText(v: unknown): boolean {
   if (typeof v === 'string') return v.trim() !== '';
   if (Array.isArray(v)) return v.some(hasText);
   if (isObject(v)) return Object.entries(v).some(([k, x]) => k !== 'type' && hasText(x));
@@ -310,7 +338,7 @@ function hasText(v: unknown): boolean {
 }
 
 /** ACP content blocks that only exist once a tool acted: a diff (a write) or a terminal (a command). */
-function actionBlock(v: unknown): boolean {
+export function actionBlock(v: unknown): boolean {
   return Array.isArray(v) && v.some((b) => isObject(b) && (b['type'] === 'diff' || b['type'] === 'terminal'));
 }
 

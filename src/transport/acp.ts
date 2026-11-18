@@ -12,11 +12,14 @@ import { groupAlive, killGroupNow, terminateGroup, type DoneBy, type HeadlessExi
  * The client:
  *   - declares no filesystem and no terminal capability;
  *   - opens one session with cwd = the root and `mcpServers: []`;
- *   - applies the adapter's pins (model, effort, mode) through `session/set_config_option` or `session/set_mode`,
- *     records which one it used, and refuses the session (no prompt is sent) when the agent reports any other
- *     value;
+ *   - applies the adapter's pins (model, effort, mode and any other option the adapter declares) through
+ *     `session/set_config_option` or `session/set_mode`, records which one it used, and refuses the session (no
+ *     prompt is sent) when the agent reports any other value;
+ *   - runs the adapter's pre-prompt gate, when it declares one (kiro on the v3 engine, P11): it waits for the
+ *     notifications the gate needs and lets the adapter refuse the session before `session/prompt` is sent;
  *   - sends the brief with `session/prompt`;
- *   - answers every `session/request_permission` through the adapter's policy (reject unless an in-root read);
+ *   - answers every `session/request_permission` through the adapter's policy (reject unless an in-root read; an
+ *     adapter may instead name one exact option that grants nothing, as kiro v3's loop guard is answered `cancel`);
  *   - refuses every other agent-to-client request (`fs/*`, `terminal/*`, anything else) with "method not found";
  *   - writes every message in both directions, verbatim, plus its own decisions, to the update log (JSONL).
  *
@@ -25,7 +28,17 @@ import { groupAlive, killGroupNow, terminateGroup, type DoneBy, type HeadlessExi
 
 /** One pin the client applies before the prompt. */
 export type AcpPin =
-  | { via: 'set_config_option'; configId: string; value: string }
+  | {
+      via: 'set_config_option';
+      configId: string;
+      value: string;
+      /**
+       * Whether the option must be advertised (in a `configOptions` list) before it is set: `wait` waits up to the
+       * gate's wait for it (kiro v3 lists `model` only once its model list loads), `require` refuses the session
+       * when it is not advertised at that point (kiro v3's `effortLevel` after the model pin). Absent: set it as is.
+       */
+      advertised?: 'wait' | 'require' | undefined;
+    }
   | { via: 'set_mode'; modeId: string }
   /** Pinned by launch flags (kiro on the v2 engine); the client only checks what the agent reports, if anything. */
   | { via: 'launch'; configId: string; value: string };
@@ -44,6 +57,57 @@ export interface KnownToolCall {
 export interface PermissionDecision {
   allow: boolean;
   why: string;
+  /**
+   * An exact `optionId` to select instead of the allow-or-reject choice. It never grants a tool: the client logs the
+   * answer as no grant (`decision: reject`) with the option id. Used for an agent's own question that is not a tool
+   * grant (kiro v3's loop guard, answered `cancel`). When the option is not offered, the client rejects as usual.
+   */
+  select?: string | undefined;
+}
+
+/** One agent notification as the client received it (a JSON-RPC message with a method and no id). */
+export interface AcpGateNote {
+  method: string;
+  /** `sessionUpdate` of a `session/update`, else null. */
+  kind: string | null;
+  /** The notification's params; for a `session/update`, its `update` object. */
+  params: Record<string, unknown>;
+  /** Received after the gate's mark pin request was sent. */
+  afterMark: boolean;
+}
+
+export interface AcpGateView {
+  /** The `session/new` result. */
+  session: Record<string, unknown>;
+  /** Every notification received so far, in order. */
+  notes: readonly AcpGateNote[];
+  /** Config values as the agent reported them. */
+  current: Readonly<Record<string, string>>;
+}
+
+/**
+ * An adapter's pre-prompt gate (P11): after every pin held, the client waits for each notification the gate
+ * needs, then asks the gate to judge the session. A missing notification, or a judgement that names a reason,
+ * refuses the session before `session/prompt` is sent.
+ */
+export interface AcpGate {
+  /** The pin (config id) whose request opens the window: notifications received after it was sent are `afterMark`. */
+  markPin: string;
+  /**
+   * The notifications the gate needs, by key: a method (`_kiro/tools/didChange`), or `session/update:<kind>`. With
+   * `afterMark`, one must arrive after the mark; else one at any time before the prompt. Each is waited for up to
+   * `waitMs`.
+   */
+  needs: ReadonlyArray<{ key: string; afterMark: boolean }>;
+  /** Default 5000. */
+  waitMs?: number | undefined;
+  /** The reason to refuse the session, or null to send the prompt. Never throws (a throw refuses). */
+  judge: (view: AcpGateView) => string | null;
+}
+
+/** The key a gate names a notification by. */
+export function noteKey(note: { method: string; kind: string | null }): string {
+  return note.kind !== null ? `${note.method}:${note.kind}` : note.method;
 }
 
 export interface AcpSpec {
@@ -62,6 +126,8 @@ export interface AcpSpec {
   promptText: string;
   /** Pins applied in order before the prompt. */
   pins: readonly AcpPin[];
+  /** The adapter's pre-prompt gate, if it has one. */
+  gate?: AcpGate | undefined;
   /**
    * Answers one `session/request_permission`. `known` returns what earlier `tool_call` updates said about a tool
    * call (merged fields, and every kind it was reported with). Never throws (a throw is a reject).
@@ -265,9 +331,48 @@ export function startAcp(spec: AcpSpec): AcpProcess {
   const toolCalls = new Map<string, KnownToolCall>();
   let current: Record<string, string> = {};
   let currentModeId: string | null = null;
+  // Every agent notification, in order, for the gate; `markSeq` is the count when the gate's mark pin was sent.
+  const notes: Array<{ seq: number; method: string; kind: string | null; params: Record<string, unknown> }> = [];
+  let markSeq: number | null = null;
+  // Config option ids the agent has advertised in any `configOptions` list.
+  const advertised = new Set<string>();
+  const waiters = new Set<() => void>();
+  const wake = (): void => {
+    for (const w of [...waiters]) w();
+  };
+  /** Resolves true once `ready()` holds, false when `ms` pass or the agent exits first. */
+  const waitFor = (ready: () => boolean, ms: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      if (ready()) {
+        resolve(true);
+        return;
+      }
+      if (!alive) {
+        resolve(false);
+        return;
+      }
+      const done = (value: boolean): void => {
+        clearTimeout(timer);
+        waiters.delete(check);
+        resolve(value);
+      };
+      const check = (): void => {
+        if (ready()) done(true);
+        else if (!alive) done(false);
+      };
+      const timer = setTimeout(() => done(ready()), ms);
+      timer.unref();
+      waiters.add(check);
+    });
   const absorb = (result: unknown): void => {
     if (!isObject(result)) return;
     current = { ...current, ...configValues(result['configOptions']) };
+    if (Array.isArray(result['configOptions'])) {
+      for (const o of result['configOptions']) {
+        const id = isObject(o) ? (o['id'] ?? o['configId']) : undefined;
+        if (typeof id === 'string') advertised.add(id);
+      }
+    }
     // The older `modes` and `models` fields (kiro's v2 engine reports only these).
     const modes = result['modes'];
     if (isObject(modes) && typeof modes['currentModeId'] === 'string') {
@@ -299,20 +404,25 @@ export function startAcp(spec: AcpSpec): AcpProcess {
       }
       const options = Array.isArray(params['options']) ? params['options'].filter(isObject) : [];
       const byKind = (kind: string): Record<string, unknown> | undefined => options.find((o) => o['kind'] === kind);
+      // An exact option the adapter names (an answer that grants nothing, such as kiro v3's loop-guard `cancel`).
+      const selected = decision.select !== undefined ? options.find((o) => o['optionId'] === decision.select) : undefined;
       // Never an "always" option, grant or reject: either would persist a rule in the agent's settings (for a kiro
       // seat on the user's HOME, the user's own). With no `_once` option on offer the answer is `cancelled`.
-      const allowOnce = decision.allow ? byKind('allow_once') : undefined;
-      const pick = allowOnce ?? byKind('reject_once');
+      // A decision that names an option never becomes a grant, even when that option is not offered.
+      const allowOnce = decision.select === undefined && decision.allow ? byKind('allow_once') : undefined;
+      const pick = selected ?? allowOnce ?? byKind('reject_once');
       const allow = allowOnce !== undefined;
       const outcome = pick ? { outcome: 'selected', optionId: pick['optionId'] } : { outcome: 'cancelled' };
       const toolCall = isObject(params['toolCall']) ? params['toolCall'] : {};
+      const missed = decision.select !== undefined && selected === undefined ? `; option ${decision.select} was not offered` : '';
       log({
         dir: 'client',
         event: 'permission',
         toolCallId: toolCall['toolCallId'] ?? null,
         decision: allow ? 'allow' : 'reject',
         option: pick?.['kind'] ?? 'cancelled',
-        why: decision.allow && !allow ? `${decision.why}; but no allow_once option was offered` : decision.why,
+        optionId: pick?.['optionId'] ?? null,
+        why: decision.allow && !allow && decision.select === undefined ? `${decision.why}; but no allow_once option was offered` : `${decision.why}${missed}`,
       });
       reply(msg['id'], { result: { outcome } });
       return;
@@ -338,6 +448,13 @@ export function startAcp(spec: AcpSpec): AcpProcess {
     }
     log({ dir: 'recv', msg });
     const id = msg['id'];
+    if (id === undefined && typeof msg['method'] === 'string') {
+      const params = isObject(msg['params']) ? msg['params'] : {};
+      const isUpdate = msg['method'] === 'session/update' && isObject(params['update']);
+      const body = isUpdate ? (params['update'] as Record<string, unknown>) : params;
+      const kind = isUpdate && typeof body['sessionUpdate'] === 'string' ? body['sessionUpdate'] : null;
+      notes.push({ seq: notes.length, method: msg['method'], kind, params: body });
+    }
     if (id === undefined && msg['method'] === 'session/update' && isObject(msg['params']) && isObject(msg['params']['update'])) {
       const update = msg['params']['update'];
       if (update['sessionUpdate'] === 'config_option_update') absorb(update);
@@ -362,6 +479,7 @@ export function startAcp(spec: AcpSpec): AcpProcess {
         p.resolve(msg);
       }
     }
+    wake();
   };
 
   // A multibyte character split across two chunks must not be decoded per chunk (it would corrupt a path).
@@ -435,8 +553,18 @@ export function startAcp(spec: AcpSpec): AcpProcess {
     absorb(result);
 
     phase = 'pins';
+    const waitMs = spec.gate?.waitMs ?? 5000;
     for (const pin of spec.pins) {
       if (pin.via === 'launch') continue;
+      if (pin.via === 'set_config_option' && pin.advertised === 'wait' && !advertised.has(pin.configId)) {
+        await waitFor(() => advertised.has(pin.configId), waitMs);
+      }
+      if (pin.via === 'set_config_option' && pin.advertised === 'require' && !advertised.has(pin.configId)) {
+        refuse(`no ${pin.configId} option is advertised, so ${pin.configId}=${pin.value} cannot be pinned`);
+        return;
+      }
+      // The gate counts notifications from the moment its mark pin's request is sent (kiro answers it after them).
+      if (spec.gate !== undefined && markSeq === null && pin.via === 'set_config_option' && pin.configId === spec.gate.markPin) markSeq = notes.length;
       const res =
         pin.via === 'set_config_option'
           ? await request('session/set_config_option', { sessionId, configId: pin.configId, value: pin.value })
@@ -463,6 +591,29 @@ export function startAcp(spec: AcpSpec): AcpProcess {
     }
     log({ dir: 'client', event: 'pins-held', pins: spec.pins, reported: current, currentModeId });
 
+    if (spec.gate !== undefined) {
+      const gate = spec.gate;
+      const mark = markSeq ?? 0;
+      for (const need of gate.needs) {
+        const arrived = await waitFor(() => notes.some((n) => noteKey(n) === need.key && (!need.afterMark || n.seq >= mark)), waitMs);
+        if (!arrived) {
+          refuse(`the gate needs ${need.key}${need.afterMark ? ` after the ${gate.markPin} pin` : ''}, and none arrived within ${waitMs} ms`);
+          return;
+        }
+      }
+      let reason: string | null;
+      try {
+        reason = gate.judge({ session: result, notes: notes.map((n) => ({ method: n.method, kind: n.kind, params: n.params, afterMark: n.seq >= mark })), current: { ...current } });
+      } catch (error) {
+        reason = `the gate threw: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      if (reason !== null) {
+        refuse(`the gate refused the session: ${reason}`);
+        return;
+      }
+      log({ dir: 'client', event: 'gate-passed', notes: notes.length });
+    }
+
     phase = 'prompt';
     const prompt = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: spec.promptText }] });
     if (rpcError(prompt) === null) {
@@ -478,6 +629,7 @@ export function startAcp(spec: AcpSpec): AcpProcess {
       finished = true;
       alive = false;
       clearTimeout(cap);
+      wake();
       buffer += stdoutText.end();
       if (buffer.trim() !== '') log({ dir: 'recv-torn', line: buffer });
       for (const [id, p] of pending) {

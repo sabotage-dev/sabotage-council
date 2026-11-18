@@ -6,7 +6,7 @@ import { judgeCall, readOnlyPolicy, str, toolCallPaths, type ReadSet } from '../
 import { ratifyAcpCommon, type AcpPinExpect } from '../src/adapters/acp/ratify.js';
 import { verdictOf } from '../src/adapters/types.js';
 import { ACP_CLASS_OF_CHECK, acpFailureClass } from '../src/adapters/acp/ratify.js';
-import { startAcp, type AcpExit, type AcpPin } from '../src/transport/acp.js';
+import { startAcp, type AcpExit, type AcpGate, type AcpPin, type AcpSpec } from '../src/transport/acp.js';
 import { groupAlive } from '../src/transport/headless.js';
 import { cleanScratchAfterAll, scratch } from './helpers/fixtures.js';
 
@@ -52,6 +52,8 @@ async function runCase(
     allowAll?: boolean;
     logFileIn?: string;
     closeGraceMs?: number;
+    onPermission?: AcpSpec['onPermission'];
+    gate?: AcpGate;
   } = {},
 ): Promise<Leg> {
   const dir = opts.logFileIn ?? scratch('sc-acp-');
@@ -78,7 +80,8 @@ async function runCase(
     sessionCwd: opts.sessionCwd?.(root, outside) ?? root,
     promptText: `NONCE: ${NONCE}\nreview`,
     pins: opts.pins ?? PINS,
-    onPermission: opts.allowAll ? () => ({ allow: true, why: 'a broken policy (test)' }) : readOnlyPolicy(root, READS),
+    onPermission: opts.onPermission ?? (opts.allowAll ? () => ({ allow: true, why: 'a broken policy (test)' }) : readOnlyPolicy(root, READS)),
+    gate: opts.gate,
     timeoutMs: opts.timeoutMs ?? 15_000,
     killGraceMs: 300,
     cancelGraceMs: 300,
@@ -538,5 +541,93 @@ describe('ACP log reader', () => {
     const log = readAcpLog(file);
     expect(log.messageSegments).toEqual(['Let me look.', 'NONCE: x\nVERDICT: SHIP']);
     expect(acpAnswer(log)).toBe('Let me look.\n\nNONCE: x\nVERDICT: SHIP');
+  });
+});
+
+describe('P11: the pre-prompt gate hook, explicit answers and advertised pins (generic transport)', () => {
+  const note = (method: string, params: Record<string, unknown>) => ({ jsonrpc: '2.0', method, params });
+  const gate = (judge: AcpGate['judge'], needs: AcpGate['needs'] = [{ key: 'x/ready', afterMark: true }]): AcpGate => ({ markPin: 'mode', needs, waitMs: 300, judge });
+
+  it('a gate that passes: the notification it needs arrived after the mark pin, the judge saw it, the prompt is sent', async () => {
+    let seen: string[] = [];
+    const leg = await runCase(
+      { notesOnSet: { mode: [note('x/ready', { ok: true })] }, steps: REVIEW },
+      {
+        gate: gate((view) => {
+          seen = view.notes.map((n) => `${n.method}:${String(n.afterMark)}`);
+          return null;
+        }),
+      },
+    );
+    const r = ratify(leg);
+    expect(r.failed).toEqual([]);
+    expect(seen).toEqual(['x/ready:true']);
+    expect(r.log.clientEvents.some((e) => e['event'] === 'gate-passed')).toBe(true);
+  });
+
+  it('a notification sent before the mark pin does not count for an afterMark need: refused, no prompt', async () => {
+    const leg = await runCase({ notesOnSessionNew: [note('x/ready', { ok: true })], steps: REVIEW }, { gate: gate(() => null) });
+    const r = ratify(leg);
+    expect(r.log.prompt).toBeNull();
+    expect(r.log.refused).toMatch(/needs x\/ready after the mode pin, and none arrived within 300 ms/);
+    expect(r.failed).toEqual(['answer', 'nonce', 'prompt', 'refusal']);
+    expect(r.cls).toBe('setup');
+  });
+
+  it('a late notification is waited for (any time before the prompt counts when afterMark is false)', async () => {
+    const leg = await runCase({ notesLater: [note('x/late', {})], notesLaterMs: 100, steps: REVIEW }, { gate: { ...gate(() => null, [{ key: 'x/late', afterMark: false }]), waitMs: 2000 } });
+    expect(ratify(leg).failed).toEqual([]);
+  });
+
+  it('a judge that names a reason refuses the session; a judge that throws refuses too', async () => {
+    const leg = await runCase({ notesOnSet: { mode: [note('x/ready', {})] }, steps: REVIEW }, { gate: gate(() => 'not today') });
+    expect(ratify(leg).log.refused).toBe('the gate refused the session: not today');
+    const threw = await runCase(
+      { notesOnSet: { mode: [note('x/ready', {})] }, steps: REVIEW },
+      {
+        gate: gate(() => {
+          throw new Error('boom');
+        }),
+      },
+    );
+    expect(ratify(threw).log.refused).toBe('the gate refused the session: the gate threw: boom');
+  });
+
+  it('an explicit option is selected and logged as no grant; one not offered falls back to reject_once', async () => {
+    const ask = { askFor: { toolCallId: 'q1', title: 'Question', kind: 'other' }, options: [{ optionId: 'cancel', name: 'Cancel', kind: 'allow_once' }, { optionId: 'go', name: 'Go', kind: 'allow_once' }, { optionId: 'no', name: 'No', kind: 'reject_once' }] };
+    const leg = await runCase({ steps: [ask, ...REVIEW] }, { onPermission: () => ({ allow: false, select: 'cancel', why: 'answer it' }) });
+    const r = ratify(leg);
+    expect(r.log.permissions[0]).toMatchObject({ decision: 'reject', option: 'allow_once', optionId: 'cancel' });
+    expect((JSON.parse(readFileSync(join(leg.dir, 'home', 'fake-acp-ask-response.json'), 'utf8')) as { result: unknown }).result).toEqual({ outcome: { outcome: 'selected', optionId: 'cancel' } });
+    expect(r.failed).toEqual([]);
+    const missing = await runCase({ steps: [ask, ...REVIEW] }, { onPermission: () => ({ allow: true, select: 'absent', why: 'answer it' }) });
+    const m = ratify(missing);
+    expect(m.log.permissions[0]).toMatchObject({ decision: 'reject', option: 'reject_once', optionId: 'no' });
+    expect(m.log.permissions[0]?.why).toContain('option absent was not offered');
+  });
+
+  it("advertised pins: 'require' refuses before setting an option the agent never listed; 'wait' sets a listed one", async () => {
+    const pins: AcpPin[] = [...PINS, { via: 'set_config_option', configId: 'effortLevel', value: 'high', advertised: 'require' }];
+    const leg = await runCase({ steps: REVIEW }, { pins });
+    const r = ratify(leg);
+    expect(r.log.refused).toBe('no effortLevel option is advertised, so effortLevel=high cannot be pinned');
+    expect(r.log.rpcs.some((x) => x.params['configId'] === 'effortLevel')).toBe(false);
+    const waited = await runCase({ steps: REVIEW }, { pins: [{ via: 'set_config_option', configId: 'model', value: 'fake-model', advertised: 'wait' }, ...PINS.slice(1)] });
+    expect(ratify(waited).failed).toEqual([]);
+  });
+
+  it('pin checks beyond mode, model and effort: an adapter check name fails as its own check', () => {
+    const file = join(scratch('sc-acp-pin-'), 'updates.jsonl');
+    const lines = [
+      { dir: 'send', msg: { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} } },
+      { dir: 'recv', msg: { jsonrpc: '2.0', id: 1, result: { protocolVersion: 1 } } },
+      { dir: 'send', msg: { jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/r', mcpServers: [] } } },
+      { dir: 'recv', msg: { jsonrpc: '2.0', id: 2, result: { sessionId: 's', configOptions: [{ id: 'autopilot', currentValue: 'on' }] } } },
+      { dir: 'client', event: 'exit', exit: {} },
+    ];
+    writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const r = ratifyAcpCommon({ logFile: file, root: '/r', nonce: NONCE, pins: [{ id: 'autopilot', value: 'off', check: 'autopilot' }], reads: READS, timedOut: false, rootUnchanged: () => ({ unchanged: true, changes: [] }) });
+    expect(r.checks.find((c) => c.name === 'autopilot')).toMatchObject({ ok: false, detail: 'autopilot reported on, pinned off' });
+    expect(acpFailureClass(['autopilot'], ACP_CLASS_OF_CHECK, null, false)).toBe('setup');
   });
 });
