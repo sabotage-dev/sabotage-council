@@ -631,8 +631,10 @@ There are two shared transports:
       - for antigravity it is `default`, the mode that asks before commands and file changes (`plan` only adds a
         planning step), set with `session/set_config_option` (config id `mode`; agy also reports the older
         `modes` field);
-      - for kiro it is the council agent `sabotage-council`, set by the v2 engine's `--agent` launch flag and
-        checked as reported in `modes.currentModeId` (the v2 engine reports no `configOptions`); for opencode it is
+      - for kiro it is the council agent `sabotage-council`: on the v3 engine (the default, 4.6) set with
+        `session/set_config_option` (config id `mode`) and checked as reported in `configOptions`; on the v2
+        engine set by the `--agent` launch flag and checked as reported in `modes.currentModeId` (the v2 engine
+        reports no `configOptions`); for opencode it is
         the council agent `council` from `OPENCODE_CONFIG_CONTENT`, set with `session/set_config_option` (config
         id `mode`) after the `model` and, for a model with variants, `effort` options (P4);
       - the adapter refuses any session whose reported mode differs, before the prompt is sent.
@@ -640,8 +642,8 @@ There are two shared transports:
       rules live (P3): antigravity runs every leg on its own `--gemini-dir`, so the leg loads only
       `<leg>/gemini/antigravity-cli/settings.json` and `<leg>/gemini/config/config.json` (the adapter writes the
       first, agy creates the second; measured: no fallback to `~/.gemini` for either, nor for MCP config);
-      kiro runs every leg on its own `KIRO_HOME`, so the leg loads only `$KIRO_HOME/agents/sabotage-council.json`,
-      which the adapter writes and hashes. The user's own rule files never reach a leg. A backend whose rules
+      kiro runs every leg on its own `KIRO_HOME`, so the leg loads only `$KIRO_HOME/agents/sabotage-council.json`
+      (one file per engine, 4.6), which the adapter writes and hashes. The user's own rule files never reach a leg. A backend whose rules
       cannot be read stays `pending`.
   - **The client checks real paths.** "A read inside the root" is judged by realpath, after symlink resolution
     (5.3).
@@ -756,13 +758,11 @@ Per-backend hazards the adapters handle (each one was found in the research or m
     launcher kills the leg as soon as `Opening browser` appears.
   - The classic v1 engine no longer runs.
   - Releases are weekly and sometimes breaking, so the adapter pins a tested range.
-  - **Engine and record over ACP are unverified.**
-    - `kiro-cli acp --help` (3.2.1) lists `--agent`, `--model` and `--effort`, marked "v2 engine only".
-    - The ratifier is per engine: V2 credits are `metering_usage`, and V3 credits are
-      `promptTurnSummaries[].usage`. A V3 agent file is refused by V2 (exit 4).
-    - P3 decides between the `acp` flags (V2) and `session/set_config_option` (`model`, `effortLevel`) on a pinned
-      engine, from a live probe.
-    - Whether `KIRO_HOME` isolation holds on 3.x is likewise unproven until then.
+  - **Two engines (4.6).** P3 shipped the v2 engine over ACP (`acp --agent-engine v2` with the `--agent`,
+    `--model` and `--effort` launch flags, ratified from the v2 session record). P11 makes v3 the default, as
+    Kiro's own default for new installs, and keeps v2 as `engine = "v2"` (D18). The ratifier is per engine: v2
+    credits are `metering_usage`, v3 credits are `promptTurnSummaries[].usage`.
+  - The CLI updates itself on startup unless `app.disableAutoupdates` is set; every leg sets it (4.6).
 - **opencode**
   - Concurrent runs sharing one SQLite DB can hit `database is locked`, and its background service can resume a
     killed session. Each leg gets its own XDG dirs and DB, and runs with `--standalone` on the headless path.
@@ -887,6 +887,7 @@ A leg ratifies only if all of these hold, read from the CLI's own records:
    - claude: `system/init.tools`
    - grok: `tool_definitions.json`
    - codex: `world_state.state.top_level_tools`
+   - kiro on v3: the tool tags of `_kiro/tools/didChange` after the mode pin, checked before the prompt (4.6)
 
    **Sandboxed-exec exception (items 5 and 6).** For a backend labelled sandboxed-exec (codex), the offer check
    is an **allowlist**: the leg fails if any offered name is outside the adapter's declared native list for that
@@ -935,6 +936,119 @@ A leg ratifies only if all of these hold, read from the CLI's own records:
 
 The ratification result stores every field it read: observed model, effort, cwd, tools, tokens, cost or credits
 or quota, duration, CLI version. That gives stats and audits the evidence, not just a PASS bit.
+
+### 4.6 kiro engines (P11)
+
+Owner ruling D18 (2026-11-18): kiro seats run the v3 engine by default, because new Kiro installs default to it;
+v2 stays supported. Facts below were measured on kiro-cli 3.3.0 and 3.5.0 on 2026-11-16 and 2026-11-18 (14), on
+the owner's personal Kiro login, with a scratch `KIRO_HOME` per run.
+
+**Choosing the engine.**
+- kiro seats and kiro fallbacks take `engine = "v3" | "v2"`. Unset means `v3`. Any other backend that sets it is
+  a config error.
+- `engine = "v2"` keeps the P3 path exactly: the same launch flags, the same agent file and the same
+  `sessions/cli` record checks. P11 changes nothing on that path except the leg settings file below.
+- The engine is recorded on every leg (the leg's ratification detail and `seats test --json`) and shown by
+  `doctor`. It is not part of the occupant identity, as grok's `sandbox` is not (Q15).
+- Existing kiro seats with no `engine` move to v3 when they upgrade. The CHANGELOG, the kiro backend page and
+  `doctor` say so.
+
+**Leg files (v3).** The launch is `kiro-cli acp --agent-engine v3`, with no agent, model or effort flag (v3
+refuses them). The leg keeps P3's per-leg `KIRO_HOME` and `HOME` = the seat's `auth_home`. The adapter writes:
+- **`agents/sabotage-council.json`, one constant file.** It is exactly what kiro's own `kiro-cli agent upgrade`
+  writes for the P3 profile with its `model` and `permissions` keys removed:
+  - tools `read`, `grep` and `glob`;
+  - `toolsSettings` as in P3; `hooks: []`; `mcpServers: {}`; `includeMcpJson: false`;
+  - permission rules: `shell` deny `*`, `fs_write` deny `**`, `fs_read` allow `./**`;
+  - kiro's `kiroUpgrade` block (revision 3), verbatim.
+
+  The model is never in the file; it is pinned over ACP. Preflight hashes the file as in P3.
+
+  Measured: the P3 file, which pairs v2 tool names with a hand-written `permissions` block, gives v3 **no tools
+  at all**, and `kiro-cli agent upgrade` skips it as "out of sync". `kiro-cli agent validate` accepts every file
+  tried, including that one, so neither the file check nor `validate` is the guard. The session check below is.
+- **`settings/cli.json`, both engines.** It sets:
+  - `app.disableAutoupdates: true`;
+  - `telemetry.enabled: false`;
+  - `codeWhisperer.shareCodeWhispererContentWithAWS: false`.
+
+  All three keys are in 3.5.0's `kiro-cli settings list --all`. Every leg until now ran with an empty settings
+  file, whose default updates the CLI on startup. kiro-cli replaced itself (3.3.0 to 3.5.0) during the P11
+  measurement. The v3 agent file is already in kiro's universal format, which kiro's agent upgrade leaves
+  untouched: no run rewrote it or left a `.json.bak`.
+
+**Before the prompt (v3).** Everything goes through the existing ACP client. Any miss refuses the leg before a
+credit is spent.
+1. `session/new` with the root as `cwd` and `mcpServers: []`. Measured: it opens on mode `vibe` with model
+   `auto`, or with no model until kiro's model list loads.
+2. `session/set_config_option`, in this order, each value checked in the response's `configOptions`:
+   - `mode` = `sabotage-council`;
+   - `model` = the pin;
+   - `effortLevel` = the pin, only when the occupant sets an effort;
+   - `autopilot` = `off` (v3's default is `on`);
+   - `contentCollection` = `disabled` (v3's default is `enabled`).
+
+   Measured on 3.5.0: each was confirmed in the response, except `effortLevel`.
+3. **Effort.** If the occupant sets an effort and no `effortLevel` option is advertised after the model pin, the
+   leg is refused (`model`). This is not measured live: no model on the owner's personal login has effort levels
+   (14).
+4. **Offered tools.** The last `_kiro/tools/didChange` received after the mode pin must list exactly the tags
+   `["read"]`. If none arrives within 5 s, or the set differs, the leg is refused (`setup`).
+   - Measured: `[]` for the P3 file, `["read"]` for the v3 file, and `["read", "write", "shell", "web"]` for
+     kiro's default agent.
+   - This closes, for v3, the gap 14 records: "the offered tool set from a record".
+5. **MCP.** A `_kiro/mcp/status` that lists any server refuses the leg (`setup`). Measured: `servers: []`.
+
+**During the turn (v3).** The permission policy is P3's.
+- Measured: in-root `read_file`, `grep_search` and `list_directory` ran with no permission request (the `./**`
+  rule, as on v2).
+- An outside read asked, with the four standard options and `_meta.kiro.consent.capability: fs_read`. The
+  client's `reject_once` held, and the file never reached the stream.
+- No shell, write or web tool is offered.
+- After repeated tool failures, kiro's loop guard asks through `session/request_permission` with two
+  `allow_once` options and no reject. The client answers `cancelled`, as for any request with no `_once` reject.
+  No tool runs, and kiro goes on with the turn.
+
+**The v3 read set.** v3 tool calls carry `title`, `kind`, `rawInput` and `locations` (absolute paths), and
+`_meta.kiro.toolOrigin`, but no tool name. The read set keys on `title` and `kind`:
+- `Read File` (`read`): `rawInput.path`, `locations[].path`;
+- `Grep Search` (`search`): `rawInput.query`, the cwd when no path is given;
+- `List Directory` (`search`): `rawInput.path`;
+- `File Search`: not seen live. Its title and fields are taken from the first recorded fixture, and until then
+  any call with that title fails the leg as `read-paths-known`.
+
+`Load Resource` (kind `other`) is always offered. With no resources, skills or steering in the leg's
+`KIRO_HOME` it can load nothing: a failed call is recorded, and a completed one fails the leg (`contaminated`).
+
+**Ratification (v3).** It replaces the v2 record checks for a v3 leg; v2 legs keep theirs.
+- **From the stream:**
+  - the pins-held entry: mode, model, effort, autopilot and contentCollection;
+  - P3's `mode-held`: no pinned option changed after the prompt;
+  - a `turn_completion` with `status: success`, and a `turn_end` with `stopReason: end_turn`;
+  - credits = the sum of `promptTurnSummaries[].usage`;
+  - every entry of `promptTurnSummaries[].usedTools`, in order, matched to a `tool_call` the client saw. The
+    names map by title (`read_file` to `Read File`, and so on). An extra or unmatched name is `contaminated`.
+- **From kiro's session file** `$KIRO_HOME/sessions/*/<session id>/session.json`, exactly one under the leg's
+  `KIRO_HOME`, found by session id:
+  - `id` = the session;
+  - `agentMode` = `sabotage-council`;
+  - `modelId` = the pin;
+  - `rootPaths` and `workspacePaths` = the root, and nothing else;
+  - `autopilot` = `false`.
+
+  Kiro documents this layout as unstable (Q16). On a declared version a missing or unreadable file fails the leg
+  as `setup`. Above the floor on an undeclared version, `doctor` warns and the same check applies.
+- **What v3 cannot prove.** No v3 record carries the model per request, as v2's per-turn `model` does:
+  `modelId` is the session's last value, and the stream's `mode-held` covers a change after the prompt. The
+  enforcement label stays `pending` (5.2).
+
+**Versions and failure classes.**
+- The declared table becomes per version and per engine: 3.2.1 v2 (P3); 3.3.0 v2 and 3.5.0 v2 (P11 seat tests);
+  3.5.0 v3 (P11 probes).
+- The v3 floor is 3.5.0 (Q17). A v3 seat on an older kiro-cli is refused at preflight with "update kiro-cli, or
+  set engine = v2".
+- **Signed out.** Measured: v3 answers `initialize`, then fails `session/new` with RPC error -32000
+  "Authentication required. Not logged in. ...". It opens no browser. The existing auth pattern matches the text.
 
 ## 5. Engine architecture
 
@@ -998,7 +1112,8 @@ fallback = { backend = "kiro", model = "gpt-5.6-sol", effort = "high", on = ["us
 # kiro seats and fallbacks may add auth_home = "/abs/dir": kiro-cli then runs with HOME there, so a separate
 # Kiro login (its own token store) is used; the default is the user's HOME (P3). grok seats may add one too:
 # the leg's GROK_HOME is that dir, logged in once with `GROK_HOME=/abs/dir grok login`, holding its own config
-# and no MCP server (P4 round 1, owner ruling).
+# and no MCP server (P4 round 1, owner ruling). kiro seats and fallbacks may add engine = "v2" to keep the v2
+# engine; the default is "v3" (D18, 4.6).
 
 [[seats]]
 id = "b"
@@ -1611,11 +1726,11 @@ finding it raised in the adjudicated ones (outcome, severity, unique or not).
   judges the config's occupant for the seat, as `stats` does (8.3), so it is never raised on a swapped-out
   occupant's history. It reads the store read-only, as `stats` does; when it cannot (a schema behind or ahead), it
   lists the seats with a note.
-- `seats swap | add | remove <seat> [--backend X --model Y [--effort E] [--sandbox m] [--auth-home d]] [--dry-run]` edit
+- `seats swap | add | remove <seat> [--backend X --model Y [--effort E] [--sandbox m] [--engine v3|v2] [--auth-home d]] [--dry-run]` edit
   the user's config file through one seam (`SeatEditor`), whose default changes only the target seat's own `[[seats]]`
   block and keeps every other byte (comments, order, other sections, CRLF, a key's trailing comment, a value that does
   not change), with one exception for blank lines: the blank line that separates two blocks goes with a removed block. A
-  swap replaces the occupant keys (backend, model, effort, sandbox, auth_home: the ones the new occupant does not set
+  swap replaces the occupant keys (backend, model, effort, sandbox, engine, auth_home: the ones the new occupant does not set
   are deleted) and keeps the id and the fallback; `add` appends a block after the last seat's last key line, with a
   blank line before it (and one after it when text follows); `remove` deletes the block from its header to its last key
   line together with the blank line after it when a blank line also precedes it, or the blank line before it when the
@@ -1629,7 +1744,7 @@ finding it raised in the adjudicated ones (outcome, severity, unique or not).
   refused). `--dry-run` prints the unified diff and writes nothing. A file the editor cannot place a block in safely
   (seats as an inline array or a dotted key, a `[seats.x]` sub-table, a multi-line occupant value) is refused, never
   rewritten.
-- `seats test <seat-id | backend:model[:effort]> [--fallback] [--auth-home d] [--sandbox m] [--timeout min] [--json]`:
+- `seats test <seat-id | backend:model[:effort]> [--fallback] [--auth-home d] [--sandbox m] [--engine v3|v2] [--timeout min] [--json]`:
   one leg on the planted-defect fixture shipped in the package (`fixtures/planted/`: base and head trees, three
   defects in `calc/rangesum.py` with their lines and keywords). The fixture's repository is built at fixed shas, and
   the root the normal way (archive, neutralize, sanitize, a diff brief with a fresh nonce, seal); the leg is
@@ -1905,6 +2020,7 @@ existing private council until the two agree for 10 rounds in a row (Q9).
 | **P8** Auto daemon (+ opt-in tests) | Queue, ledger state machine, claim fencing, crash resume, continuation, holds, CI gate, notifications, launchd/systemd install, test runner with collaborator/fork checks | State-machine tests incl. crash between POST and review read (no double post), head moved mid-round, human review lands mid-approve; a week of shadow running on the owner's machine posting `--dry-run` | L |
 | **P9** Stats + seats | Scorecard metrics, counterfactuals, recommendations, HTML report, `seats` commands, planted-defect fixture for `seats test` | Metric tests on a synthetic store with known answers (e.g. a seat with 0 unique owed over 25 rounds is flagged); report renders in light and dark | M |
 | **P10** Docs + release 0.1.0 | README, per-backend setup pages (auth, terms notes, enforcement strength), security model page, migration notes, npm publish with provenance, plugin marketplace entry | A clean machine install from the README reaches a first `plan` round; `npm audit` clean | S |
+| **P11** kiro v3 engine (D18) | `engine` key on kiro seats and fallbacks (default `v3`); the v3 agent file and the leg settings file (4.6); the v3 pins, the `effortLevel` refusal, the offered-tags and MCP checks before the prompt; the v3 read set; v3 ratification from the stream and `session.json`; the per-engine declared table and the v3 floor; `doctor` and `seats` show the engine; docs (kiro backend page, README, CHANGELOG, security page) | Replay tests on a fake ACP agent from scrubbed fixtures of the P11 probes: the v3 happy path ratifies; tags `[]`, tags `[read, write, shell, web]`, a listed MCP server, an unconfirmed pin, and an effort with no `effortLevel` option are each refused before the prompt; a pinned option changed after the prompt, a completed `Load Resource`, and a `usedTools` name with no matching call are each `contaminated`; a missing `session.json` is `setup`, a wrong `modelId` is `model`, and a wrong `agentMode` or `rootPaths` is `contaminated`; the signed-out `session/new` error is `auth`; the loop-guard request is answered `cancelled`. Every v2 test is unchanged and green, `engine = "v2"` selects the P3 path, and the settings file is written for both engines. Mutation check: removing the tags check, the `modelId` check, or the effort refusal each fails a test. Live, on the owner's personal login: `seats test` on v3 passes ratified on the planted-defect fixture, and the P3 canary (an outside read by path and through a symlink, a search outside, a write, a command and a fetch, run clean and with a planted allow rule) is repeated on v3, with the result recorded in 14 | M |
 
 Build process for each phase:
 1. An implementation agent builds it from a written brief.
@@ -1958,6 +2074,7 @@ their evidence.
 | D15 | The engine shells out to the user's unmodified `claude` binary and never handles Claude credentials (Anthropic terms; 6.5). |
 | D16 | Research notes that describe the owner's private setup stay out of this public repo; this plan carries the public facts with sources. |
 | D17 | Q14 resolved (owner, 2026-11-12): a delta round that falls back to a full review keeps its own round number and owed rule, with the changed-file list in the brief; a rebase never restarts convergence. |
+| D18 | kiro engines (owner, 2026-11-18): kiro seats default to the v3 engine, because new Kiro installs default to it; v2 stays supported as `engine = "v2"` (4.6, P11). |
 
 ## 13. Open questions (the build takes the default unless overruled)
 
@@ -1977,6 +2094,9 @@ their evidence.
 | Q12 | Container mode for opt-in tests? | Optional when Docker is present; host mode otherwise, with the collaborator/fork gate. |
 | Q13 | Keep identity approval (3.10) on by default? | Yes, as the private council does; `auto.identity_approval = false` turns it off. P8: kept on; `auto` takes the identity path as `pr` does. |
 | Q14 (resolved: D17) | When a delta round falls back to a full review (rebase, missing baseline, empty fold), which owed rule applies? Round 1's rule finds defects the rebase brought in but restarts convergence on every rebase. The round's own rule keeps convergence but may wave through a MEDIUM the rebase introduced. | The round's own rule (no convergence reset), with the changed-file list in the brief. |
+| Q15 | Is a kiro seat's `engine` part of the occupant identity, so that changing it starts a new tenure on the scorecard? | No, as grok's `sandbox` is not. It is recorded on every leg, so a report can split by it. |
+| Q16 | Kiro calls v3's session-file layout unstable. Should v3 ratification require `session.json`, or rest on the ACP stream alone? | Require it (fail closed): it is the only on-disk record of the agent, model and roots. A layout change then fails legs as `setup`, visibly, until the declared table catches up. |
+| Q17 | The v3 floor? | 3.5.0, the only version on which the v3 agent file was measured. Older versions are refused on v3, and `engine = "v2"` still runs on them. |
 
 ## 14. Risks and what is not yet verified
 
@@ -2007,9 +2127,11 @@ Still not verified (P2-P4 live smokes settle each):
 - Antigravity over ACP: whether a symlink read, a write, a command and a fetch are each put to the client and
   denied when the model issues them alone (the P3 canary could not tell: agy ended the turn at the first
   rejection, below).
-- Kiro over ACP: the offered tool set from a record (kiro records none; the P3 canary saw no write, command or
-  fetch attempt), and the effort field on a model that has effort levels (the personal account's cheapest
-  model has none).
+- Kiro over ACP: on v2, the offered tool set from a record (v2 records none; the P3 canary saw no write, command
+  or fetch attempt). On both engines, the effort field on a model that has effort levels: the owner's personal
+  login offers no such model, so P11 checks v3 effort at the protocol level only (4.6). On v3, `File Search`
+  (not seen live), and whether the leg settings file stops the self-update (no update was pending to test it
+  against).
 
 Settled by P3 (agy 1.5.7 and kiro-cli 3.2.1, 2026-11-12; one smoke and one canary of two runs each, on the
 owner's consumer Google sign-in and a separate personal Kiro login):
@@ -2036,6 +2158,29 @@ owner's consumer Google sign-in and a separate personal Kiro login):
   the symlink with no request and the secret reached the stream, caught only at ratification. So the profile
   check at preflight is the guard, not the client. Result: `pending` (write, command and fetch were not
   attempted, and the offer is not in any record).
+
+Measured for P11 (kiro-cli 3.3.0 and 3.5.0, 2026-11-16 and 2026-11-18; the owner's personal Kiro login, a
+scratch `KIRO_HOME` per run, two paid turns and two seat tests, 1.59 credits in all):
+
+- **v2 still works.** `seats test` (v2, deepseek-3.2) passed ratified on 3.3.0 and again on 3.5.0.
+- **The CLI updated itself mid-measurement.** It replaced itself (3.3.0 to 3.5.0, KAS 0.66.102 to 0.66.119)
+  between two runs. The trigger is not proven; every leg ran with an empty settings file, whose default updates
+  on startup.
+- **The P3 agent file on v3.** v3 offered no tools at all: `_kiro/tools/didChange` listed no tags, and the
+  model looped on `load_resource` against an empty catalogue, then reported that it had no tools.
+- **kiro's converted file on v3.** With the file `kiro-cli agent upgrade` writes (4.6), v3 offered exactly
+  `["read"]`.
+  - `NOTES.md` was read, the grep and the directory listing ran in the root with no request, and the outside
+    read asked and was rejected.
+  - No shell tool was offered.
+  - `turn_completion` reported 0.23 credits and `usedTools` in call order.
+- **v3 pins.** `mode`, `model`, `autopilot` and `contentCollection` were each confirmed by
+  `session/set_config_option` before the prompt. A model-less agent file leaves the model on `auto` until it is
+  pinned.
+- **v3 records.** v3 writes `sessions/<hash>/<session id>/session.json` (`agentMode`, `modelId`, `rootPaths`,
+  `autopilot`) and `messages.jsonl` (calls, results, usage). Neither carries a per-request model.
+- **Signed out (no `auth_home` login).** `session/new` fails with "Authentication required", and no browser
+  opened (a stand-in `open` on `PATH` was never called).
 - Cursor: whether the installed CLI has a native ACP mode, and the strength of its read-only stack (no live run
   in v1, D14: the P4 adapter is built from the documentation and synthetic fixtures; untested in it are the
   stdin route for the prompt, whether `CURSOR_CONFIG_DIR` relocates hooks and turns off third-party hook import,
