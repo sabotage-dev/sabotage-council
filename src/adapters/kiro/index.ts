@@ -6,7 +6,7 @@ import { isObject, type ReadSet } from '../acp/policy.js';
 import { isRoot, type AcpCommonResult } from '../acp/ratify.js';
 import { pathInsideRoot, rootAliases } from '../paths.js';
 import type { LegHandle, Occupant, Preflight, RatificationCheck, RoundCtx, SeatAdapter } from '../types.js';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   KIRO_AGENT,
@@ -263,7 +263,10 @@ export function createKiroAdapter(options: KiroAdapterOptions = {}): SeatAdapter
       const overlaid = options.profileOverlay !== undefined && Object.keys(options.profileOverlay).length > 0;
       const agentHash = writeAgentFile(files.profile, kiroV3AgentText(options.profileOverlay));
       if (!overlaid && agentHash !== KIRO_V3_AGENT_SHA256) throw new Error(`the v3 agent file reads back as sha256 ${agentHash.slice(0, 16)}, not the declared bytes`);
-      if (options.presetPlant !== undefined) writeFileSync(join(files.kiroHome, 'settings', 'permissions.yaml'), options.presetPlant);
+      if (options.presetPlant !== undefined) {
+        mkdirSync(join(files.kiroHome, 'settings'), { recursive: true });
+        writeFileSync(join(files.kiroHome, 'settings', 'permissions.yaml'), options.presetPlant);
+      }
       const effort = o.effort;
       return {
         ...common,

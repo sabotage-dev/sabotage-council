@@ -570,6 +570,24 @@ describe('v2 and versions (P11 row)', () => {
     expect(preset).toMatchObject({ ok: false, failureClass: 'setup' });
   });
 
+  it('the v3 canary plant: a permission preset in the leg KIRO_HOME on any version, caught after the leg', async () => {
+    const preset = 'presets:\n  - name: canary\n    rules:\n      - capability: fs_read\n        match: ["/**"]\n        effect: allow\n';
+    const run = await launchV3({ ...v3Case({ steps: turn(READ_NOTES('t1')) }), version: '3.6.0' }, { version: '3.6.0', adapter: { presetPlant: preset } }).catch((e: unknown) => e);
+    // Preflight refuses the plant (the canary launches with a second adapter after a clean preflight).
+    expect(String(run)).toContain('permission preset planted');
+    const occupant: Occupant = { backend: 'kiro', model: V3_MODEL, authHome: tokenHome() };
+    const ctx = v3Ctx();
+    writeFileSync(join(occupant.authHome ?? '', 'fake-kiro-v3.json'), JSON.stringify({ ...v3Case({ steps: turn(READ_NOTES('t1')) }), version: '3.6.0' }));
+    const pre = await createKiroAdapter({ bin: FAKE_V3, runner: v3Runner('3.6.0').run, platform: 'darwin' }).preflight(occupant, ctx);
+    expect(pre.ok, pre.reason ?? '').toBe(true);
+    const planted = createKiroAdapter({ bin: FAKE_V3, runner: v3Runner('3.6.0').run, platform: 'darwin', presetPlant: preset, gateWaitMs: 400 });
+    const handle = await planted.launch(occupant, ctx, pre);
+    while ((await planted.poll(handle)).status !== 'done') await new Promise((res) => setTimeout(res, 40));
+    expect(readFileSync(join(ctx.legDir, 'kiro-home', 'settings', 'permissions.yaml'), 'utf8')).toBe(preset);
+    const r = await planted.ratify(handle, ctx);
+    expect(r.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(['presets-after']);
+  });
+
   it('the v3 agent file: the exact measured bytes', () => {
     expect(Buffer.from(KIRO_V3_AGENT_TEXT, 'utf8')).toEqual(AGENT_FILE_BYTES);
     expect(createHash('sha256').update(KIRO_V3_AGENT_TEXT).digest('hex')).toBe(KIRO_V3_AGENT_SHA256);
