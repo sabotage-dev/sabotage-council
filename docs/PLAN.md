@@ -1024,6 +1024,8 @@ credit is spent.
 - **From the stream:**
   - the pins-held entry: mode, model, effort, autopilot and contentCollection;
   - P3's `mode-held`: no pinned option changed after the prompt;
+  - `tags-held`: any `_kiro/tools/didChange` after the prompt that lists anything but `["read"]` is
+    `contaminated`;
   - a `turn_completion` with `status: success`, and a `turn_end` with `stopReason: end_turn`;
   - credits = the sum of `promptTurnSummaries[].usage`;
   - every entry of `promptTurnSummaries[].usedTools`, in order, matched to a `tool_call` the client saw. The
