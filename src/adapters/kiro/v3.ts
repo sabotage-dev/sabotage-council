@@ -61,13 +61,22 @@ function loopGuardMeta(snapshot: Json): boolean {
 
 const LOOP_RESULT_KEYS = new Set(['sessionUpdate', 'toolCallId', 'status', 'rawInput', 'rawOutput', 'content', '_meta']);
 const LOOP_CHOICE_KEYS = new Set(['userChoice', 'guidanceProvided']);
-const LOOP_MESSAGE = /^User intervention: [a-z-]+$/;
-const onlyChoiceKeys = (v: unknown): boolean => isObject(v) && Object.keys(v).every((k) => LOOP_CHOICE_KEYS.has(k));
+const LOOP_CHOICES = ['cancel', 'keep-iterating'];
+const LOOP_MESSAGE = /^User intervention: (cancel|keep-iterating)$/;
+/**
+ * A recorded choice object: only `userChoice` (one of the guard's two options) and `guidanceProvided` (a boolean), so no
+ * free text rides in either (PR #14 round 2).
+ */
+const isChoice = (v: unknown): boolean =>
+  isObject(v) &&
+  Object.keys(v).every((k) => LOOP_CHOICE_KEYS.has(k)) &&
+  (v['userChoice'] === undefined || LOOP_CHOICES.includes(v['userChoice'] as string)) &&
+  (v['guidanceProvided'] === undefined || typeof v['guidanceProvided'] === 'boolean');
 
 /**
  * The recorded result of kiro's loop guard, by its whole shape (measured on 3.5.0): no title, kind or locations;
- * `rawInput` only `message` "User intervention: <choice>"; `rawOutput` only `userChoice` and `guidanceProvided`;
- * `content` only that same JSON as text; `_meta.kiro` empty. A call that carries anything else (a path, a title, file
+ * `rawInput` only `message` "User intervention: <choice>"; `rawOutput` only `userChoice` (`cancel` or
+ * `keep-iterating`) and `guidanceProvided` (a boolean); `content` only that same JSON as text; `_meta.kiro` empty. A call that carries anything else (a path, a title, file
  * text) is not the loop guard, whatever its id, and is judged like any other call (PR #14 round 1).
  */
 function loopGuardResultShape(s: Json): boolean {
@@ -78,7 +87,7 @@ function loopGuardResultShape(s: Json): boolean {
     if (input['message'] !== undefined && !(typeof input['message'] === 'string' && LOOP_MESSAGE.test(input['message']))) return false;
   }
   const output = s['rawOutput'];
-  if (output !== undefined && output !== null && !onlyChoiceKeys(output)) return false;
+  if (output !== undefined && output !== null && !isChoice(output)) return false;
   const content = s['content'];
   if (content !== undefined && content !== null) {
     if (!Array.isArray(content)) return false;
@@ -86,7 +95,7 @@ function loopGuardResultShape(s: Json): boolean {
       const inner = isObject(b) ? b['content'] : undefined;
       if (!isObject(b) || b['type'] !== 'content' || !isObject(inner) || inner['type'] !== 'text' || typeof inner['text'] !== 'string') return false;
       try {
-        return onlyChoiceKeys(JSON.parse(inner['text']));
+        return Object.keys(b).length === 2 && Object.keys(inner).length === 2 && isChoice(JSON.parse(inner['text']));
       } catch {
         return false;
       }
@@ -98,9 +107,25 @@ function loopGuardResultShape(s: Json): boolean {
   return true;
 }
 
-/** A call of kiro's loop guard: its question (id and meta) or its recorded result (id and whole shape). */
+const LOOP_PROMPT_KEYS = new Set(['sessionUpdate', 'toolCallId', 'title', 'kind', 'status', '_meta']);
+
+/**
+ * One snapshot of the loop guard's question, by its whole shape (measured on 3.5.0): only an id, a status, the question
+ * as `title`, kind `other` and the guard's meta; no input, output, content or locations (PR #14 round 2).
+ */
+function loopGuardPromptShape(s: Json): boolean {
+  if (Object.keys(s).some((k) => !LOOP_PROMPT_KEYS.has(k))) return false;
+  if (s['kind'] !== undefined && s['kind'] !== null && s['kind'] !== 'other') return false;
+  if (s['title'] !== undefined && s['title'] !== null && typeof s['title'] !== 'string') return false;
+  const meta = s['_meta'];
+  if (meta === undefined || meta === null) return true;
+  if (!isObject(meta) || Object.keys(meta).some((k) => k !== 'kiro')) return false;
+  return Object.entries(kiroOf(s)).every(([k, v]) => (k === 'toolId' && v === 'user_input') || (k === 'userInputReason' && v === 'failure-intervention'));
+}
+
+/** A call of kiro's loop guard: its question or its recorded result, each by its id and every snapshot's shape. */
 export function isLoopGuard(call: { id: string; snapshots: readonly Json[] }): boolean {
-  if (LOOP_PROMPT_ID.test(call.id)) return call.snapshots.some(loopGuardMeta);
+  if (LOOP_PROMPT_ID.test(call.id)) return call.snapshots.some(loopGuardMeta) && call.snapshots.every(loopGuardPromptShape);
   return LOOP_RESULT_ID.test(call.id) && call.snapshots.length > 0 && call.snapshots.every(loopGuardResultShape);
 }
 
@@ -647,7 +672,9 @@ export function kiroV3Records(h: LegHandle, common: AcpCommonResult, kiroHome: s
     const disagree: string[] = [];
     if (readable) {
       const streamIds = new Set(calls.map((c) => c.id));
-      for (const id of m.calls.keys()) if (!streamIds.has(id) && !LOOP_PROMPT_ID.test(id) && !LOOP_RESULT_ID.test(id)) disagree.push(`${id} is in messages.jsonl but not in the stream`);
+      // Only calls the stream shows as kiro's loop guard (by isLoopGuard) are skipped, never an id by its shape alone (PR #14 round 2).
+      const guardIds = new Set([...log.toolCalls.values()].filter((c) => isLoopGuard(c)).map((c) => c.id));
+      for (const id of m.calls.keys()) if (!streamIds.has(id) && !guardIds.has(id)) disagree.push(`${id} is in messages.jsonl but not in the stream`);
       for (const c of calls) {
         const mc = m.calls.get(c.id);
         const title = c.titles[0] ?? null;

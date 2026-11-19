@@ -196,7 +196,7 @@ export async function kiroPreflight(o: Occupant, options: KiroPreflightOptions):
   async function withScratch(scratchHome: string): Promise<Preflight> {
     env['KIRO_HOME'] = scratchHome;
     const run = (args: readonly string[]) => options.runner(options.bin, args, { cwd: options.root, env, timeoutMs });
-    // The version is not known yet: the one key that stops an update on startup.
+    // The version is not known yet: only kiro's setting for updates on startup (whether it stops one is unmeasured).
     writeKiroSettings(scratchHome, KIRO_UPDATE_OFF_TEXT);
     const version = await run(['--version']);
     if (version.error !== null || version.exitCode !== 0) {

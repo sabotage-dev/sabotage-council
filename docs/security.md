@@ -55,8 +55,9 @@ settings still apply); grok, cursor, muse and opencode get a per-leg `HOME`; kir
 per-leg `--gemini-dir`; codex disables each of your MCP servers by name. What still loads is listed by `doctor` as
 user-owned (codex: your global `AGENTS.md`). Every leg runs in its own process group with a wall-clock cap, and the
 CLI's own auto-update is switched off for the leg where the CLI has a switch for it (all but cursor, and kiro before
-3.5.0: kiro legs on 3.5.0 get a settings file turning it off, and kiro preflight runs on a scratch `KIRO_HOME` whose
-settings turn it off).
+3.5.0: kiro legs on 3.5.0 get a settings file that sets `app.disableAutoupdates`, and kiro preflight runs on a scratch
+`KIRO_HOME` with that setting; kiro-cli 3.5.0 reads the file from `KIRO_HOME`, and whether the setting stops a pending
+update is not measured).
 
 ## The review root
 

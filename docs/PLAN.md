@@ -999,13 +999,13 @@ refuses them). The leg keeps P3's per-leg `KIRO_HOME` and `HOME` = the seat's `a
 **Preflight (both engines).** Preflight's own kiro-cli commands run with a scratch `KIRO_HOME`, never the user's
 settings:
 - The first, `--version`, runs before the version is known. Its scratch `KIRO_HOME` holds only
-  `app.disableAutoupdates: true`, the key that stops an update on startup. On 3.5.0 an unknown key is ignored;
+  `app.disableAutoupdates: true`, kiro's setting for updates on startup. On 3.5.0 an unknown key is ignored;
   whether 3.2.1 and 3.3.0 read this key is not measured (14).
 - The rest (`chat --list-models`) run with the settings file declared for the version `--version` reported, or
   the same one-key file when the version declares none.
 
-So no preflight launch can update the CLI on 3.5.0. On older versions it is no worse than P3, whose preflight ran
-under the user's own settings. Each leg records the version it actually ran, from the `KiroCLI/<version> KAS/<version>` user agent in
+So every preflight launch on 3.5.0 carries the setting (whether it stops a pending update is not measured, 14). On
+older versions it is no worse than P3, whose preflight ran under the user's own settings. Each leg records the version it actually ran, from the `KiroCLI/<version> KAS/<version>` user agent in
 its own `KIRO_HOME/logs/*/kiro.log` (measured on 3.5.0: `KiroCLI/3.5.0 KAS/0.66.119`). A version that differs
 from preflight's, or no such line, fails the leg (`setup`). The v3 `initialize` result names no version when
 signed in.

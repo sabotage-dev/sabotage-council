@@ -311,6 +311,25 @@ describe('contaminated (P11 row)', () => {
     expect(run.r.failureClass).toBe('contaminated');
   });
 
+  it('a read outside the root under a loop-guard question id, beside the guard meta, is judged (PR #14 round 2)', async () => {
+    const id = 'failure-intervention-prompt-9';
+    const read = call(id, 'Read File', 'read', { path: '${PARENT}/outside.txt' }, { locations: [{ path: '${PARENT}/outside.txt' }], output: 'secret' });
+    const guardMeta = update({ sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', _meta: { kiro: { toolId: 'user_input', userInputReason: 'failure-intervention' } } });
+    const steps = turn([...read, guardMeta]);
+    const run = await launchV3(v3Case({ steps }));
+    expect(run.failed).toContain('read-paths');
+    expect(run.r.failureClass).toBe('contaminated');
+  });
+
+  it('a call in messages.jsonl under a loop-guard-like id the stream never showed (PR #14 round 2)', async () => {
+    const steps = turn(READ_NOTES('t1'));
+    const messages = messagesFor(steps);
+    messages.splice(messages.length - 1, 0, { id: 'hidden-call', payload: { type: 'tool_call', toolCallId: 'failure-intervention-77', toolName: 'read_file', status: 'pending', title: 'Read File' } });
+    const run = await launchV3(v3Case({ steps, messages }));
+    expect(run.failed).toEqual(['messages-calls']);
+    expect(run.r.checks.find((c) => c.name === 'messages-calls')?.detail).toContain('failure-intervention-77');
+  });
+
   it('a loop guard recorded as keep-iterating', async () => {
     const s = segments();
     const guard = clone(s['loopGuard'] ?? []);
@@ -666,6 +685,20 @@ describe('v3 units', () => {
     expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, rawOutput: { userChoice: 'cancel', message: 'secret' } }] })).toBe(false);
     expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, content: [{ type: 'content', content: { type: 'text', text: 'secret file text' } }] }] })).toBe(false);
     expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, _meta: { kiro: { toolOrigin: 'default' } } }] })).toBe(false);
+    // Values too, not only key names: no free text in the choice or the guidance flag (PR #14 round 2).
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, rawOutput: { userChoice: 'cancel', guidanceProvided: 'root:x:0:0' } }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, rawOutput: { userChoice: 'secret file text', guidanceProvided: false } }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, content: [{ type: 'content', content: { type: 'text', text: '{"userChoice":"cancel","guidanceProvided":"root:x:0:0"}' } }] }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, rawInput: { message: 'User intervention: secret' } }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, rawOutput: { userChoice: 'keep-iterating', guidanceProvided: false } }] })).toBe(true);
+    // The question id needs every snapshot in the recorded shape too, not one with the meta (PR #14 round 2).
+    const ask = { sessionUpdate: 'tool_call', toolCallId: 'failure-intervention-prompt-1', title: 'stuck in a loop?', kind: 'other', status: 'pending', ...meta };
+    const done = { sessionUpdate: 'tool_call_update', toolCallId: 'failure-intervention-prompt-1', status: 'completed' };
+    expect(isLoopGuard({ id: 'failure-intervention-prompt-1', snapshots: [ask, done] })).toBe(true);
+    expect(isLoopGuard({ id: 'failure-intervention-prompt-1', snapshots: [ask, { ...done, rawInput: { path: '/etc/hosts' } }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-prompt-1', snapshots: [ask, { ...done, locations: [{ path: '/etc/hosts' }] }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-prompt-1', snapshots: [ask, { ...done, content: [{ type: 'content', content: { type: 'text', text: 'secret' } }] }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-prompt-1', snapshots: [ask, { ...done, kind: 'read' }] })).toBe(false);
   });
 
   it('the v3 policy: cancel for the loop guard; a `cancel` option on any other request is never selected', () => {
