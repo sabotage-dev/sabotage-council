@@ -8,6 +8,7 @@ import {
   UNTRUSTED_SEAT_POLICIES,
   FALLBACK_TRIGGERS,
   GROK_SANDBOX_MODES,
+  KIRO_ENGINES,
 } from './vocab.js';
 
 /*
@@ -55,10 +56,14 @@ const authHome = z
   .min(1)
   .refine((p) => p.startsWith('/'), { error: 'auth_home must be an absolute path' });
 
+/** `engine` (kiro seats and fallbacks only, plan 4.6): `v3` (the default when unset) or `v2`. */
+const kiroEngine = z.enum(KIRO_ENGINES, { error: 'engine is "v3" or "v2" (kiro only)' });
+
 export const fallbackSchema = z.strictObject({
   backend,
   model: modelId,
   effort: effort.optional(),
+  engine: kiroEngine.optional(),
   auth_home: authHome.optional(),
   on: z
     .array(z.enum(FALLBACK_TRIGGERS, { error: 'fallback.on takes only usage_limit or auth (plan 3.1, 4.4)' }))
@@ -71,6 +76,7 @@ export const seatSchema = z.strictObject({
   model: modelId,
   effort: effort.optional(),
   sandbox: z.enum(GROK_SANDBOX_MODES).optional(),
+  engine: kiroEngine.optional(),
   auth_home: authHome.optional(),
   fallback: fallbackSchema.optional(),
 });

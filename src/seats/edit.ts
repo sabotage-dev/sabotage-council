@@ -9,9 +9,9 @@ import { parse } from 'smol-toml';
  * What the default editor places, and what it refuses (never a rewrite that drops comments):
  * - seats written as `[[seats]]` tables, each block running to the next table header;
  * - refused: seats as an inline array (`seats = [...]`), a `[seats.x]` or `[[seats.x]]` sub-table, a dotted `seats.`
- *   key, and an occupant key (backend, model, effort, sandbox, auth_home) whose value is not a one-line string;
+ *   key, and an occupant key (backend, model, effort, sandbox, engine, auth_home) whose value is not a one-line string;
  * - swap: replaces the seat's occupant keys in place (a key's trailing comment stays), adds the ones the new occupant
- *   sets, and deletes the ones it does not (an effort, a sandbox or an auth_home belongs to the old occupant). The id
+ *   sets, and deletes the ones it does not (an effort, a sandbox, an engine or an auth_home belongs to the old occupant). The id
  *   and the fallback stay;
  * - add: appends a new `[[seats]]` block after the last one (at the end of the file when there is none);
  * - remove: deletes the block from its header to its last key line (comments after it, before the next header, stay).
@@ -31,6 +31,7 @@ export interface NewOccupant {
   model: string;
   effort?: string | undefined;
   sandbox?: string | undefined;
+  engine?: string | undefined;
   auth_home?: string | undefined;
 }
 
@@ -42,7 +43,7 @@ export interface SeatEditor {
 }
 
 /** The keys that make up a seat's occupant, in the order a new block writes them. */
-export const OCCUPANT_KEYS = ['backend', 'model', 'effort', 'sandbox', 'auth_home'] as const;
+export const OCCUPANT_KEYS = ['backend', 'model', 'effort', 'sandbox', 'engine', 'auth_home'] as const;
 
 // ---- a line scanner that knows where TOML strings and multi-line values are ----
 

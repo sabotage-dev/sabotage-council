@@ -130,7 +130,8 @@ export function replayHandle(kind: 'antigravity' | 'kiro', name: string, edit?: 
     process: null,
     exit,
     files: { log: join(dir, 'updates.jsonl'), stderr: join(dir, 'stderr.log'), process: join(dir, 'process.json'), agyLog: join(dir, 'agy.log') },
-    data: { expect, cliVersion: c.cliVersion, label: c.label ?? null, slug: c.slug ?? null },
+    // The recorded kiro legs ran the v2 engine (P3); a launch records the engine it ran.
+    data: { expect, cliVersion: c.cliVersion, label: c.label ?? null, slug: c.slug ?? null, ...(kind === 'kiro' ? { engine: 'v2' } : {}) },
   };
   const ctx: RoundCtx = {
     root,

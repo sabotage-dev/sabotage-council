@@ -135,6 +135,8 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
         options.write(`  ${name}: ${pre.cliVersion !== null ? `${o.backend} ${pre.cliVersion}, ` : ''}enforcement ${pre.enforcement}`);
         // Which HOME a kiro seat signs in from (plan 4.3, the auth_home setting).
         if (o.backend === 'kiro') {
+          // The engine (plan 4.6, D18): v3 unless the seat sets engine = "v2"; a seat that set none moved to v3 in P11.
+          options.write(`        engine  ${o.engine !== undefined ? `${o.engine} (engine = "${o.engine}")` : 'v3 (the default; engine = "v2" keeps the v2 engine)'}`);
           options.write(`        home  ${o.authHome !== undefined ? `${o.authHome} (auth_home)` : "the user's HOME (default)"}`);
           if (typeof pre.data['credential'] === 'string') options.write(`        credential  ${pre.data['credential']}`);
         }
@@ -181,9 +183,9 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
 function occupantsOf(seats: readonly SeatConfig[]): Array<{ label: string; o: Occupant }> {
   const out: Array<{ label: string; o: Occupant }> = [];
   for (const seat of seats) {
-    out.push({ label: seat.id, o: { backend: seat.backend, model: seat.model, effort: seat.effort, authHome: seat.auth_home, sandbox: seat.sandbox } });
+    out.push({ label: seat.id, o: { backend: seat.backend, model: seat.model, effort: seat.effort, authHome: seat.auth_home, sandbox: seat.sandbox, engine: seat.engine } });
     if (seat.fallback) {
-      out.push({ label: `${seat.id} fallback`, o: { backend: seat.fallback.backend, model: seat.fallback.model, effort: seat.fallback.effort, authHome: seat.fallback.auth_home } });
+      out.push({ label: `${seat.id} fallback`, o: { backend: seat.fallback.backend, model: seat.fallback.model, effort: seat.fallback.effort, authHome: seat.fallback.auth_home, engine: seat.fallback.engine } });
     }
   }
   return out;

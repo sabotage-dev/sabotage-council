@@ -71,6 +71,8 @@ export interface EvidenceRound {
   said: string;
   /** The round's stored verdict (null: not adjudicated). */
   verdict: string | null;
+  /** The kiro engine the seat ran in that round (its ratified leg's, else its last leg's; P11); null otherwise. */
+  engine: string | null;
 }
 
 export interface EvidenceFinding {
@@ -340,6 +342,7 @@ export function evidenceOf(data: StatsData, seat: string): { rounds: EvidenceRou
       adjudicated: r.adjudicated,
       said: pass ? pass.verdictRaw : `not ratified: ${legs.map((l) => `${l.role} ${l.attempt} ${l.status}${l.failureClass ? ` ${l.failureClass}` : ''}`).join(', ')}`,
       verdict: r.verdict,
+      engine: (pass ?? legs.at(-1))?.engine ?? null,
     });
     if (!pass || !r.adjudicated) continue;
     for (const f of r.findings) {

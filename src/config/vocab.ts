@@ -31,6 +31,9 @@ export const FALLBACK_TRIGGERS = ['usage_limit', 'auth'] as const satisfies read
 /** `sandbox` on a grok seat (plan 4.2): read-only where it starts, off where it refuses (the allowlist enforces). */
 export const GROK_SANDBOX_MODES = ['read-only', 'off'] as const;
 
+/** `engine` on a kiro seat or fallback (plan 4.6, D18): v3 by default, v2 kept. */
+export const KIRO_ENGINES = ['v3', 'v2'] as const;
+
 /** `council.untrusted_seat_policy` (plan 5.2). */
 export const UNTRUSTED_SEAT_POLICIES = ['fallback', 'skip', 'allow'] as const;
 

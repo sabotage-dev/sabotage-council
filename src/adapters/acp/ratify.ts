@@ -23,8 +23,12 @@ import { decodeFileUri, isObject, judgeCall, str, type ReadSet } from './policy.
 export interface AcpPinExpect {
   id: string;
   value: string;
-  /** Which check a mismatch fails: `mode`, `model` or `effort`. */
-  check: 'mode' | 'model' | 'effort';
+  /**
+   * Which check a mismatch fails: `mode`, `model` or `effort`, or a check of the adapter's own (kiro v3 pins
+   * `autopilot`, `contentCollection`, `memoryReflection` and `sessionToolsMessaging`, P11), whose class the adapter
+   * declares (an undeclared check fails as `setup`).
+   */
+  check: string;
   /** Pinned by launch flags: the agent may not report it, and the adapter's record is the proof. */
   launchOnly?: boolean;
 }
@@ -139,9 +143,11 @@ export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
   // No session/new at all fails `session` (setup); this check judges the cwd a sent session/new names.
   check('cwd', sn === null || (cwd !== null && aliases.includes(cwd.replace(/\/+$/, ''))), sn === null ? 'no session/new (session fails)' : `session/new cwd ${String(cwd)}`);
 
-  // Pins: as the agent reported them before the prompt, and unchanged after it.
+  // Pins: as the agent reported them before the prompt, and unchanged after it. One check per check name: `mode`,
+  // `model` and `effort` first (in that order), then any other the adapter declares, in pin order.
   // With no session the pins were never reached; the `session` check already fails the leg.
-  for (const name of log.sessionId !== null ? (['mode', 'model', 'effort'] as const) : []) {
+  const pinChecks = [...new Set(['mode', 'model', 'effort', ...input.pins.map((p) => p.check)])];
+  for (const name of log.sessionId !== null ? pinChecks : []) {
     const pins = input.pins.filter((p) => p.check === name);
     if (pins.length === 0) continue;
     const bad = pins.filter((p) => {
@@ -181,8 +187,9 @@ export function ratifyAcpCommon(input: AcpCommonInput): AcpCommonResult {
       : `granted beyond an in-root read: ${badGrants.map(({ p, j }) => `${String(p.toolCallId)} (${j.why})`).join('; ')}`,
   );
 
-  const calls = [...log.toolCalls.values()];
-  const ran = calls.filter((c) => executed(c, input.reads.denialNotice));
+  // An adapter's exempt calls (kiro v3's loop guard) are judged by its own checks, never by these.
+  const calls = [...log.toolCalls.values()].filter((c) => input.reads.exempt?.(c) !== true);
+  const ran = calls.filter((c) => (input.reads.ran !== undefined ? input.reads.ran(c) : executed(c, input.reads.denialNotice)));
   const unasked = ran.filter((c) => c.asked === null && !judged(c, input.root, input.reads, aliases).read);
   const nonReadRan = ran.filter((c) => c.decision !== 'reject' && !judged(c, input.root, input.reads, aliases).read);
   check(

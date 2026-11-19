@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import type { ModelInfo } from '../../config/registry.js';
 import type { BackendId, FailureClass } from '../../config/vocab.js';
-import { startAcp, type AcpPin, type AcpProcess } from '../../transport/acp.js';
+import { startAcp, type AcpGate, type AcpPin, type AcpProcess, type KnownToolCall, type PermissionDecision } from '../../transport/acp.js';
 import {
   fromNonceLine,
   verdictOf,
@@ -36,6 +36,13 @@ export interface AcpLaunchPlan {
   files: Record<string, string>;
   data: Record<string, unknown>;
   killOn?: RegExp | undefined;
+  /** The adapter's pre-prompt gate for this leg (kiro v3, P11). */
+  gate?: AcpGate | undefined;
+  /**
+   * This leg's permission answers, in place of the read-only policy over the read set (kiro v3 answers its loop guard
+   * `cancel`, P11). It must still reject everything but an in-root read.
+   */
+  onPermission?: ((params: Record<string, unknown>, known: (toolCallId: string) => KnownToolCall | undefined) => PermissionDecision) | undefined;
 }
 
 export interface AcpRecordResult {
@@ -55,6 +62,8 @@ export interface AcpAdapterDef {
   plan: (o: Occupant, ctx: RoundCtx, pre: Preflight) => AcpLaunchPlan;
   /** What this backend counts as a read: kinds and declared tool names (plan 4.1, 4.5). */
   reads: ReadSet;
+  /** The read set of one leg, when it differs per leg (kiro: per engine, P11). Default `reads`. */
+  readsOf?: ((h: Pick<LegHandle, 'data' | 'occupant'>) => ReadSet) | undefined;
   /** Checks from the backend's own records (model label, session record, credits). */
   ratifyRecords: (h: LegHandle, common: AcpCommonResult) => AcpRecordResult;
   /** Failure signature from stderr, error responses and non-JSON stdout, never the answer (plan 4.4). */
@@ -90,6 +99,7 @@ export function createAcpAdapter(def: AcpAdapterDef): SeatAdapter {
       const p = pre ?? (await def.preflight(o, ctx));
       if (!p.ok) throw new Error(`${def.id} preflight failed: ${p.reason ?? 'unknown'}`);
       const plan = def.plan(o, ctx, p);
+      const reads = def.readsOf?.({ data: plan.data, occupant: o }) ?? def.reads;
       const brief = readFileSync(ctx.briefFile, 'utf8');
       const proc: AcpProcess = startAcp({
         command: plan.command,
@@ -102,7 +112,8 @@ export function createAcpAdapter(def: AcpAdapterDef): SeatAdapter {
         sessionCwd: ctx.root,
         promptText: brief,
         pins: plan.pins,
-        onPermission: readOnlyPolicy(ctx.root, def.reads),
+        gate: plan.gate,
+        onPermission: plan.onPermission ?? readOnlyPolicy(ctx.root, reads),
         timeoutMs: ctx.timeoutMs,
         killOn: plan.killOn,
         clientName: 'sabotage-council',
@@ -140,7 +151,7 @@ export function createAcpAdapter(def: AcpAdapterDef): SeatAdapter {
         root: h.root,
         nonce: h.nonce,
         pins: (h.data['expect'] as AcpPinExpect[] | undefined) ?? [],
-        reads: def.reads,
+        reads: def.readsOf?.(h) ?? def.reads,
         transportError: h.exit?.recordError ?? null,
         closeTimedOut: (h.exit as { closeTimedOut?: boolean } | null)?.closeTimedOut === true,
         timedOut: h.exit?.timedOut ?? false,

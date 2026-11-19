@@ -1,5 +1,6 @@
 import type { KnownToolCall, PermissionDecision } from '../../transport/acp.js';
 import { pathInsideRoot, rootAliases } from '../paths.js';
+import type { AcpToolCall } from './log.js';
 
 /*
  * The ACP permission policy (plan 4.1): every `session/request_permission` is rejected unless it is a read whose
@@ -7,8 +8,8 @@ import { pathInsideRoot, rootAliases } from '../paths.js';
  * live client got wrong is caught again from the record.
  *
  * A call is judged on everything it was ever reported with: every `tool_call` and `tool_call_update` snapshot, the
- * permission request's own `toolCall`, and the request's `_meta.fsReadPaths`. A path seen once is never erased by
- * a later snapshot.
+ * permission request's own `toolCall`, and the paths the request names (kiro: v2's `_meta.fsReadPaths`, v3's
+ * `_meta.kiro.consent.resource`). A path seen once is never erased by a later snapshot.
  */
 
 type Json = Record<string, unknown>;
@@ -38,6 +39,22 @@ export interface ReadSet {
    * entry, or a key it does not declare, falls back to the generic key rules.
    */
   args?: Readonly<Record<string, ToolArgs>> | undefined;
+  /**
+   * Adapter-scoped: whether a call ran, in place of the shared rule (`executed` in log.ts). kiro v3 uses it for its
+   * denial notice and its `Load Resource` rule (P11); every other backend keeps the shared rule.
+   */
+  ran?: ((call: AcpToolCall) => boolean) | undefined;
+  /**
+   * Calls the read set's rules do not judge at all (kiro v3's loop guard, P11): left out of the execution checks
+   * and the tools used. The adapter judges them with checks of its own.
+   */
+  exempt?: ((call: AcpToolCall) => boolean) | undefined;
+  /**
+   * A declared glob that holds a `..` segment is outside the root, whatever it normalizes to (a `..` after a `**`
+   * climbs above the root when the `**` matches no directory). kiro v3 (P11); other backends judge the normalized
+   * glob.
+   */
+  climbingGlobsOutside?: boolean | undefined;
 }
 
 export interface ToolArgs {
@@ -141,6 +158,8 @@ export interface CollectedPaths {
   paths: string[];
   /** Path-like keys whose value cannot be judged (an object with no path in it, a number, a boolean). */
   problems: string[];
+  /** Declared globs that hold a `..` segment (judged outside when the read set says so). */
+  climbing: string[];
 }
 
 function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths, spec: ArgSpec): boolean {
@@ -150,6 +169,7 @@ function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths, 
     // Globs are checked first, so in a merged spec a text declaration can never suppress a glob (round 3).
     if (spec.globs.has(key)) {
       if (value.trim() !== '') out.paths.push(value);
+      if (/(^|\/)\.\.(\/|$)/.test(value)) out.climbing.push(value);
       return false;
     }
     if (spec.text.has(key)) return false;
@@ -183,7 +203,7 @@ function walk(value: unknown, key: string, pathy: boolean, out: CollectedPaths, 
  * the permission request names elsewhere (`_meta.fsReadPaths`).
  */
 export function collectPaths(snapshots: readonly Json[], extra: readonly string[] = [], set?: ReadSet, names: readonly string[] = []): CollectedPaths {
-  const out: CollectedPaths = { paths: [], problems: [] };
+  const out: CollectedPaths = { paths: [], problems: [], climbing: [] };
   // Each snapshot is read with its own tool's semantics; a snapshot that names no tool (a kiro permission request)
   // uses the union of the call's tools, where globs win (round 3, defense in depth).
   const union = argSpec(set, names);
@@ -195,7 +215,7 @@ export function collectPaths(snapshots: readonly Json[], extra: readonly string[
     }
   }
   for (const p of extra) if (p.trim() !== '') out.paths.push(p);
-  return { paths: [...new Set(out.paths)], problems: [...new Set(out.problems)] };
+  return { paths: [...new Set(out.paths)], problems: [...new Set(out.problems)], climbing: [...new Set(out.climbing)] };
 }
 
 /** One snapshot's paths (tests and the canary harness). */
@@ -254,6 +274,9 @@ export function judgeCall(snapshots: readonly Json[], extra: readonly string[], 
   const collected = collectPaths(snapshots, extra, set, names);
   if (collected.problems.length > 0) return { ...base, read: true, paths: collected.paths, why: `cannot judge: ${collected.problems.join('; ')}` };
   let paths = collected.paths;
+  if (set.climbingGlobsOutside === true && collected.climbing.length > 0) {
+    return { ...base, read: true, judgeable: true, paths, why: `${collected.climbing[0] ?? ''} names a parent directory (..)` };
+  }
   if (paths.length === 0) {
     if (!names.every((n) => (set.cwdDefault ?? []).includes(n))) return { ...base, read: true, why: 'a read that names no path the client can judge' };
     paths = ['.'];
@@ -265,11 +288,18 @@ export function judgeCall(snapshots: readonly Json[], extra: readonly string[], 
   return { read: true, judgeable: true, inside: true, paths, names, why: `a read inside the root (${paths.join(', ')})` };
 }
 
-/** The `_meta.fsReadPaths` a permission request names (kiro). */
+/**
+ * The paths a permission request names outside its `toolCall`: kiro v2's `_meta.fsReadPaths`, and kiro v3's
+ * `_meta.kiro.consent.resource` (a path, or a list of them; P11). No other backend sends either.
+ */
 export function requestPaths(params: Json): string[] {
   const meta = params['_meta'];
   const list = isObject(meta) ? meta['fsReadPaths'] : undefined;
-  return Array.isArray(list) ? list.filter((p): p is string => typeof p === 'string') : [];
+  const v2 = Array.isArray(list) ? list.filter((p): p is string => typeof p === 'string') : [];
+  const kiro = isObject(meta) && isObject(meta['kiro']) ? meta['kiro'] : undefined;
+  const consent = kiro !== undefined && isObject(kiro['consent']) ? kiro['consent']['resource'] : undefined;
+  const v3 = typeof consent === 'string' ? [consent] : Array.isArray(consent) ? consent.filter((p): p is string => typeof p === 'string') : [];
+  return [...v2, ...v3];
 }
 
 /**

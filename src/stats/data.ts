@@ -38,6 +38,8 @@ export interface StatsLeg {
   quotaPct: number | null;
   /** Leg findings of this leg the adjudicator left unmapped (not a canonical finding). */
   unmapped: number;
+  /** A kiro leg's engine, from its round's `legs-settled` event (P11); null for other backends or older rounds. */
+  engine: string | null;
 }
 
 export interface StatsFinding {
@@ -106,6 +108,8 @@ export interface SeatTestRecord {
   cost_usd: number | null;
   credits: number | null;
   duration_ms: number | null;
+  /** A kiro occupant's engine (P11); null for other backends or older seat tests. */
+  engine: string | null;
 }
 
 export interface RoundCounts {
@@ -238,6 +242,26 @@ export function loadStats(db: DatabaseSync, since: string | null): StatsData {
     unmapped.set(Number(u['leg_id']), Number(u['n']));
   }
 
+  // Each kiro leg's engine, as its round's `legs-settled` event recorded it (P11).
+  const engines = new Map<number, string>();
+  for (const e of db
+    .prepare(`SELECT events.detail_json FROM events JOIN rounds ON rounds.id = events.round_id WHERE events.kind = 'legs-settled' AND ${inWindow} ORDER BY events.id`)
+    .all(since, since) as Row[]) {
+    let d: unknown;
+    try {
+      d = JSON.parse(String(e['detail_json']));
+    } catch {
+      continue;
+    }
+    const list = typeof d === 'object' && d !== null ? (d as { legs?: unknown }).legs : undefined;
+    if (!Array.isArray(list)) continue;
+    for (const x of list as unknown[]) {
+      const id = typeof x === 'object' && x !== null ? num((x as Record<string, unknown>)['id']) : null;
+      const engine = typeof x === 'object' && x !== null ? str((x as Record<string, unknown>)['engine']) : null;
+      if (id !== null && engine !== null) engines.set(id, engine);
+    }
+  }
+
   const occupantIds = new Set<number>();
   const legs = new Map<number, StatsLeg>();
   for (const l of db
@@ -263,6 +287,7 @@ export function loadStats(db: DatabaseSync, since: string | null): StatsData {
       credits: num(l['credits']),
       quotaPct: num(l['quota_used_pct']),
       unmapped: unmapped.get(Number(l['id'])) ?? 0,
+      engine: engines.get(Number(l['id'])) ?? null,
     };
     round.legs.push(leg);
     legs.set(leg.id, leg);
@@ -358,6 +383,7 @@ function loadSeatTests(db: DatabaseSync, since: string | null): SeatTestRecord[]
       cost_usd: num(d['cost_usd']),
       credits: num(d['credits']),
       duration_ms: num(d['duration_ms']),
+      engine: str(d['engine']),
     });
   }
   return out;

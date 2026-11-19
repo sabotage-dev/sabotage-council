@@ -406,16 +406,21 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
     if (value !== 'read-only' && value !== 'off') throw new InvalidArgumentError('--sandbox is read-only or off (grok only)');
     return value;
   };
-  type EditOpts = { config?: string; db?: string; roots?: string; backend: string; model: string; effort?: string; sandbox?: 'read-only' | 'off'; authHome?: string; dryRun?: boolean };
+  const engineMode = (value: string): 'v3' | 'v2' => {
+    if (value !== 'v3' && value !== 'v2') throw new InvalidArgumentError('--engine is v3 or v2 (kiro only)');
+    return value;
+  };
+  type EditOpts = { config?: string; db?: string; roots?: string; backend: string; model: string; effort?: string; sandbox?: 'read-only' | 'off'; engine?: 'v3' | 'v2'; authHome?: string; dryRun?: boolean };
   const occupantFlags = (cmd: Command): Command =>
     cmd
       .requiredOption('--backend <backend>', 'the occupant\'s backend (codex, claude, grok, antigravity, kiro, opencode, cursor, muse)')
       .requiredOption('--model <model>', "a model id the backend's adapter lists")
       .option('--effort <effort>', "the effort (default: none, the CLI's own default)")
       .option('--sandbox <mode>', 'grok only: read-only or off', sandboxMode)
+      .option('--engine <engine>', 'kiro only: v3 (the default) or v2', engineMode)
       .option('--auth-home <dir>', "kiro and grok only: the seat's own login home (absolute)")
       .option('--dry-run', 'print the diff and write nothing');
-  const occupantOfOpts = (opts: EditOpts) => ({ backend: opts.backend, model: opts.model, effort: opts.effort, sandbox: opts.sandbox, auth_home: opts.authHome });
+  const occupantOfOpts = (opts: EditOpts) => ({ backend: opts.backend, model: opts.model, effort: opts.effort, sandbox: opts.sandbox, engine: opts.engine, auth_home: opts.authHome });
   const editNow = (): Date | undefined => (io.now ? new Date(io.now()) : undefined);
   storeOptions(
     occupantFlags(
@@ -456,9 +461,10 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
       .option('--fallback', "test the seat's fallback instead of its primary")
       .option('--auth-home <dir>', 'kiro and grok candidates: the login home to run on (absolute)')
       .option('--sandbox <mode>', 'grok candidates: read-only or off', sandboxMode)
+      .option('--engine <engine>', 'kiro: v3 (the default) or v2; with a seat id it overrides the seat\'s engine', engineMode)
       .option('--timeout <minutes>', 'the leg cap (default: council.leg_timeout_minutes, else 25)', minutes)
       .option('--json', 'print the result as JSON'),
-  ).action(async (target: string, opts: { config?: string; db?: string; roots?: string; fallback?: boolean; authHome?: string; sandbox?: 'read-only' | 'off'; timeout?: number; json?: boolean }) => {
+  ).action(async (target: string, opts: { config?: string; db?: string; roots?: string; fallback?: boolean; authHome?: string; sandbox?: 'read-only' | 'off'; engine?: 'v3' | 'v2'; timeout?: number; json?: boolean }) => {
     // Ctrl-C or a TERM cancels the leg: nothing it started is left running.
     const abort = new AbortController();
     const stop = (): void => abort.abort();
@@ -469,6 +475,7 @@ export function buildProgram(io: ProgramIo = defaultIo): Command {
         fallback: opts.fallback === true,
         authHome: opts.authHome,
         sandbox: opts.sandbox,
+        engine: opts.engine,
         timeoutMinutes: opts.timeout,
         json: opts.json === true,
         signal: abort.signal,

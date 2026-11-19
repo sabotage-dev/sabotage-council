@@ -10,7 +10,7 @@ its backend needs, passed through by name.
 | Claude Code | `claude` | headless | 2.1.322, 2.1.323, 2.1.325 | `strong` on those, `pending` on others | [claude](claude.md) |
 | Grok CLI | `grok` | headless | 1.0.70 | `weak` with `sandbox = "off"`, `pending` with the sandbox on | [grok](grok.md) |
 | Antigravity CLI | `agy` | ACP | 1.5.7 | `pending` | [antigravity](antigravity.md) |
-| Kiro CLI | `kiro-cli` | ACP | 3.2.1 | `pending` | [kiro](kiro.md) |
+| Kiro CLI | `kiro-cli` | ACP | v3 engine (the default): 3.5.0; v2: 3.2.1, 3.3.0, 3.5.0 | `pending` | [kiro](kiro.md) |
 | opencode | `opencode` | ACP | 2.2.7 | `pending` | [opencode](opencode.md) |
 | Cursor CLI | `cursor-agent` | headless | none | `weak` | [cursor](cursor.md) |
 | Muse Code | `muse` | headless | 1.4.15 | `weak` | [muse](muse.md) |
@@ -34,8 +34,9 @@ Whatever the label, every leg is ratified after it ends from the CLI's own recor
 used, the paths read, the nonce line) and the root's hash, and a leg that used a forbidden tool, read outside the root
 or changed the root is `contaminated` and does not count. The offer is checked only where the CLI records it or the
 adapter can compute it: claude, codex and grok legs fail on a forbidden offer and opencode's is computed at preflight;
-antigravity is offered command and write tools and its ratifier records that offer without failing on it; kiro,
-cursor and muse record no offer. [The security page](../security.md#what-a-seat-can-do) has the table per backend.
+antigravity is offered command and write tools and its ratifier records that offer without failing on it; kiro on
+its v3 engine reports the offered tool tags before the prompt, and the leg is refused unless they are exactly the read
+tag; kiro on v2, cursor and muse record no offer. [The security page](../security.md#what-a-seat-can-do) has the table per backend.
 Ratification catches a violation; only `strong` prevents it.
 
 **Pull requests from authors without write access.** In `pr` and `auto` rounds, a seat below `strong` follows
@@ -85,5 +86,5 @@ fallback = { backend = "claude", model = "claude-opus-5-5", effort = "high", on 
 No model may vote twice: a fallback must be a different occupant (backend, model or effort) from its own primary,
 from every other seat's primary and from every other seat's fallback. So covering two seats with `claude` fallbacks
 for untrusted pull requests takes two different Claude models (or efforts), neither one a primary. A fallback table
-takes `backend`, `model`, `effort`, `on` and (kiro and grok) `auth_home`; it has no `sandbox` key, so a grok fallback
-always runs with the read-only sandbox.
+takes `backend`, `model`, `effort`, `on`, (kiro and grok) `auth_home` and (kiro) `engine`; it has no `sandbox` key,
+so a grok fallback always runs with the read-only sandbox.

@@ -143,7 +143,11 @@ async function onRequest(msg) {
     if (!kase.noConfigOptions) result.configOptions = config;
     if (kase.modes) result.modes = kase.modes;
     if (kase.models) result.models = kase.models;
-    return send({ jsonrpc: '2.0', id, result });
+    send({ jsonrpc: '2.0', id, result });
+    // Notifications the agent sends after the session opens (P11 gate tests), and later ones after a pause.
+    for (const m of deep(kase.notesOnSessionNew ?? [])) send(m);
+    if (kase.notesLater) setTimeout(() => { for (const m of deep(kase.notesLater)) send(m); }, kase.notesLaterMs ?? 100);
+    return undefined;
   }
   if (method === 'session/set_config_option') {
     if ((kase.refuseConfig ?? []).includes(params.configId)) return send({ jsonrpc: '2.0', id, error: { code: -32602, message: `unsupported value for ${params.configId}` } });
@@ -151,6 +155,7 @@ async function onRequest(msg) {
     if (!o) return send({ jsonrpc: '2.0', id, error: { code: -32602, message: `unknown config ${params.configId}` } });
     o.currentValue = params.value;
     applyForced();
+    for (const m of deep(kase.notesOnSet?.[params.configId] ?? [])) send(m);
     return send({ jsonrpc: '2.0', id, result: { configOptions: config } });
   }
   if (method === 'session/set_mode') {

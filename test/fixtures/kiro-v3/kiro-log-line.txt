@@ -1,0 +1,1 @@
+{"timestamp":"2026-11-18T20:48:16.057Z","level":"info","message":"userAgent.gate.decided {\"enabled\":false,\"customUserAgent\":\"KiroCLI/${VERSION} KAS/0.66.119 os/macos md/appVersion-${VERSION} app/AmazonQ-For-CLI\"}"}

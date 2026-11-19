@@ -36,7 +36,8 @@ export interface SeatTestOptions {
 }
 
 export interface SeatTestResult {
-  occupant: { backend: string; model: string; effort: string | null; auth_home: string | null; sandbox: string | null };
+  /** `engine`: a kiro occupant's engine (plan 4.6; unset is v3), null for other backends. */
+  occupant: { backend: string; model: string; effort: string | null; auth_home: string | null; sandbox: string | null; engine?: string | null };
   /** The configured seat it was taken from, or null for a candidate given as backend:model[:effort]. */
   seat: string | null;
   role: 'primary' | 'fallback' | null;
@@ -137,7 +138,7 @@ async function runIn(
 ): Promise<SeatTestResult> {
   const startedAt = now();
   const base: Omit<SeatTestResult, 'status' | 'failure_class' | 'ratified' | 'finished_at'> = {
-    occupant: { backend: o.backend, model: o.model, effort: o.effort ?? null, auth_home: o.authHome ?? null, sandbox: o.sandbox ?? null },
+    occupant: { backend: o.backend, model: o.model, effort: o.effort ?? null, auth_home: o.authHome ?? null, sandbox: o.sandbox ?? null, engine: o.backend === 'kiro' ? (o.engine ?? 'v3') : null },
     seat: who.seat,
     role: who.role,
     failed_checks: [],
@@ -310,6 +311,7 @@ export function recordSeatTest(store: Store, result: SeatTestResult): void {
     seat: result.seat,
     role: result.role,
     occupant: { backend: result.occupant.backend, model: result.occupant.model, effort: result.occupant.effort },
+    engine: result.occupant.engine ?? null,
     ratified: result.ratified,
     status: result.status,
     failure_class: result.failure_class,
