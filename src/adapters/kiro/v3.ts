@@ -59,10 +59,49 @@ function loopGuardMeta(snapshot: Json): boolean {
   return k['toolId'] === 'user_input' && k['userInputReason'] === 'failure-intervention';
 }
 
-/** A call of kiro's loop guard: its question (id and meta) or its recorded result (id). */
+const LOOP_RESULT_KEYS = new Set(['sessionUpdate', 'toolCallId', 'status', 'rawInput', 'rawOutput', 'content', '_meta']);
+const LOOP_CHOICE_KEYS = new Set(['userChoice', 'guidanceProvided']);
+const LOOP_MESSAGE = /^User intervention: [a-z-]+$/;
+const onlyChoiceKeys = (v: unknown): boolean => isObject(v) && Object.keys(v).every((k) => LOOP_CHOICE_KEYS.has(k));
+
+/**
+ * The recorded result of kiro's loop guard, by its whole shape (measured on 3.5.0): no title, kind or locations;
+ * `rawInput` only `message` "User intervention: <choice>"; `rawOutput` only `userChoice` and `guidanceProvided`;
+ * `content` only that same JSON as text; `_meta.kiro` empty. A call that carries anything else (a path, a title, file
+ * text) is not the loop guard, whatever its id, and is judged like any other call (PR #14 round 1).
+ */
+function loopGuardResultShape(s: Json): boolean {
+  if (Object.keys(s).some((k) => !LOOP_RESULT_KEYS.has(k))) return false;
+  const input = s['rawInput'];
+  if (input !== undefined && input !== null) {
+    if (!isObject(input) || Object.keys(input).some((k) => k !== 'message')) return false;
+    if (input['message'] !== undefined && !(typeof input['message'] === 'string' && LOOP_MESSAGE.test(input['message']))) return false;
+  }
+  const output = s['rawOutput'];
+  if (output !== undefined && output !== null && !onlyChoiceKeys(output)) return false;
+  const content = s['content'];
+  if (content !== undefined && content !== null) {
+    if (!Array.isArray(content)) return false;
+    const ok = content.every((b) => {
+      const inner = isObject(b) ? b['content'] : undefined;
+      if (!isObject(b) || b['type'] !== 'content' || !isObject(inner) || inner['type'] !== 'text' || typeof inner['text'] !== 'string') return false;
+      try {
+        return onlyChoiceKeys(JSON.parse(inner['text']));
+      } catch {
+        return false;
+      }
+    });
+    if (!ok) return false;
+  }
+  const meta = s['_meta'];
+  if (meta !== undefined && meta !== null && !(isObject(meta) && Object.keys(meta).every((k) => k === 'kiro') && Object.keys(kiroOf(s)).length === 0)) return false;
+  return true;
+}
+
+/** A call of kiro's loop guard: its question (id and meta) or its recorded result (id and whole shape). */
 export function isLoopGuard(call: { id: string; snapshots: readonly Json[] }): boolean {
   if (LOOP_PROMPT_ID.test(call.id)) return call.snapshots.some(loopGuardMeta);
-  return LOOP_RESULT_ID.test(call.id);
+  return LOOP_RESULT_ID.test(call.id) && call.snapshots.length > 0 && call.snapshots.every(loopGuardResultShape);
 }
 
 /**

@@ -23,7 +23,8 @@ The first release.
   `seats swap/add/test` take `--engine`, and every leg records the engine it ran. On v3 the client pins the agent,
   model, effort, autopilot, content collection, memory reflection and session tools messaging over ACP and gates the
   session before the prompt (exactly kiro's read tool tag, empty permission presets, no MCP server, bundled steering
-  only); legs on 3.5.0 get a settings file that turns off kiro-cli's self-update, telemetry and content sharing. See
+  only); legs on 3.5.0 get a settings file that sets kiro-cli's self-update off, and telemetry and content sharing
+  off (read from the leg's `KIRO_HOME`; whether it stops a pending update is not measured). See
   [the kiro page](docs/backends/kiro.md).
 - **Findings blocks** in the three shapes seats write (the `F1 | HIGH | path:line | title` lines, JSON, YAML), tagged
   `findings` on the opening fence or, as a live seat wrote it, on the first non-blank line inside an untagged fence
@@ -51,7 +52,8 @@ The first release.
 - **Enforcement labels.** Only `claude` on 2.1.322, 2.1.323 and 2.1.325 is `strong` (a promotion canary on each).
   `codex` 0.167.0 is `sandboxed-exec` (commands run in a write- and network-denied sandbox; reads are not confined).
   `antigravity` 1.5.7, `kiro` (3.5.0 on both engines; 3.2.1 and 3.3.0 on v2) and `opencode` 2.2.7 are `pending`:
-  their canaries ran and did not prove every action refused before it ran (kiro's v3 canary has not run yet). `grok`
+  their canaries ran and did not prove every action refused before it ran (kiro: the v3 canary on 3.5.0, where an
+  outside search ran with no request; the v2 canary on 3.2.1). `grok`
   1.0.70 is `weak` with `sandbox = "off"` (reads outside the root ran and were caught only by ratification); with its
   sandbox on it is `pending`, a label no recorded run backs. `cursor` and `muse` are `weak`: no live Cursor run and no
   logged-in Muse run exists.

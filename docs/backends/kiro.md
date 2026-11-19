@@ -19,7 +19,8 @@ default for new installs); the v2 engine stays supported with `engine = "v2"`. L
 - A kiro seat or fallback with no `engine` runs v3. **An existing kiro seat with no `engine` moves to v3 with this
   release.** `doctor` prints each kiro seat's engine (`v3 (the default ...)` or `v2 (engine = "v2")`).
 - `engine = "v2"` keeps the v2 path exactly as before: the same launch flags, the same agent profile and the same
-  session-record checks. The only change on v2 is the leg settings file, on the versions that declare it (below).
+  session-record checks. What a v2 leg launches and checks changes only by the leg settings file, on the versions that
+  declare it (below); preflight's own kiro-cli commands now run on a scratch `KIRO_HOME` for both engines.
 - v3 needs kiro-cli 3.5.0 or later. A v3 seat on an older kiro-cli is refused at preflight with "update kiro-cli, or
   set engine = v2". On a version newer than the tested ones `doctor` warns and the same checks apply.
 - `engine` is set only on kiro seats and fallbacks; on any other backend it is a config error. It is not part of the
@@ -78,9 +79,11 @@ config, permission presets and other agents never reach it. The engine writes in
   allow of `./**`. The model is never in it: it is pinned over ACP. On v2 it is the v2 profile with the model. After
   a v3 leg, a changed hash or any `.json.bak` beside it fails the leg (`contaminated`).
 - **The leg settings file** `settings/cli.json`, on kiro-cli 3.5.0 (both engines): `app.disableAutoupdates: true`,
-  `telemetry.enabled: false` and `codeWhisperer.shareCodeWhispererContentWithAWS: false`. Without it, kiro-cli's
-  default updates itself on startup (it replaced itself from 3.3.0 to 3.5.0 between two measured runs). 3.2.1 and
-  3.3.0 legs run with no settings file, as before.
+  `telemetry.enabled: false` and `codeWhisperer.shareCodeWhispererContentWithAWS: false`. kiro-cli 3.5.0 reads this
+  file from the leg's `KIRO_HOME` (measured: `kiro-cli settings app.disableAutoupdates` answers `true (global)`).
+  Without it, kiro-cli's default updates itself on startup (it replaced itself from 3.3.0 to 3.5.0 between two
+  measured runs). Whether the setting stops an update is not measured: no update was pending. 3.2.1 and 3.3.0 legs
+  run with no settings file, as before.
 
 The engine is the ACP client: it declares no filesystem or terminal capability, opens the session in the review root
 with no MCP servers, and rejects every permission request except a read whose every path is inside the root by
@@ -162,8 +165,13 @@ marker when it starts, a permission preset and a hook were placed under the leg'
 session: no decoy word in the stream or the answer, the offered tools exactly `{builtin, read}`, no decoy agent or
 command, steering only the three bundled documents, both preset stores the leg's own and empty, no MCP server and no
 marker. The hook and preset files were in guessed formats, so those two show only that a file at that path does not
-load. The v3 canary has not run yet, so kiro stays `pending` on both engines, and on a pull request from an author
-without write access it follows `council.untrusted_seat_policy`.
+load. **The v3 canary** ran on 3.5.0 through this release's adapter. The outside read by path asked and was
+rejected. kiro itself blocked the read through an outward symlink, with no request. A search with an outside pattern
+ran with no request and returned nothing, and ratification marked the leg `contaminated`. Write, command and fetch
+were never attempted: no such tool is offered. A planted allow-all agent file and a planted permission preset were
+each refused at preflight and, launched anyway, by the gate before the prompt. Because an outside search ran before
+anything refused it, kiro stays `pending` on both engines (the v2 canary ran on 3.2.1 only), and on a pull request
+from an author without write access it follows `council.untrusted_seat_policy`.
 
 ## Preflight and `doctor`
 

@@ -304,6 +304,13 @@ describe('contaminated (P11 row)', () => {
     expect(run.r.failureClass).toBe('contaminated');
   });
 
+  it('a read outside the root under a loop-guard result id is judged, not exempt (PR #14 round 1)', async () => {
+    const steps = turn(call('failure-intervention-9', 'Read File', 'read', { path: '${PARENT}/outside.txt' }, { locations: [{ path: '${PARENT}/outside.txt' }], output: 'secret' }));
+    const run = await launchV3(v3Case({ steps }));
+    expect(run.failed).toContain('read-paths');
+    expect(run.r.failureClass).toBe('contaminated');
+  });
+
   it('a loop guard recorded as keep-iterating', async () => {
     const s = segments();
     const guard = clone(s['loopGuard'] ?? []);
@@ -640,8 +647,25 @@ describe('v3 units', () => {
     const meta = { _meta: { kiro: { toolId: 'user_input', userInputReason: 'failure-intervention' } } };
     expect(isLoopGuard({ id: 'failure-intervention-prompt-1', snapshots: [meta] })).toBe(true);
     expect(isLoopGuard({ id: 'failure-intervention-prompt-1', snapshots: [{}] })).toBe(false);
-    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [] })).toBe(true);
+    const result = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'failure-intervention-2',
+      status: 'completed',
+      rawInput: { message: 'User intervention: cancel' },
+      rawOutput: { userChoice: 'cancel', guidanceProvided: false },
+      content: [{ type: 'content', content: { type: 'text', text: '{"userChoice":"cancel","guidanceProvided":false}' } }],
+      _meta: { kiro: {} },
+    };
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [result] })).toBe(true);
     expect(isLoopGuard({ id: 'tooluse_1', snapshots: [meta] })).toBe(false);
+    // The result id alone is not enough: no snapshots, a title, a path, other input or file text in the content (PR #14 round 1).
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, title: 'Read File', kind: 'read' }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, rawInput: { path: '/etc/hosts' } }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, locations: [{ path: '/etc/hosts' }] }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, rawOutput: { userChoice: 'cancel', message: 'secret' } }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, content: [{ type: 'content', content: { type: 'text', text: 'secret file text' } }] }] })).toBe(false);
+    expect(isLoopGuard({ id: 'failure-intervention-2', snapshots: [{ ...result, _meta: { kiro: { toolOrigin: 'default' } } }] })).toBe(false);
   });
 
   it('the v3 policy: cancel for the loop guard; a `cancel` option on any other request is never selected', () => {

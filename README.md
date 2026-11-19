@@ -197,7 +197,7 @@ earn the top label:
 |---|---|---|
 | `strong` | claude 2.1.322, 2.1.323, 2.1.325 | its promotion canary on each version denied every outside read (path, symlink, Glob, Grep) before it ran; no write, command or fetch tool is offered |
 | `sandboxed-exec` | codex 0.167.0 | commands run in a write- and network-denied sandbox; reads are not confined to the root (checked afterwards) |
-| `pending` | antigravity 1.5.7, kiro 3.5.0 (v3 engine, the default; v2 also on 3.2.1 and 3.3.0), opencode 2.2.7; claude on an untested version | their canaries ran and did not prove every action refused before it ran (kiro's v3 canary has not run yet) |
+| `pending` | antigravity 1.5.7, kiro 3.5.0 (v3 engine, the default; v2 also on 3.2.1 and 3.3.0), opencode 2.2.7; claude on an untested version | their canaries ran and did not prove every action refused before it ran (kiro: v3 canary on 3.5.0, where an outside search ran with no request; v2 canary on 3.2.1) |
 | `weak` | grok 1.0.70 with `sandbox = "off"`; cursor; muse | grok's reads outside the root ran and were caught only afterwards; no live Cursor run and no logged-in Muse run exists |
 
 A grok seat with its sandbox running would be `pending`, a label no recorded run backs. With the default
